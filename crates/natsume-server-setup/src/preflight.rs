@@ -1,7 +1,7 @@
 //! Host fact collection separated from deterministic first-install eligibility checks.
 
 use crate::{
-    account::{AccountError, SERVICE_USER, SYSTEM_PATH, ServiceAccount},
+    account::{AccountError, SYSTEM_PATH, ServiceAccount},
     config::SERVER_BINARY,
 };
 use snafu::{ResultExt as _, Snafu};
@@ -24,6 +24,8 @@ pub struct SystemFacts {
     pub stdin_is_terminal: bool,
     /// Whether interactive output is attached to a terminal.
     pub stdout_is_terminal: bool,
+    /// Whether prompt rendering and answer context remain on a terminal.
+    pub stderr_is_terminal: bool,
     /// Whether the packaged Server executable exists.
     pub server_binary_present: bool,
     /// Account lookup result retained with its original failure.
@@ -35,7 +37,7 @@ pub struct SystemFacts {
 impl SystemFacts {
     /// Collects local system observations without requiring an interactive prompt.
     #[must_use]
-    pub fn collect() -> Self {
+    pub fn collect(account_name: &str) -> Self {
         let clock_synchronized = Command::new("/usr/bin/timedatectl")
             .args(["show", "-p", "NTPSynchronized", "--value"])
             .env_clear()
@@ -54,8 +56,9 @@ impl SystemFacts {
             systemd_running: Path::new("/run/systemd/system").is_dir(),
             stdin_is_terminal: rustix::termios::isatty(io::stdin()),
             stdout_is_terminal: rustix::termios::isatty(io::stdout()),
+            stderr_is_terminal: rustix::termios::isatty(io::stderr()),
             server_binary_present: Path::new(SERVER_BINARY).is_file(),
-            service_account: ServiceAccount::lookup(SERVICE_USER),
+            service_account: ServiceAccount::lookup(account_name),
             clock_synchronized,
         }
     }
@@ -88,7 +91,7 @@ pub fn evaluate(facts: SystemFacts) -> Result<PreflightReport, PreflightError> {
     snafu::ensure!(facts.architecture == "x86_64", ArchitectureSnafu);
     snafu::ensure!(facts.systemd_running, SystemdSnafu);
     snafu::ensure!(
-        facts.stdin_is_terminal && facts.stdout_is_terminal,
+        facts.stdin_is_terminal && facts.stdout_is_terminal && facts.stderr_is_terminal,
         TerminalSnafu
     );
     snafu::ensure!(facts.server_binary_present, BinaryMissingSnafu);
@@ -114,7 +117,7 @@ pub enum PreflightError {
     #[snafu(display("systemd is not running"))]
     Systemd,
     /// Credentials must be entered through an interactive terminal.
-    #[snafu(display("stdin and stdout must both be terminals"))]
+    #[snafu(display("stdin, stdout and stderr must all be terminals"))]
     Terminal,
     /// The Server package has not supplied its executable.
     #[snafu(display("Server binary missing; install the Server Deb first"))]
@@ -137,9 +140,10 @@ mod tests {
             systemd_running: true,
             stdin_is_terminal: true,
             stdout_is_terminal: true,
+            stderr_is_terminal: true,
             server_binary_present: true,
             service_account: Ok(ServiceAccount {
-                name: SERVICE_USER.into(),
+                name: crate::account::SERVICE_USER.into(),
                 uid: 123,
                 gid: 123,
                 home: "/var/lib/natsume-server".into(),
@@ -163,6 +167,9 @@ mod tests {
         assert!(matches!(evaluate(host), Err(PreflightError::Terminal)));
         let mut host = facts();
         host.stdout_is_terminal = false;
+        assert!(matches!(evaluate(host), Err(PreflightError::Terminal)));
+        let mut host = facts();
+        host.stderr_is_terminal = false;
         assert!(matches!(evaluate(host), Err(PreflightError::Terminal)));
         let mut host = facts();
         host.server_binary_present = false;

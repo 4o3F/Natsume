@@ -95,29 +95,27 @@ pub fn write_handoff(
         for (name, text) in &contents {
             let digest = hex::encode(Sha256::digest(text.as_bytes()));
             writeln!(checksums, "{digest}  {name}").context(ChecksumSnafu)?;
-            files.push(
-                file::create_new_file(
-                    &FileSpec {
-                        path: directory.join(name),
-                        owner,
-                        mode: 0o644,
-                    },
-                    text.as_bytes(),
-                )
-                .context(FilesystemSnafu)?,
-            );
-        }
-        files.push(
-            file::create_new_file(
+            file::create_recorded_file(
                 &FileSpec {
-                    path: directory.join("SHA256SUMS"),
+                    path: directory.join(name),
                     owner,
                     mode: 0o644,
                 },
-                checksums.as_bytes(),
+                text.as_bytes(),
+                &mut files,
             )
-            .context(FilesystemSnafu)?,
-        );
+            .context(FilesystemSnafu)?;
+        }
+        file::create_recorded_file(
+            &FileSpec {
+                path: directory.join("SHA256SUMS"),
+                owner,
+                mode: 0o644,
+            },
+            checksums.as_bytes(),
+            &mut files,
+        )
+        .context(FilesystemSnafu)?;
         Ok(HandoffReport {
             directory: directory.clone(),
             control_ca: control_ca.into(),
@@ -300,6 +298,45 @@ mod tests {
             fs::read_to_string(report.directory.join("SHA256SUMS"))?,
             manifest
         );
+        Ok(())
+    }
+    #[test]
+    fn publication_sync_failure_cleans_up_public_handoff() -> Result<(), TestError> {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let params = DeploymentParameters::new(
+            vec![Ipv4Addr::LOCALHOST.into()],
+            8443,
+            "gateway.example.test".into(),
+            "https://judge.example.test".into(),
+            "2030-01-01T00:00:00Z".into(),
+            "2030-01-02T00:00:00Z".into(),
+            now,
+        )?;
+        let (control, _) = generate::generate_ca("Control", "Natsume", now)?;
+        let (origin, _) = generate::generate_ca("Origin", "Natsume", now)?;
+        let owner = Ownership {
+            uid: rustix::process::geteuid().as_raw(),
+            gid: rustix::process::getegid().as_raw(),
+        };
+        for count in 0..4 {
+            let root = tempfile::tempdir()?;
+            let _fault = file::tests::fail_publication_sync_after(count);
+            assert!(matches!(
+                write_handoff(
+                    root.path(),
+                    Path::new("/pki"),
+                    &params,
+                    &control,
+                    &origin,
+                    now,
+                    owner
+                ),
+                Err(HandoffError::Filesystem {
+                    source: FileError::PublishedNotDurable { .. }
+                })
+            ));
+            assert_eq!(fs::read_dir(root.path())?.count(), 0);
+        }
         Ok(())
     }
 }

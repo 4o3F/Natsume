@@ -71,17 +71,10 @@ pub enum GenerateError {
 /// A PKCS#10 request containing IP SANs and a serverAuth extension request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SigningRequest {
-    der: Vec<u8>,
     pem: String,
 }
 
 impl SigningRequest {
-    /// Borrows the complete DER signing request.
-    #[must_use]
-    pub fn der(&self) -> &[u8] {
-        &self.der
-    }
-
     /// Borrows the PEM signing request for offline signing.
     #[must_use]
     pub fn pem(&self) -> &str {
@@ -100,14 +93,15 @@ pub fn generate_ca(
     organization: &str,
     now: OffsetDateTime,
 ) -> Result<(Certificate, PrivateKey), GenerateError> {
-    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context(CertificateSnafu)?;
+    let key =
+        Zeroizing::new(KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context(CertificateSnafu)?);
     let mut params = CertificateParams::default();
     params.not_before = now - Duration::hours(1);
     params.not_after = now + Duration::days(3650);
     params.distinguished_name = distinguished_name(common_name, organization);
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let certificate = params.self_signed(&key).context(CertificateSnafu)?;
+    let certificate = params.self_signed(&*key).context(CertificateSnafu)?;
     normalize(&certificate, &key)
 }
 
@@ -129,17 +123,16 @@ pub fn issue_server_leaf(
     ensure!(ca_key.matches(ca_cert), IssuerKeyMismatchSnafu);
     let not_after = (now + Duration::days(365)).min(ca_cert.not_after());
     ensure!(not_after >= gateway_not_after, InsufficientValiditySnafu);
-    let issuer = Issuer::from_ca_cert_der(
-        &CertificateDer::from(ca_cert.der()),
-        ca_key.key_pair().context(ImportSnafu)?,
-    )
-    .context(CertificateSnafu)?;
-    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context(CertificateSnafu)?;
+    let issuer_key = ca_key.key_pair().context(ImportSnafu)?;
+    let issuer = Issuer::from_ca_cert_der(&CertificateDer::from(ca_cert.der()), &*issuer_key)
+        .context(CertificateSnafu)?;
+    let key =
+        Zeroizing::new(KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context(CertificateSnafu)?);
     let mut params = server_params(ips);
     params.not_before = now - Duration::hours(1);
     params.not_after = not_after;
     params.use_authority_key_identifier_extension = true;
-    let certificate = params.signed_by(&key, &issuer).context(CertificateSnafu)?;
+    let certificate = params.signed_by(&*key, &issuer).context(CertificateSnafu)?;
     let (certificate, key) = normalize(&certificate, &key)?;
     ensure!(
         certificate.not_after() >= gateway_not_after,
@@ -153,13 +146,13 @@ pub fn issue_server_leaf(
 /// # Errors
 /// Returns a cryptographic provider or private key normalization error.
 pub fn create_csr(ips: &[IpAddr]) -> Result<(PrivateKey, SigningRequest), GenerateError> {
-    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context(CertificateSnafu)?;
+    let key =
+        Zeroizing::new(KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context(CertificateSnafu)?);
     let request = server_params(ips)
-        .serialize_request(&key)
+        .serialize_request(&*key)
         .context(CertificateSnafu)?;
     let request = SigningRequest {
         pem: request.pem().context(CertificateSnafu)?,
-        der: request.der().to_vec(),
     };
     let private = PrivateKey::from_key_pair(&key);
     Ok((private, request))

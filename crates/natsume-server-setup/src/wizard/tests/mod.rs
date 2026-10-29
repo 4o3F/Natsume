@@ -11,7 +11,12 @@ use crate::{
 use fake_host::FakeHost;
 use script::{Reply, ScriptedInteraction};
 use snafu::Snafu;
-use std::{fs, io, net::Ipv4Addr, os::unix::fs::MetadataExt as _, path::Path};
+use std::{
+    fs, io,
+    net::Ipv4Addr,
+    os::unix::fs::{MetadataExt as _, PermissionsExt as _},
+    path::Path,
+};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[derive(Debug, Snafu)]
@@ -56,6 +61,10 @@ impl Fixture {
         let root = tempfile::tempdir()?;
         fs::create_dir_all(root.path().join("etc"))?;
         fs::create_dir_all(root.path().join("var/lib/natsume-server"))?;
+        fs::set_permissions(
+            root.path().join("var/lib/natsume-server"),
+            fs::Permissions::from_mode(0o750),
+        )?;
         let owner = Ownership {
             uid: rustix::process::geteuid().as_raw(),
             gid: rustix::process::getegid().as_raw(),
@@ -63,10 +72,7 @@ impl Fixture {
         let context = WizardContext {
             target_root: root.path().into(),
             pki_dir: "/admin/pki".into(),
-            owners: Owners {
-                root: owner,
-                service: owner,
-            },
+            root_owner: owner,
         };
         let host = FakeHost::new(OffsetDateTime::parse("2029-01-01T00:00:00Z", &Rfc3339)?);
         Ok(Self {
@@ -111,7 +117,7 @@ impl Fixture {
             );
             assert_eq!(
                 (metadata.uid(), metadata.gid()),
-                (self.context.owners.root.uid, self.context.owners.root.gid)
+                (self.context.root_owner.uid, self.context.root_owner.gid)
             );
         }
         for (directory, mode) in [

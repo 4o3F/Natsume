@@ -135,7 +135,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 }
                 Err(error) => {
                     if let Some(retry) = rejection_field(&error) {
-                        self.rejected(&error.to_string())?;
+                        self.rejected(&snafu::Report::from_error(&error).to_string())?;
                         return Ok(Step::Parameters(retry));
                     }
                     return Err(error.into());

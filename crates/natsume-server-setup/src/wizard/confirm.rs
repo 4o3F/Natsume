@@ -51,7 +51,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                     } => super::params::Field::GatewayExpiry,
                     _ => return Err(error.into()),
                 };
-                self.rejected(&error.to_string())?;
+                self.rejected(&snafu::Report::from_error(&error).to_string())?;
                 let retry = if self.pending.is_some() {
                     Step::SignedCertificate
                 } else {
@@ -90,17 +90,22 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 _ => Step::ServerTls,
             };
             self.rejected(&format!(
-                "{} ({:?}: {:?})",
-                error,
-                error.material_role(),
-                error.certificate_rejection()
+                "{}: {}",
+                notice::certificate_policy(error.material_role(), error.certificate_rejection()),
+                snafu::Report::from_error(&error)
             ))?;
             self.reset(retry);
             return Ok(retry);
         }
+        let Some(service_owner) = self.service_owner else {
+            unreachable!("preflight precedes planning")
+        };
         self.answers.plan = Some(plan::build_plan(
             &self.context.target_root,
-            self.context.owners,
+            super::Owners {
+                root: self.context.root_owner,
+                service: service_owner,
+            },
             PlanMaterials {
                 control_ca: &control.certificate,
                 tls_leaf: leaf,
@@ -128,7 +133,9 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 Ok(Step::Validate)
             }
             Err(GenerateError::InsufficientValidity) => {
-                self.rejected(&GenerateError::InsufficientValidity.to_string())?;
+                self.rejected(
+                    &snafu::Report::from_error(&GenerateError::InsufficientValidity).to_string(),
+                )?;
                 self.reset(Step::ServerTls);
                 Ok(Step::ServerTls)
             }
@@ -173,7 +180,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             vec![FileSpec {
                 path: file::rooted_pki(&self.context.target_root, &self.context.pki_dir)?
                     .join("pending"),
-                owner: self.context.owners.root,
+                owner: self.context.root_owner,
                 mode: 0o700,
             }]
         } else {
@@ -183,7 +190,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             entries.push(FileSpec {
                 path: file::rooted_pki(&self.context.target_root, &self.context.pki_dir)?
                     .join("control-ca.crt"),
-                owner: self.context.owners.root,
+                owner: self.context.root_owner,
                 mode: 0o644,
             });
         }

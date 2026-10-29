@@ -158,8 +158,6 @@ pub fn import_certificate(bytes: &[u8]) -> Result<Certificate, ImportError> {
     let not_after = certificate.validity().not_after.to_datetime();
     let spki = certificate.public_key().raw.to_vec();
     let is_ca = certificate.is_ca();
-    let self_signed =
-        certificate.subject() == certificate.issuer() && certificate.verify_signature(None).is_ok();
     let ip_sans = certificate
         .subject_alternative_name()
         .context(InvalidExtensionSnafu)?
@@ -195,7 +193,6 @@ pub fn import_certificate(bytes: &[u8]) -> Result<Certificate, ImportError> {
         not_after,
         ip_sans,
         is_ca,
-        self_signed,
     })
 }
 
@@ -257,7 +254,9 @@ fn decode_pem(bytes: &[u8]) -> Result<(&str, Zeroizing<Vec<u8>>), ImportError> {
 
 fn from_pkcs8(der: &[u8]) -> Result<PrivateKey, ImportError> {
     PrivateKeyInfoRef::from_der(der).context(UnsupportedKeySnafu)?;
-    let key = KeyPair::try_from(&PrivatePkcs8KeyDer::from(der)).context(KeyAlgorithmSnafu)?;
+    let key = Zeroizing::new(
+        KeyPair::try_from(&PrivatePkcs8KeyDer::from(der)).context(KeyAlgorithmSnafu)?,
+    );
     Ok(PrivateKey::from_key_pair(&key))
 }
 

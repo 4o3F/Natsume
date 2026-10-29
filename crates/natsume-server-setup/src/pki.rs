@@ -25,7 +25,6 @@ pub struct Certificate {
     not_after: OffsetDateTime,
     ip_sans: Vec<IpAddr>,
     is_ca: bool,
-    self_signed: bool,
 }
 
 impl Certificate {
@@ -85,12 +84,6 @@ impl Certificate {
     #[must_use]
     pub fn is_ca(&self) -> bool {
         self.is_ca
-    }
-
-    /// Checks both issuer/subject equality and the signature against its own public key.
-    #[must_use]
-    pub fn is_self_signed(&self) -> bool {
-        self.self_signed
     }
 
     #[cfg(test)]
@@ -154,15 +147,16 @@ impl PrivateKey {
             KeyAlgorithm::Other
         };
         Self {
-            der: Zeroizing::new(key.serialize_der()),
+            der: Zeroizing::new(key.serialized_der().to_vec()),
             algorithm,
             spki: key.subject_public_key_info(),
         }
     }
 
-    fn key_pair(&self) -> Result<KeyPair, import::ImportError> {
+    fn key_pair(&self) -> Result<Zeroizing<KeyPair>, import::ImportError> {
         use snafu::ResultExt as _;
         KeyPair::try_from(&PrivatePkcs8KeyDer::from(self.pkcs8_der()))
+            .map(Zeroizing::new)
             .context(import::KeyAlgorithmSnafu)
     }
 }

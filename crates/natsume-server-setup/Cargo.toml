@@ -17,7 +17,7 @@ tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 natsume-server = { path = "../natsume-server" }
-rcgen = { workspace = true, features = ["pem", "x509-parser"] }
+rcgen = { workspace = true, features = ["pem", "x509-parser", "zeroize"] }
 x509-parser = { workspace = true, features = ["verify"] }
 pkcs8.workspace = true
 pkcs5.workspace = true
@@ -40,6 +40,7 @@ serde_json.workspace = true
 inquire.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "termios"] }
 tempfile.workspace = true
+signal-hook = "0.3.18"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tokio-rustls.workspace = true

@@ -90,19 +90,20 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
         let directory = file::rooted_pki(&self.context.target_root, &self.context.pki_dir)?;
         self.pki_directories.extend(file::ensure_directory(
             &directory,
-            self.context.owners.root,
+            self.context.root_owner,
             0o700,
         )?);
-        file::check_directory(&directory, self.context.owners.root, 0o700)?;
+        file::check_directory(&directory, self.context.root_owner, 0o700)?;
         let path = directory.join(name);
-        self.pki_files.push(file::create_new_file(
+        file::create_recorded_file(
             &FileSpec {
                 path: path.clone(),
-                owner: self.context.owners.root,
+                owner: self.context.root_owner,
                 mode,
             },
             contents,
-        )?);
+            &mut self.pki_files,
+        )?;
         Ok(path)
     }
 }

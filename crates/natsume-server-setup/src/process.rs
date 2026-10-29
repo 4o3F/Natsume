@@ -144,6 +144,12 @@ pub enum BootstrapExit {
 /// Service-user process launch or termination failure.
 #[derive(Debug, Snafu)]
 pub enum ProcessError {
+    /// Service-user commands require a successful host preflight.
+    #[snafu(
+        visibility(pub(crate)),
+        display("service account has not passed host preflight")
+    )]
+    NotPreflighted,
     /// The operating system could not launch the child.
     #[snafu(display("cannot launch service command {program}"))]
     Spawn {

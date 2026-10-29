@@ -30,6 +30,8 @@ pub(super) struct ScriptedInteraction {
     expected: VecDeque<(PromptId, Reply)>,
     pub notices: Vec<Notice>,
     pub summary_error: Option<InteractionError>,
+    pub summary_interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub signing_interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Pending file changed when the final summary is displayed.
     pub summary_changed_file: Option<PathBuf>,
     pub selections: Vec<Selection>,
@@ -44,6 +46,8 @@ impl ScriptedInteraction {
             expected: prompts.into(),
             notices: Vec::new(),
             summary_error: None,
+            summary_interrupt: None,
+            signing_interrupt: None,
             summary_changed_file: None,
             selections: Vec::new(),
             defaults: Vec::new(),
@@ -74,7 +78,15 @@ impl ScriptedInteraction {
 impl Interaction for ScriptedInteraction {
     fn show(&mut self, notice: &Notice) -> Result<(), InteractionError> {
         self.notices.push(notice.clone());
+        if matches!(notice, Notice::OfflineSigningInstructions { .. })
+            && let Some(flag) = &self.signing_interrupt
+        {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         if matches!(notice, Notice::InstallationSummary { .. }) {
+            if let Some(flag) = &self.summary_interrupt {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             if let Some(path) = self.summary_changed_file.take() {
                 fs::write(path, b"changed pending file")
                     .map_err(|source| InteractionError::Output { source })?;

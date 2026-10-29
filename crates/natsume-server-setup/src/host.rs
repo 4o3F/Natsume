@@ -1,7 +1,7 @@
 //! Injectable operating-system boundary for the first-install wizard.
 
 use crate::{
-    account::{AccountError, SERVICE_USER, ServiceAccount},
+    account::{SERVICE_USER, ServiceAccount},
     cli::ProbeCommand,
     health::{self, HealthError},
     pki::Certificate,
@@ -10,12 +10,16 @@ use crate::{
     process::{self, BootstrapExit, ProcessError},
     service::{self, ServiceAction, ServiceError},
 };
-use snafu::{ResultExt as _, Snafu, ensure};
+use snafu::{OptionExt as _, ResultExt as _, Snafu, ensure};
 use std::{
     fs::File,
     io::{self, Read as _},
     net::SocketAddr,
     path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use time::OffsetDateTime;
@@ -30,6 +34,8 @@ const HEALTH_INTERVAL: Duration = Duration::from_millis(1500);
 
 /// System operations invoked by the wizard, excluding protected deployment-file publication.
 pub trait Host {
+    /// Reports whether the current installation transaction was interrupted.
+    fn interrupted(&self) -> bool;
     /// Checks host eligibility and reports the packaged service identity.
     ///
     /// # Errors
@@ -71,34 +77,57 @@ pub trait Host {
 /// Production adapter retaining the non-root service identity and a single-thread runtime.
 #[derive(Debug)]
 pub struct SystemHost {
-    account: ServiceAccount,
+    account: Option<ServiceAccount>,
+    account_name: String,
     runtime: tokio::runtime::Runtime,
+    interrupted: Arc<AtomicBool>,
+    signal_id: signal_hook::SigId,
 }
 
 impl SystemHost {
-    /// Resolves the service account and creates the runtime without evaluating wizard prerequisites.
+    /// Creates the runtime without looking up service accounts or evaluating host prerequisites.
     ///
     /// # Errors
-    /// Returns service-account lookup or runtime construction failures.
+    /// Returns runtime construction or interrupt-handler registration failures.
     pub fn new() -> Result<Self, HostError> {
-        let account = ServiceAccount::lookup(SERVICE_USER).context(AccountSnafu)?;
+        Self::with_account_name(SERVICE_USER)
+    }
+
+    fn with_account_name(account_name: &str) -> Result<Self, HostError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context(RuntimeSnafu)?;
-        Ok(Self { account, runtime })
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let signal_id =
+            signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&interrupted))
+                .context(SignalSnafu)?;
+        Ok(Self {
+            interrupted,
+            signal_id,
+            account: None,
+            account_name: account_name.into(),
+            runtime,
+        })
     }
+}
 
-    /// Borrows the packaged service identity used for file ownership and child processes.
-    #[must_use]
-    pub const fn account(&self) -> &ServiceAccount {
-        &self.account
+impl Drop for SystemHost {
+    fn drop(&mut self) {
+        signal_hook::low_level::unregister(self.signal_id);
     }
 }
 
 impl Host for SystemHost {
+    fn interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
+    }
+
     fn preflight(&mut self) -> Result<PreflightReport, PreflightError> {
-        preflight::evaluate(SystemFacts::collect())
+        self.account = None;
+        let report = preflight::evaluate(SystemFacts::collect(&self.account_name))?;
+        self.account = Some(report.account.clone());
+        Ok(report)
     }
     fn now(&self) -> OffsetDateTime {
         OffsetDateTime::now_utc()
@@ -127,10 +156,19 @@ impl Host for SystemHost {
         Ok(bytes)
     }
     fn probe(&mut self, command: ProbeCommand) -> Result<ProbeExit, ProcessError> {
-        process::run_probe(&self.account, command)
+        process::run_probe(
+            self.account
+                .as_ref()
+                .context(process::NotPreflightedSnafu)?,
+            command,
+        )
     }
     fn bootstrap(&mut self) -> Result<BootstrapExit, ProcessError> {
-        process::run_bootstrap(&self.account)
+        process::run_bootstrap(
+            self.account
+                .as_ref()
+                .context(process::NotPreflightedSnafu)?,
+        )
     }
     fn systemctl(&mut self, action: ServiceAction) -> Result<(), ServiceError> {
         service::systemctl(action)
@@ -145,6 +183,7 @@ impl Host for SystemHost {
             address,
             HEALTH_ATTEMPTS,
             HEALTH_INTERVAL,
+            || self.interrupted(),
         ))
     }
 }
@@ -169,11 +208,11 @@ pub enum InputError {
 /// Failure to construct the production operating-system adapter.
 #[derive(Debug, Snafu)]
 pub enum HostError {
-    /// The packaged service identity could not be resolved.
-    #[snafu(display("cannot resolve setup service account"))]
-    Account {
-        /// Original account lookup failure.
-        source: AccountError,
+    /// Installation cancellation could not obtain a SIGINT handler.
+    #[snafu(display("cannot register setup interrupt handler"))]
+    Signal {
+        /// Original signal registration failure.
+        source: io::Error,
     },
     /// Async health checks could not obtain a runtime.
     #[snafu(display("cannot create setup runtime"))]
@@ -190,22 +229,36 @@ mod tests {
 
     #[derive(Debug, Snafu)]
     enum TestError {
+        #[snafu(context(false), display("host construction failed"))]
+        Host { source: HostError },
         #[snafu(context(false), display("input fixture I/O failed"))]
         Io { source: io::Error },
         #[snafu(context(false), display("input fixture read failed"))]
         Input { source: InputError },
     }
 
-    fn host() -> Result<SystemHost, io::Error> {
-        Ok(SystemHost {
-            account: ServiceAccount {
-                name: SERVICE_USER.into(),
-                uid: 1,
-                gid: 1,
-                home: crate::config::STATE_DIRECTORY.into(),
-            },
-            runtime: tokio::runtime::Builder::new_current_thread().build()?,
-        })
+    fn host() -> Result<SystemHost, HostError> {
+        SystemHost::new()
+    }
+
+    #[test]
+    fn missing_service_account_does_not_prevent_host_construction() -> Result<(), TestError> {
+        let name = "natsume-setup-nonexistent-test-account";
+        assert!(matches!(
+            ServiceAccount::lookup(name),
+            Err(crate::account::AccountError::Missing)
+        ));
+        let mut host = SystemHost::with_account_name(name)?;
+        assert!(host.account.is_none());
+        assert!(matches!(
+            host.probe(ProbeCommand::Deployment),
+            Err(ProcessError::NotPreflighted)
+        ));
+        assert!(matches!(
+            host.bootstrap(),
+            Err(ProcessError::NotPreflighted)
+        ));
+        Ok(())
     }
 
     #[test]

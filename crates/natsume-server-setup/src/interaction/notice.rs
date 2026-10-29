@@ -454,3 +454,154 @@ impl Notice {
 
 pub(crate) const CA_VALIDITY: &str =
     "The Control CA must be valid now and cover the Gateway expiry.";
+
+/// Describes certificate policy classification without exposing internal enum formatting.
+pub(crate) fn certificate_policy(
+    role: Option<natsume_server::MaterialRole>,
+    rejection: Option<natsume_server::CertificateRejection>,
+) -> String {
+    let role = role.map_or("Deployment materials", material_role);
+    let reason = rejection.map_or("certificate validation failed", certificate_rejection);
+    format!("{role}: {reason}")
+}
+
+fn material_role(role: natsume_server::MaterialRole) -> &'static str {
+    use natsume_server::MaterialRole;
+    match role {
+        MaterialRole::ControlCa => "Control CA",
+        MaterialRole::TlsLeaf => "Server TLS certificate",
+        MaterialRole::TlsKey => "Server TLS private key",
+        MaterialRole::OriginCa => "Local Origin CA",
+        MaterialRole::LocalOriginRoot => "Local Origin trust anchor",
+    }
+}
+
+fn certificate_rejection(rejection: natsume_server::CertificateRejection) -> &'static str {
+    use natsume_server::CertificateRejection;
+    match rejection {
+        CertificateRejection::InvalidDer => "expected one complete DER certificate",
+        CertificateRejection::InvalidIdentity => {
+            "certificate and private key could not be loaded or paired"
+        }
+        CertificateRejection::NotCa => "certificate must have CA basic constraints",
+        CertificateRejection::MissingKeyCertSign => {
+            "CA must explicitly permit certificate signing (keyCertSign)"
+        }
+        CertificateRejection::NotP256 => "certificate and key must use ECDSA P-256",
+        CertificateRejection::TrustRootMismatch => "online CA differs from the public trust anchor",
+        CertificateRejection::IpNotCovered => {
+            "certificate IP SANs must cover every configured Server IP"
+        }
+        CertificateRejection::UntrustedIssuer => {
+            "certificate must be issued directly by the selected Control CA"
+        }
+        CertificateRejection::LeafNotCurrentlyValid => {
+            "Server certificate is expired or not yet valid"
+        }
+        CertificateRejection::NotServerAuth => {
+            "certificate must permit server authentication (serverAuth)"
+        }
+        CertificateRejection::ServerVerification => "Server TLS certificate verification failed",
+        CertificateRejection::InsufficientValidity => {
+            "certificate must remain valid through the Gateway expiry"
+        }
+        CertificateRejection::ExceedsControlCaValidity => {
+            "Server certificate must not outlive the Control CA"
+        }
+        CertificateRejection::NotCurrentlyValid => "CA is expired or not yet valid",
+        _ => "certificate validation failed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use natsume_server::{CertificateRejection, MaterialRole};
+
+    #[test]
+    fn every_material_role_has_an_english_description() {
+        for (role, expected) in [
+            (MaterialRole::ControlCa, "Control CA"),
+            (MaterialRole::TlsLeaf, "Server TLS certificate"),
+            (MaterialRole::TlsKey, "Server TLS private key"),
+            (MaterialRole::OriginCa, "Local Origin CA"),
+            (MaterialRole::LocalOriginRoot, "Local Origin trust anchor"),
+        ] {
+            assert_eq!(
+                certificate_policy(Some(role), None),
+                format!("{expected}: certificate validation failed")
+            );
+        }
+    }
+
+    #[test]
+    fn every_certificate_rejection_has_an_english_description() {
+        for (reason, expected) in [
+            (
+                CertificateRejection::InvalidDer,
+                "expected one complete DER certificate",
+            ),
+            (
+                CertificateRejection::InvalidIdentity,
+                "certificate and private key could not be loaded or paired",
+            ),
+            (
+                CertificateRejection::NotCa,
+                "certificate must have CA basic constraints",
+            ),
+            (
+                CertificateRejection::MissingKeyCertSign,
+                "CA must explicitly permit certificate signing (keyCertSign)",
+            ),
+            (
+                CertificateRejection::NotP256,
+                "certificate and key must use ECDSA P-256",
+            ),
+            (
+                CertificateRejection::TrustRootMismatch,
+                "online CA differs from the public trust anchor",
+            ),
+            (
+                CertificateRejection::IpNotCovered,
+                "certificate IP SANs must cover every configured Server IP",
+            ),
+            (
+                CertificateRejection::UntrustedIssuer,
+                "certificate must be issued directly by the selected Control CA",
+            ),
+            (
+                CertificateRejection::LeafNotCurrentlyValid,
+                "Server certificate is expired or not yet valid",
+            ),
+            (
+                CertificateRejection::NotServerAuth,
+                "certificate must permit server authentication (serverAuth)",
+            ),
+            (
+                CertificateRejection::ServerVerification,
+                "Server TLS certificate verification failed",
+            ),
+            (
+                CertificateRejection::InsufficientValidity,
+                "certificate must remain valid through the Gateway expiry",
+            ),
+            (
+                CertificateRejection::ExceedsControlCaValidity,
+                "Server certificate must not outlive the Control CA",
+            ),
+            (
+                CertificateRejection::NotCurrentlyValid,
+                "CA is expired or not yet valid",
+            ),
+        ] {
+            assert_eq!(
+                certificate_policy(None, Some(reason)),
+                format!("Deployment materials: {expected}")
+            );
+        }
+        assert_eq!(
+            certificate_policy(None, None),
+            "Deployment materials: certificate validation failed"
+        );
+    }
+}

@@ -5,15 +5,16 @@ use std::path::PathBuf;
 use snafu::{IntoError as _, ResultExt as _, Snafu};
 
 use super::{
-    file::{self, CreatedFile, DirectoryRemoval, FileError},
+    file::{self, CreatedFile, DirectoryRemoval, FileError, RollbackDirectory},
     plan::DeploymentPlan,
 };
 
 /// Creation records retained for rollback after subsequent installation steps fail.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ApplyReport {
     created_files: Vec<CreatedFile>,
     created_directories: Vec<PathBuf>,
+    rollback_directory: RollbackDirectory,
 }
 
 /// Removed paths, expected retained directories, and entries that rollback could not safely delete.
@@ -42,6 +43,18 @@ pub struct RollbackFailure {
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
 pub enum ApplyError {
+    /// Rollback storage could not be prepared before deployment file publication.
+    #[snafu(display("cannot prepare rollback storage: {}", path.display()))]
+    PrepareRollback {
+        /// Rejected quarantine path.
+        path: PathBuf,
+        /// Original preparation or filesystem compatibility failure.
+        source: FileError,
+        /// No deployment files have been written.
+        rollback: Box<RollbackOutcome>,
+        /// Creation records retained after the completed rollback for the owning wizard.
+        report: Option<Box<ApplyReport>>,
+    },
     /// A planned directory could not be created or safely reused.
     #[snafu(display("cannot ensure deployment directory: {}", path.display()))]
     EnsureDirectory {
@@ -51,6 +64,8 @@ pub enum ApplyError {
         source: FileError,
         /// Results of reversing entries created before this failure.
         rollback: Box<RollbackOutcome>,
+        /// Creation records retained after the completed rollback for the owning wizard.
+        report: Option<Box<ApplyReport>>,
     },
     /// A planned file could not be published.
     #[snafu(display("cannot create deployment file: {}", path.display()))]
@@ -61,7 +76,21 @@ pub enum ApplyError {
         source: FileError,
         /// Results of reversing entries created before this failure.
         rollback: Box<RollbackOutcome>,
+        /// Creation records retained after the completed rollback for the owning wizard.
+        report: Option<Box<ApplyReport>>,
     },
+}
+
+impl ApplyError {
+    /// Transfers creation records without repeating the rollback already recorded by this error.
+    pub(crate) fn take_report(&mut self) -> Option<ApplyReport> {
+        let report = match self {
+            Self::PrepareRollback { report, .. }
+            | Self::EnsureDirectory { report, .. }
+            | Self::CreateFile { report, .. } => report,
+        };
+        report.take().map(|report| *report)
+    }
 }
 
 /// Ensures planned directories and publishes keys, trust anchors, then configuration.
@@ -69,8 +98,24 @@ pub enum ApplyError {
 /// # Errors
 /// Returns the failing step and rollback outcome when a filesystem operation fails.
 pub fn apply_plan(plan: &DeploymentPlan) -> Result<ApplyReport, ApplyError> {
-    let mut report = ApplyReport::default();
-    for directory in &plan.directories {
+    let keys = &plan.directories[3].path;
+    let quarantine =
+        RollbackDirectory::open(&plan.rollback_directory.path, plan.rollback_directory.owner)
+            .and_then(|quarantine| {
+                quarantine.check_filesystem(keys)?;
+                Ok(quarantine)
+            })
+            .context(PrepareRollbackSnafu {
+                path: &plan.rollback_directory.path,
+                rollback: Box::new(RollbackOutcome::default()),
+                report: None,
+            })?;
+    let mut report = ApplyReport {
+        created_files: Vec::new(),
+        created_directories: Vec::new(),
+        rollback_directory: quarantine,
+    };
+    for directory in plan.prerequisites.iter().chain(&plan.directories) {
         match file::ensure_directory(&directory.path, directory.owner, directory.mode) {
             Ok(created) => report.created_directories.extend(created),
             Err(source) => {
@@ -78,18 +123,31 @@ pub fn apply_plan(plan: &DeploymentPlan) -> Result<ApplyReport, ApplyError> {
                 return Err(source).context(EnsureDirectorySnafu {
                     path: &directory.path,
                     rollback: Box::new(rollback(&report)),
+                    report: Some(Box::new(report)),
                 });
             }
         }
     }
+    if let Err(source) = report.rollback_directory.check_filesystem(keys) {
+        return Err(source).context(PrepareRollbackSnafu {
+            path: &plan.rollback_directory.path,
+            rollback: Box::new(rollback(&report)),
+            report: Some(Box::new(report)),
+        });
+    }
     for planned in &plan.files {
-        match file::create_new_file(&planned.spec, &planned.contents) {
-            Ok(created) => report.created_files.push(created),
+        match file::create_recorded_file(
+            &planned.spec,
+            &planned.contents,
+            &mut report.created_files,
+        ) {
+            Ok(()) => {}
             Err(source) => {
                 tracing::error!(path = ?planned.spec.path, "cannot create deployment file");
                 return Err(source).context(CreateFileSnafu {
                     path: &planned.spec.path,
                     rollback: Box::new(rollback(&report)),
+                    report: Some(Box::new(report)),
                 });
             }
         }
@@ -101,20 +159,24 @@ pub fn apply_plan(plan: &DeploymentPlan) -> Result<ApplyReport, ApplyError> {
 #[must_use]
 pub fn rollback(report: &ApplyReport) -> RollbackOutcome {
     let mut outcome = RollbackOutcome::default();
-    for created in report.created_files.iter().rev() {
-        match file::remove_created_file(created) {
-            Ok(()) => outcome.removed.push(created.path.clone()),
-            Err(source) => {
-                tracing::warn!(path = ?created.path, "cannot roll back deployment file");
-                outcome.failures.push(
-                    RollbackFailureSnafu {
-                        path: &created.path,
-                    }
-                    .into_error(source),
-                );
+    {
+        let quarantine = &report.rollback_directory;
+        for created in report.created_files.iter().rev() {
+            match quarantine.remove_deployment_file(created) {
+                Ok(()) => outcome.removed.push(created.path.clone()),
+                Err(source) => {
+                    tracing::warn!(path = ?created.path, "cannot roll back deployment file");
+                    outcome.failures.push(
+                        RollbackFailureSnafu {
+                            path: &created.path,
+                        }
+                        .into_error(source),
+                    );
+                }
             }
         }
     }
+    report.rollback_directory.cleanup();
     for path in report.created_directories.iter().rev() {
         match file::remove_created_directory(path) {
             Ok(DirectoryRemoval::Removed) => outcome.removed.push(path.clone()),
@@ -134,7 +196,7 @@ pub fn rollback(report: &ApplyReport) -> RollbackOutcome {
 mod tests {
     use std::{
         error::Error as _,
-        fs, io,
+        fs,
         os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink},
     };
 
@@ -147,6 +209,66 @@ mod tests {
         },
         pki::import,
     };
+
+    #[test]
+    fn quarantine_device_mismatch_rejects_before_deployment_writes() -> Result<(), TestError> {
+        let fixture = Fixture::new()?;
+        let plan = fixture.plan()?;
+        file::tests::mismatch_rollback_device(fs::metadata(fixture.root.path())?.dev());
+        assert!(matches!(
+            apply_plan(&plan),
+            Err(ApplyError::PrepareRollback {
+                source: FileError::RollbackFilesystem { .. },
+                ..
+            })
+        ));
+        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert!(!plan.directories[0].path.exists());
+        assert!(!plan.rollback_directory.path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn quarantine_creation_failure_rejects_before_deployment_writes() -> Result<(), TestError> {
+        let fixture = Fixture::new()?;
+        let plan = fixture.plan()?;
+        fs::write(&plan.rollback_directory.path, b"occupied")?;
+        assert!(matches!(
+            apply_plan(&plan),
+            Err(ApplyError::PrepareRollback { .. })
+        ));
+        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert!(!plan.directories[0].path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn protected_etc_on_separate_device_rolls_back_without_quarantine() -> Result<(), TestError> {
+        let fixture = Fixture::new()?;
+        let _device = file::tests::separate_device(fixture.path("/etc"));
+        let report = apply_plan(&fixture.plan()?)?;
+        assert_ne!(
+            report.created_files[0].device,
+            report.created_files[6].device
+        );
+        let outcome = rollback(&report);
+        assert!(outcome.failures.is_empty(), "{outcome:?}");
+        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn report_drop_preserves_quarantine_name_reused_after_rollback() -> Result<(), TestError> {
+        let fixture = Fixture::new()?;
+        let plan = fixture.plan()?;
+        let report = apply_plan(&plan)?;
+        let outcome = rollback(&report);
+        assert!(outcome.failures.is_empty(), "{outcome:?}");
+        fs::create_dir(&plan.rollback_directory.path)?;
+        drop(report);
+        assert!(plan.rollback_directory.path.is_dir());
+        Ok(())
+    }
 
     #[test]
     fn applies_complete_materials_and_metadata_then_rolls_back_in_reverse() -> Result<(), TestError>
@@ -204,6 +326,29 @@ mod tests {
     }
 
     #[test]
+    fn published_sync_failure_rolls_back_entire_plan() -> Result<(), TestError> {
+        for count in 0..7 {
+            let fixture = Fixture::new()?;
+            let plan = fixture.plan()?;
+            let _fault = file::tests::fail_publication_sync_after(count);
+            let Err(error) = apply_plan(&plan) else {
+                panic!("directory fsync fault must reject apply")
+            };
+            let ApplyError::CreateFile {
+                source, rollback, ..
+            } = error
+            else {
+                panic!("expected publication failure");
+            };
+            assert!(matches!(source, FileError::PublishedNotDurable { .. }));
+            assert!(rollback.failures.is_empty(), "{rollback:?}");
+            assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+            assert_eq!(fs::read_dir(fixture.root.path())?.count(), 2);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn every_file_conflict_rolls_back_only_this_attempt() -> Result<(), TestError> {
         let fixture = Fixture::new()?;
         for index in 0..7 {
@@ -227,6 +372,7 @@ mod tests {
                 path,
                 source,
                 rollback,
+                ..
             } = error
             else {
                 panic!("expected file conflict, got {error:?}");
@@ -266,6 +412,7 @@ mod tests {
             path,
             source,
             rollback,
+            ..
         } = error
         else {
             panic!("expected directory failure, got {error:?}");
@@ -290,7 +437,7 @@ mod tests {
         let database = fixture.write(config::DATABASE, b"initialized database")?;
         let root_key = fixture.write(config::ROOT_KEY, b"bootstrap key")?;
         let keys = fixture.path(config::KEYS_DIRECTORY);
-        fs::set_permissions(&keys, fs::Permissions::from_mode(0o750))?;
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o700))?;
         let before = fs::metadata(&keys)?;
         for _ in 0..2 {
             let report = apply_plan(&fixture.plan()?)?;
@@ -410,13 +557,18 @@ mod tests {
         fs::create_dir_all(fixture.path("/var/lib/natsume-server"))?;
         let keys = fixture.path(config::KEYS_DIRECTORY);
         symlink(outside.path(), &keys)?;
-        let plan = fixture.plan()?;
+        let plan = {
+            fs::remove_file(&keys)?;
+            let plan = fixture.plan()?;
+            symlink(outside.path(), &keys)?;
+            plan
+        };
         let Err(error) = apply_plan(&plan) else {
             panic!("symlink keys directory must reject apply");
         };
         assert!(matches!(
             error,
-            ApplyError::EnsureDirectory {
+            ApplyError::PrepareRollback {
                 source: FileError::SymlinkRejected { .. },
                 ..
             }
@@ -427,11 +579,8 @@ mod tests {
     }
 
     #[test]
-    fn file_permission_failure_retains_io_source_and_rolls_back() -> Result<(), TestError> {
-        if rustix::process::geteuid().is_root() {
-            tracing::info!("permission-denial fixture requires an unprivileged user");
-            return Ok(());
-        }
+    fn directory_metadata_change_after_planning_is_rejected_and_rolls_back() -> Result<(), TestError>
+    {
         let fixture = Fixture::new()?;
         let plan = fixture.plan()?;
         let trust = fixture.path("/etc/natsume/trust");
@@ -442,23 +591,18 @@ mod tests {
         let Err(error) = result else {
             panic!("read-only trust directory must reject apply");
         };
-        assert!(
-            error
-                .source()
-                .and_then(std::error::Error::source)
-                .is_some_and(<dyn std::error::Error>::is::<io::Error>)
-        );
-        let ApplyError::CreateFile {
+        assert!(error.source().is_some());
+        let ApplyError::EnsureDirectory {
             path,
             source,
             rollback,
+            ..
         } = error
         else {
-            panic!("expected permission failure, got {error:?}");
+            panic!("expected directory metadata failure, got {error:?}");
         };
-        assert_eq!(path, fixture.path(config::CONTROL_CA_TRUST));
-        assert!(matches!(source, FileError::Io { source, .. }
-            if source.kind() == io::ErrorKind::PermissionDenied));
+        assert_eq!(path, trust);
+        assert!(matches!(source, FileError::DirectoryMetadata { .. }));
         assert!(rollback.failures.is_empty(), "{rollback:?}");
         assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
         assert!(fixture.path(config::STATE_DIRECTORY).is_dir());

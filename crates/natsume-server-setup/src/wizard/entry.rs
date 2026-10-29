@@ -13,6 +13,11 @@ use crate::{
 impl<I: Interaction, H: Host> Wizard<'_, I, H> {
     pub(super) fn execute(&mut self) -> Result<WizardOutcome, WizardFailure> {
         let report = self.host.preflight()?;
+        self.check_interrupted()?;
+        self.service_owner = Some(crate::deployment::file::Ownership {
+            uid: report.account.uid,
+            gid: report.account.gid,
+        });
         if !report.warnings.is_empty() {
             self.interaction.show(&Notice::PreflightWarnings {
                 warnings: report.warnings,
@@ -32,7 +37,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             &self.context.target_root,
             &self.context.pki_dir,
             self.host.now(),
-            self.context.owners.root,
+            self.context.root_owner,
         )?;
         let mut step = if let Some(pending) = &self.pending {
             self.interaction.show(&Notice::PendingRequestFound {
@@ -46,9 +51,17 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             if step == Step::Finish {
                 return Ok(WizardOutcome::Installed(self.finish()));
             }
+            self.check_interrupted()?;
             if step == Step::Apply && matches!(self.answers.tls, Some(TlsMaterial::Request { .. }))
             {
-                return self.publish_request();
+                let request = self.publish_request()?;
+                if self.host.interrupted() {
+                    request.remove(&self.context.target_root)?;
+                    return super::CancelledSnafu.fail();
+                }
+                return Ok(WizardOutcome::PendingSignature {
+                    csr_path: request.csr_path(),
+                });
             }
             let result = match step {
                 Step::Parameters(field) => self.parameter(field),
@@ -67,7 +80,10 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 Step::Finish => unreachable!("finish is handled before advancing"),
             };
             match result {
-                Ok(next) => step = next,
+                Ok(next) => {
+                    self.check_interrupted()?;
+                    step = next;
+                }
                 Err(WizardFailure::Back) if self.applied.is_none() && !self.revealed => {
                     step = self.back(step)?;
                 }
@@ -82,7 +98,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             unreachable!("resume starts with a pending request")
         };
         if let Err(error) = pending.accept_signed(&certificate) {
-            self.rejected(&error.to_string())?;
+            self.rejected(&snafu::Report::from_error(&error).to_string())?;
             return Ok(Step::SignedCertificate);
         }
         self.answers.params = Some(pending.params().clone());
@@ -165,7 +181,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
         Ok(previous)
     }
 
-    fn publish_request(&mut self) -> Result<WizardOutcome, WizardFailure> {
+    fn publish_request(&mut self) -> Result<PendingRequest, WizardFailure> {
         let Some(TlsMaterial::Request { key, csr }) = &self.answers.tls else {
             unreachable!("pending publication requires a signing request");
         };
@@ -176,16 +192,26 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             &self.answers.control_ca().certificate,
             key,
             csr,
-            self.context.owners.root,
+            self.context.root_owner,
         )?;
-        let csr_path = request.csr_path();
-        if let Err(source) = self.interaction.show(&Notice::OfflineSigningInstructions {
-            csr_path: csr_path.clone(),
-            control_ca_path: request.control_ca_path(),
-        }) {
+        if self.host.interrupted() {
             request.remove(&self.context.target_root)?;
+            return super::CancelledSnafu.fail();
+        }
+        let result = self.interaction.show(&Notice::OfflineSigningInstructions {
+            csr_path: request.csr_path(),
+            control_ca_path: request.control_ca_path(),
+        });
+        if let Err(source) = result {
+            if let Err(error) = request.remove(&self.context.target_root) {
+                tracing::error!(error = %snafu::Report::from_error(error), "cannot remove pending request after interaction failure");
+            }
             return Err(source.into());
         }
-        Ok(WizardOutcome::PendingSignature { csr_path })
+        if self.host.interrupted() {
+            request.remove(&self.context.target_root)?;
+            return super::CancelledSnafu.fail();
+        }
+        Ok(request)
     }
 }

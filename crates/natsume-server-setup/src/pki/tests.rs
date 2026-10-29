@@ -46,6 +46,11 @@ enum TestError {
     Pem { source: pkcs8::der::pem::Error },
 }
 
+fn is_self_signed(certificate: &Certificate) -> Result<bool, TestError> {
+    let parsed = certificate.parsed()?;
+    Ok(parsed.subject() == parsed.issuer() && parsed.verify_signature(None).is_ok())
+}
+
 #[test]
 fn certificate_and_plaintext_pkcs8_format_matrix() -> Result<(), TestError> {
     let key = KeyPair::generate()?;
@@ -54,7 +59,7 @@ fn certificate_and_plaintext_pkcs8_format_matrix() -> Result<(), TestError> {
     let imported = import_certificate(cert.der())?;
     assert_eq!(import_certificate(cert.pem().as_bytes())?, imported);
     assert_eq!(imported.ip_sans(), vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
-    assert!(imported.is_self_signed());
+    assert!(is_self_signed(&imported)?);
     assert!(!imported.is_ca());
     assert!(!imported.subject().is_empty());
     assert_eq!(import_certificate(imported.to_pem().as_bytes())?, imported);
@@ -116,7 +121,7 @@ fn generated_ca_and_leaf_profiles() -> Result<(), TestError> {
     let now = now();
     let (ca, ca_key) = generate::generate_ca("Control CA", "Example", now)?;
     assert!(ca.is_ca());
-    assert!(ca.is_self_signed());
+    assert!(is_self_signed(&ca)?);
     assert!(ca_key.matches(&ca));
     assert_eq!(ca_key.algorithm(), KeyAlgorithm::P256);
     assert_eq!(ca.not_before(), now - Duration::hours(1));
@@ -145,7 +150,7 @@ fn generated_ca_and_leaf_profiles() -> Result<(), TestError> {
     assert!(key.matches(&leaf));
     assert!(!key.matches(&ca));
     assert!(!leaf.is_ca());
-    assert!(!leaf.is_self_signed());
+    assert!(!is_self_signed(&leaf)?);
     assert_eq!(leaf.not_before(), now - Duration::hours(1));
     assert_eq!(leaf.not_after(), now + Duration::days(365));
     assert_eq!(leaf.ip_sans(), ips());
@@ -245,7 +250,7 @@ fn leaf_expiry_is_capped_by_ca_and_must_cover_gateway() -> Result<(), TestError>
 #[test]
 fn csr_requests_ip_sans_and_server_auth() -> Result<(), TestError> {
     let (key, request) = generate::create_csr(&ips())?;
-    let parsed = rcgen::CertificateSigningRequestParams::from_der(&request.der().into())?;
+    let parsed = rcgen::CertificateSigningRequestParams::from_pem(request.pem())?;
     assert_eq!(key.algorithm(), KeyAlgorithm::P256);
     assert_eq!(
         parsed.params.subject_alt_names,

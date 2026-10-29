@@ -23,9 +23,9 @@ sudo apt install ./natsume-server_<version>_amd64.deb
 sudo natsume-server-setup
 ```
 
-Both stdin and stdout must be TTYs; bootstrap also needs the inherited controlling terminal. The package must have supplied `/usr/bin/natsume-server`, the `natsume-server` account and state directory. Setup reports unsynchronized or unknown clock status and requires confirmation to continue. Check time, networking and the external HTTPS DOMjudge beforehand; setup does not configure these services or the firewall. Package maintainer scripts never invoke setup or bootstrap.
+Stdin, stdout and stderr must all be TTYs; bootstrap also needs the inherited controlling terminal. Do not redirect stderr: prompts and answer context are rendered there. Read diagnostics on the terminal without recording sessions containing key exports. The package must have supplied `/usr/bin/natsume-server`, the `natsume-server` account and state directory. Setup reports unsynchronized or unknown clock status and requires confirmation to continue. Check time, networking and the external HTTPS DOMjudge beforehand; setup does not configure these services or the firewall. Package maintainer scripts never invoke setup or bootstrap.
 
-`--pki-dir` selects an absolute administrator PKI directory, default `/root/natsume-pki`; for example, use `sudo natsume-server-setup --pki-dir /root/contest-pki` instead, consistently across CSR runs. It is root-owned, mode `0700`, separate from service keys. Existing directory metadata must be safe; existing files are not overwritten. There is no answer-file or noninteractive mode.
+`--pki-dir` selects an absolute administrator PKI directory, default `/root/natsume-pki`; for example, use `sudo natsume-server-setup --pki-dir /root/contest-pki` instead, consistently across CSR runs. It is root-owned, mode `0700`, separate from service keys. Existing directory metadata must match the required ownership and exact modes; existing files are not overwritten. There is no answer-file or noninteractive mode.
 
 Prompts are in English. Enter one to sixteen distinct Server IPs separated by commas, HTTPS port `1024–65535` (default `8443`), Gateway hostname, canonical DOMjudge HTTPS origin, contest end and Gateway expiry. Timestamps use RFC 3339 UTC ending in `Z`; Gateway expiry defaults to contest end plus one day, must be future and at least `contest_end + 86400s`. The first IP is used for Client configuration and health checks. All IPs must appear in the leaf's IP SANs. IPv4-only input listens on `0.0.0.0`; any IPv6 input selects `[::]`. Verify mixed-family reachability in a VM.
 
@@ -72,7 +72,7 @@ The wizard attempts to clear the terminal scrollback after each export. Prompts,
 | `keys/origin-ca-key.pk8`, `keys/server-tls-key.pk8` | `natsume-server:natsume-server` | `0600`, unencrypted PKCS#8 DER |
 | Administrator PKI directory | `root:root` | `0700` |
 
-Origin CA DER is identical to the decoded public `local-origin-ca.crt`. Publication orders keys, trust, then configuration. Each file uses a same-directory temporary file, metadata setting, fsync and non-overwriting atomic publication, rejecting symlinks in deployment paths. This is single-file atomicity, not a power-loss transaction across the entire set.
+Origin CA DER is identical to the decoded public `local-origin-ca.crt`. Publication orders keys, trust, then configuration. Each file uses a same-directory temporary file, metadata setting, fsync and non-overwriting atomic publication, rejecting symlinks in deployment paths. Existing managed directories are checked through no-follow handles before confirmation and again during publication. `/etc` must be root-owned without group/other write access; `/var/lib/natsume-server` must match the packaged service ownership and `0750`. This is single-file atomicity, not a power-loss transaction across the entire set.
 
 ## Offline CSR and continuation
 
@@ -83,7 +83,7 @@ With CSR selected, the first run confirms the request plan and writes only `<pki
 - `control-ca.crt`: expected issuer certificate.
 - `request.toml`: parameters, format version, CA certificate/SPKI hashes and CSR public-key hash; no private key or passphrase.
 
-It does not collect Origin CA materials or write system deployment inputs in this phase, and returns `PendingSignature` with exit code **0**. Send only the public CSR, issuer certificate and request parameters to the offline CA. Sign directly with that Control CA, preserving all IP SANs, digitalSignature and serverAuth, covering Gateway expiry without exceeding CA validity. The runbook provides [offline OpenSSL commands](../../docs/operations-deployment.zh-CN.md#a10-离线-ca-签发-setup-生成的-csr).
+It does not collect Origin CA materials or write system deployment inputs in this phase, and returns `PendingSignature` with exit code **0**. Ctrl-C during publication or the signing instructions removes only the new pending request and exits as aborted; cancellation while resuming preserves the existing pending request. Send only the public CSR, issuer certificate and request parameters to the offline CA. Sign directly with that Control CA, preserving all IP SANs, digitalSignature and serverAuth, covering Gateway expiry without exceeding CA validity. The runbook provides [offline OpenSSL commands](../../docs/operations-deployment.zh-CN.md#a10-离线-ca-签发-setup-生成的-csr).
 
 Rerun the same command with the same `--pki-dir`. Setup revalidates pending ownership, permissions, parameters and hashes, asks for the signed leaf path, verifies issuer/signature/key/IPs, then collects Origin CA materials and presents the complete plan. Full certificate policy is checked before deployment. It does not ask for deployment parameters or Control CA again. Successful installation removes the four unchanged pending files and removes the directory if empty; unrelated entries are preserved. Failure before health success keeps the pending request for retry. To change pending parameters, deliberately discard the protected pending directory and start a new request; do not edit its record or replace its key.
 
@@ -97,7 +97,9 @@ After health succeeds, `<pki-dir>/handoff/<YYYYMMDDTHHMMSSZ>/` contains Client `
 
 ## Failure, cancellation and exit status
 
-The installation commits when HTTPS health passes. Earlier ordinary failures attempt to stop the service, disable it if this run enabled it, and remove only this attempt's unchanged deployment files, saved CA exports and newly created empty directories. Changed files and nonempty directories are preserved and cleanup failures are reported. Setup never deletes the database or `server-root.key`. A rolled-back retry can therefore skip completed bootstrap. Discard every CA private key revealed during an aborted attempt and generate fresh keys; a terminal export cannot be recalled.
+The installation commits when HTTPS health passes. Before that point, Ctrl-C is handled during prompts, child processes and health checks; setup waits for interrupted child processes to exit, then rolls back. Earlier ordinary failures attempt to stop the service, disable it if this run enabled it, and remove only this attempt's unchanged deployment files, saved CA exports and newly created empty directories. Changed files and nonempty directories are preserved and cleanup failures are reported. Setup never deletes the database or `server-root.key`. A rolled-back retry can therefore skip completed bootstrap. Discard every CA private key revealed during an aborted attempt and generate fresh keys; a terminal export cannot be recalled.
+
+Before publishing deployment files, setup creates or verifies `<target-root>/var/lib/natsume-server-setup-rollback/` (root:root `0700`), retains its directory handle, and checks that it shares the keys directory's filesystem. Planning checks existing directory metadata and mount compatibility before confirmation. A preparation failure rejects installation before deployment writes. Rollback uses actual parent ownership and permissions: root-owned directories without group/other write permission (including `/etc` and administrator PKI storage) use fd device/inode/SHA-256 validation followed by same-directory `unlinkat`, without allocating quarantine entries. Service-writable directories use quarantine isolation before validation and deletion. Thus `/etc` may be on another filesystem; keys and quarantine must share one. Modified isolated objects are restored without overwriting the original path; restoration conflicts retain the object in quarantine and report both paths. An empty quarantine created by this attempt is removed after rollback (or when its report is dropped).
 
 After health success, handoff export, summary display or pending cleanup failures are logged without uninstalling the working deployment; exit remains 0. Follow the reported fallback to create the public Client handoff manually. Do not delete deployed inputs to force setup to run again. Interrupted power or process termination may leave partial inputs; inspect and recover manually before retrying.
 
@@ -105,11 +107,15 @@ After health success, handoff export, summary display or pending cleanup failure
 | --- | --- |
 | `0` | Installed, or CSR exported and awaiting signature (`PendingSignature`) |
 | `1` | Prerequisite, material, filesystem, probe, bootstrap, service or health failure |
-| `2` | Explicit abort / interactive Ctrl-C cancellation, or invalid CLI arguments |
+| `2` | Explicit abort / Ctrl-C cancellation, or invalid CLI arguments |
 
 Esc navigates back before publication/key revelation where supported; at the initial step it cancels. Inspect rollback diagnostics even after cancellation; exit 2 does not establish that all cleanup succeeded.
 
 The hidden `probe bootstrap` and `probe deployment` subcommands are internal, read-only checks requiring the `natsume-server` effective UID (root is rejected). They load the fixed Server configuration. Their protocol is `0` initialized/deployment passed, `10` database needs bootstrap, `11` database missing, `1` check/identity failure, `2` argument error. They do not offer a public status or repair command.
+
+## Security limitations
+
+Setup-owned secret buffers (PKCS#8 input/export material, planned key contents and rollback read buffers), setup temporary rcgen KeyPair serialization buffers, and the Server deployment facade's temporary P-256-check KeyPair serialization buffer are erased on drop using zeroization guards, including error returns. Setup issuers borrow guarded keys. rcgen's `Zeroize` implementation erases serialized DER only; cryptographic backend internal key copies and parser/transport library intermediates remain outside this tool's erasure control. `GatewayComponent::validate_der` creates a temporary runtime issuer whose KeyPair is exposed only by an immutable rcgen accessor: its owned serialized DER is not explicitly erased by setup. The serve runtime's long-lived issuer is unchanged and outside this phase's scope. inquire's intermediate password input/confirmation copies also remain outside this tool's erasure control. Terminal scrollback clearing depends on terminal support.
 
 ## Tests and acceptance
 

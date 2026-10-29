@@ -9,7 +9,13 @@ use crate::{
     process::{BootstrapExit, ProcessError},
     service::{ServiceAction, ServiceError},
 };
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use zeroize::Zeroizing;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -23,6 +29,8 @@ pub(super) enum Call {
 }
 
 pub(super) struct FakeHost {
+    pub interrupted: Arc<AtomicBool>,
+    pub interrupt_after: Option<Call>,
     pub now: OffsetDateTime,
     pub preflight: Option<Result<PreflightReport, PreflightError>>,
     pub warnings: Vec<PreflightWarning>,
@@ -38,6 +46,8 @@ pub(super) struct FakeHost {
 impl FakeHost {
     pub fn new(now: OffsetDateTime) -> Self {
         Self {
+            interrupted: Arc::new(AtomicBool::new(false)),
+            interrupt_after: None,
             now,
             preflight: None,
             warnings: Vec::new(),
@@ -49,6 +59,12 @@ impl FakeHost {
             bootstrap_root: None,
             calls: Vec::new(),
         }
+    }
+    fn record_call(&mut self, call: Call) {
+        if self.interrupt_after.as_ref() == Some(&call) {
+            self.interrupted.store(true, Ordering::SeqCst);
+        }
+        self.calls.push(call);
     }
     pub fn input(&mut self, path: &str, bytes: &[u8]) {
         self.inputs
@@ -75,8 +91,11 @@ impl FakeHost {
 }
 
 impl Host for FakeHost {
+    fn interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
+    }
     fn preflight(&mut self) -> Result<PreflightReport, PreflightError> {
-        self.calls.push(Call::Preflight);
+        self.record_call(Call::Preflight);
         self.preflight.take().unwrap_or_else(|| {
             Ok(PreflightReport {
                 warnings: self.warnings.clone(),
@@ -93,7 +112,7 @@ impl Host for FakeHost {
         self.now
     }
     fn read_input(&mut self, path: &Path) -> Result<Zeroizing<Vec<u8>>, InputError> {
-        self.calls.push(Call::Read(path.into()));
+        self.record_call(Call::Read(path.into()));
         let Some(bytes) = self.inputs.get(path) else {
             return Err(InputError::Read {
                 source: io::Error::from(io::ErrorKind::NotFound),
@@ -105,7 +124,7 @@ impl Host for FakeHost {
         Ok(bytes.clone())
     }
     fn probe(&mut self, command: ProbeCommand) -> Result<ProbeExit, ProcessError> {
-        self.calls.push(Call::Probe(command));
+        self.record_call(Call::Probe(command));
         let Some((expected, result)) = self.probes.pop_front() else {
             panic!("unexpected probe call")
         };
@@ -113,7 +132,7 @@ impl Host for FakeHost {
         result
     }
     fn bootstrap(&mut self) -> Result<BootstrapExit, ProcessError> {
-        self.calls.push(Call::Bootstrap);
+        self.record_call(Call::Bootstrap);
         if let Some(root) = &self.bootstrap_root {
             for path in [config::DATABASE, config::ROOT_KEY] {
                 fs::write(
@@ -132,7 +151,7 @@ impl Host for FakeHost {
         result
     }
     fn systemctl(&mut self, action: ServiceAction) -> Result<(), ServiceError> {
-        self.calls.push(Call::Systemctl(action));
+        self.record_call(Call::Systemctl(action));
         if let Some((expected, result)) = self.services.pop_front() {
             assert_eq!(action, expected, "wrong systemctl operation");
             result
@@ -145,7 +164,7 @@ impl Host for FakeHost {
         _control_ca: &Certificate,
         address: SocketAddr,
     ) -> Result<(), HealthError> {
-        self.calls.push(Call::Health(address));
+        self.record_call(Call::Health(address));
         self.health.take().unwrap_or(Ok(()))
     }
 }

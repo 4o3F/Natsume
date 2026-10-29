@@ -35,7 +35,7 @@ opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 percent-encoding.workspace = true
 prost.workspace = true
-rcgen = { workspace = true, features = ["x509-parser"] }
+rcgen = { workspace = true, features = ["x509-parser", "zeroize"] }
 resvg.workspace = true
 rpassword.workspace = true
 rustix.workspace = true

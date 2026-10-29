@@ -18,16 +18,25 @@ use std::net::SocketAddr;
 
 impl<I: Interaction, H: Host> Wizard<'_, I, H> {
     pub(super) fn apply(&mut self) -> Result<Step, WizardFailure> {
-        self.applied = Some(apply::apply_plan(self.answers.deployment_plan())?);
+        match apply::apply_plan(self.answers.deployment_plan()) {
+            Ok(report) => self.applied = Some(report),
+            Err(mut source) => {
+                self.applied = source.take_report();
+                return Err(source.into());
+            }
+        }
         Ok(Step::Bootstrap)
     }
 
     pub(super) fn bootstrap(&mut self) -> Result<Step, WizardFailure> {
         let status = self.host.probe(ProbeCommand::Deployment)?;
+        self.check_interrupted()?;
         if status != ProbeExit::Passed {
             return super::ProbeSnafu { status }.fail();
         }
-        match self.host.probe(ProbeCommand::Bootstrap)? {
+        let status = self.host.probe(ProbeCommand::Bootstrap)?;
+        self.check_interrupted()?;
+        match status {
             ProbeExit::Passed => {
                 self.interaction.show(&Notice::BootstrapSkipped)?;
                 return Ok(Step::Start);
@@ -37,12 +46,20 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
         }
         self.interaction.show(&Notice::BootstrapPasswordPolicy)?;
         for attempt in 0..3 {
-            let failure = match self.host.bootstrap() {
-                Ok(BootstrapExit::Succeeded) => return Ok(Step::Start),
+            let result = self.host.bootstrap();
+            let failure = match result {
+                Ok(BootstrapExit::Succeeded) => {
+                    self.check_interrupted()?;
+                    return Ok(Step::Start);
+                }
                 Ok(BootstrapExit::Failed { code }) => super::BootstrapSnafu { code }.build(),
                 Err(error) => error.into(),
             };
+            if self.host.interrupted() {
+                return Err(failure);
+            }
             let status = self.host.probe(ProbeCommand::Bootstrap)?;
+            self.check_interrupted()?;
             if status == ProbeExit::Passed {
                 return Ok(Step::Start);
             }
@@ -67,17 +84,26 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
     }
 
     pub(super) fn start(&mut self) -> Result<Step, WizardFailure> {
-        self.host.systemctl(ServiceAction::DaemonReload)?;
-        self.host.systemctl(ServiceAction::Enable)?;
+        let result = self.host.systemctl(ServiceAction::DaemonReload);
+        result?;
+        self.check_interrupted()?;
+        let result = self.host.systemctl(ServiceAction::Enable);
         self.enabled = true;
-        self.host.systemctl(ServiceAction::Start)?;
+        result?;
+        self.check_interrupted()?;
+        let result = self.host.systemctl(ServiceAction::Start);
+        result?;
+        self.check_interrupted()?;
         let params = self.answers.parameters();
         let Some(ip) = params.server_ips().first() else {
             unreachable!("validated parameters contain an IP")
         };
         let address = SocketAddr::new(*ip, params.https_port());
-        self.host
-            .wait_for_health(&self.answers.control_ca().certificate, address)?;
+        let result = self
+            .host
+            .wait_for_health(&self.answers.control_ca().certificate, address);
+        result?;
+        self.check_interrupted()?;
         Ok(Step::Finish)
     }
 
@@ -92,7 +118,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             &control.certificate,
             &origin.certificate,
             self.host.now(),
-            self.context.owners.root,
+            self.context.root_owner,
         );
         if let Err(error) = &handoff {
             tracing::error!(error = %snafu::Report::from_error(error), "Client handoff failed; deployment remains installed");
@@ -143,7 +169,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
     }
 
     pub(super) fn cleanup(&mut self, source: &mut WizardFailure) -> Option<WizardRollback> {
-        let system_writes = self.applied.is_some() || matches!(source, WizardFailure::Apply { .. });
+        let system_writes = self.applied.is_some();
         if !system_writes
             && self.pki_files.is_empty()
             && self.pki_directories.is_empty()
@@ -161,16 +187,15 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             {
                 outcome.service_failures.push(error);
             }
-            if let Some(applied) = &self.applied {
-                outcome.files = apply::rollback(applied);
-            }
-            if let WizardFailure::Apply {
-                source:
-                    ApplyError::EnsureDirectory { rollback, .. }
-                    | ApplyError::CreateFile { rollback, .. },
-            } = source
-            {
+            if let WizardFailure::Apply { source } = source {
+                let rollback = match source.as_mut() {
+                    ApplyError::PrepareRollback { rollback, .. }
+                    | ApplyError::EnsureDirectory { rollback, .. }
+                    | ApplyError::CreateFile { rollback, .. } => rollback,
+                };
                 outcome.files = std::mem::take(rollback.as_mut());
+            } else if let Some(applied) = &self.applied {
+                outcome.files = apply::rollback(applied);
             }
         }
         for created in self.pki_files.iter().rev() {

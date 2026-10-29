@@ -139,11 +139,12 @@ setup 在写系统路径前校验完整配置、证书/私钥配对、CA、Origi
 
 ### 2.7 用现有 Local Origin CA 签发 DOMjudge 上游证书（可选）
 
-本节保持手工，setup 不签发 DOMjudge 上游证书。DOMjudge 可以使用附录 A.3 或 setup 生成的 Local Origin CA（Gateway CA）。它使用独立叶子私钥；管理员须持有另行保存的加密 CA 私钥。以下沿用附录的 public/ 与 private/ 布局；若用 setup，先从 /etc/natsume/trust/local-origin-ca.crt 复制公共证书，并把保存的 origin-ca-key.pem 放到受限 private/local-origin-ca-key.pem，不从在线 DER 副本制作交接包。以下签发操作继续在 Natsume Server 上执行，先将 IP 换成实际 DOMjudge 上游地址：
+本节保持手工，setup 不签发 DOMjudge 上游证书。DOMjudge 可以使用附录 A.3 或 setup 生成的 Local Origin CA（Gateway CA）。它使用独立叶子私钥；管理员须持有另行保存的加密 CA 私钥。以下沿用附录的 public/ 与 private/ 布局；进入 root 管理终端后，使用安装时的 PKI 目录（默认 /root/natsume-pki 或 --pki-dir）。若用 setup，先在该目录创建 public/ 与 private/（0700），从 /etc/natsume/trust/local-origin-ca.crt 复制公共证书，并把保存的 origin-ca-key.pem 放到受限 private/local-origin-ca-key.pem，不从在线 DER 副本制作交接包。以下签发操作继续在 Natsume Server 上执行，先将 IP 换成实际 DOMjudge 上游地址：
 
 ~~~bash
+sudo -i
 umask 077
-NATSUME_PKI_DIR="$HOME/natsume-pki-2026"
+NATSUME_PKI_DIR='/root/natsume-pki' # 使用安装时的实际 PKI 目录（或 --pki-dir）
 NATSUME_DOMJUDGE_IP='192.0.2.20'
 cd "$NATSUME_PKI_DIR"
 mkdir -m 0700 domjudge
@@ -217,7 +218,7 @@ curl --fail --show-error --cacert /etc/natsume/trust/local-origin-ca.crt \
   https://192.0.2.20/
 ~~~
 
-随后将 Server config.toml 的 [runtime].domjudge_origin 设置为实际 HTTPS origin。第 7.3 节仍需把 Local Origin CA 加入 **Client 系统信任库**，并在信任库变更后重启 natsume-device-daemon.service，使 Caddy 重新加载信任。完成后再用不带 --cacert 的 curl 验证系统信任。
+完成本节后用 exit 返回原管理员终端。随后将 Server config.toml 的 [runtime].domjudge_origin 设置为实际 HTTPS origin。第 7.3 节仍需把 Local Origin CA 加入 **Client 系统信任库**，并在信任库变更后重启 natsume-device-daemon.service，使 Caddy 重新加载信任。完成后再用不带 --cacert 的 curl 验证系统信任。
 
 ## 3. 整理本机部署目录并下载 Release
 
@@ -269,7 +270,7 @@ getent passwd natsume-server
 
 预期架构 amd64、包已配置、服务账号存在。安装脚本初始化服务账号和目录等，不生成配置/CA、不初始化管理员、不自动启用或启动服务；缺少部署文件时允许通用包预装。
 
-setup 还要求 root、stdin/stdout 均为 TTY、可用的 controlling terminal、运行中的 systemd、amd64 和 Deb 创建的服务账号/目录。时钟未同步或状态未知时会警告并要求确认；应先修正时间。
+setup 还要求 root、stdin/stdout/stderr 均为 TTY、可用的 controlling terminal、运行中的 systemd、amd64 和 Deb 创建的服务账号/目录。时钟未同步或状态未知时会警告并要求确认；应先修正时间。不能重定向 stderr，其中包含提示和作答上下文；诊断请直接查看终端输出，不录制含密钥导出的终端会话。
 
 ~~~bash
 sudo natsume-server-setup
@@ -737,7 +738,7 @@ systemctl is-active natsume-server.service
 
 ~~~bash
 NATSUME_BACKUP_DIR="/var/backups/natsume/$(date -u +%Y%m%dT%H%M%SZ)"
-NATSUME_PKI_DIR="$HOME/natsume-pki-2026"
+NATSUME_PKI_DIR='/root/natsume-pki' # 使用安装时的实际 PKI 目录（或 --pki-dir）
 NATSUME_PRINT_DOCUMENTS_DIR="/var/lib/natsume-server/print-documents"
 sudo install -d -o root -g natsume-server -m 0710 /var/backups/natsume
 sudo install -d -o natsume-server -g natsume-server -m 0700 "$NATSUME_BACKUP_DIR"
@@ -760,7 +761,7 @@ sudo systemctl start natsume-server.service
 
 完整性应为 ok。源数据库由服务用户打开，避免产生 root 所有的运行状态文件；备份完成后目录和文件归 root 管理。归档包含 DB 一致副本、PDF 目录、vault root、Origin CA、TLS 和完整公共配置，缺一不可。使用 SQLite .backup 避免仅复制主库漏掉 WAL，依据 [SQLite Online Backup](https://www.sqlite.org/backup.html)。
 
-本流程的 CA 在 Server 本机生成，因此 pki.tar 另行保存管理员 PKI 目录中的加密私钥原件、证书和签发记录，供后续续签使用。备份期间暂停 PKI 签发操作；私钥口令仍由密码管理器保管。
+`NATSUME_PKI_DIR` 必须是安装时的 PKI 目录，默认 `/root/natsume-pki`；使用过 `--pki-dir` 则填入当时路径。`pki.tar` 保存该目录实际存在的内容，包括显式落盘的加密 CA 私钥备份、证书和签发记录；`handoff/` 只有公共交接材料，不能代替私钥备份。未选择落盘、由管理员另行保存的加密导出，以及导入 CA 的原件，须由管理员分别纳入备份并验证可解密。离线 Control CA 私钥与签发记录由离线 CA 保管方负责备份，本机归档不包含它们。备份期间暂停 PKI 签发操作；私钥口令与归档分开保管。
 
 用现场备份系统加密复制到独立存储，同时保存匹配 Deb。server-root.key 丢失等于 vault 秘密不可恢复，只备份数据库或重新 bootstrap 一个 key 都不能恢复旧凭据。
 
@@ -774,7 +775,7 @@ sudo systemctl start natsume-server.service
 4. 换主机时按目标服务 UID/GID 重设状态文件 owner，keys 和 PDF 目录 0700、秘密文件和 PDF 0600、公共配置和 CA root:root 0644。
 5. 检查数据库完整性和证书匹配。Server 启动会逐份核对已入队 PDF 的长度和摘要，缺失或损坏时拒绝启动；核对通过后，按 4.5、7.6 节验收已注册设备重连。**不要运行 bootstrap。**
 
-pki.tar 恢复到 Server 管理员的 PKI 目录，保持目录 0700、私钥文件 0600 和管理员归属，供后续签发使用；它不解包到 natsume-server 服务私有目录。
+pki.tar 恢复到安装时的 PKI 目录（默认 /root/natsume-pki 或原 --pki-dir），保持 root:root、目录 0700、私钥文件 0600，供后续签发使用；它不解包到 natsume-server 服务私有目录。管理员另存的副本和离线 Control CA 备份按各自保管流程恢复。
 
 只重置管理员密码时，在可信 TTY 和维护窗口运行：
 

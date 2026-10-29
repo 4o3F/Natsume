@@ -171,7 +171,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 .and_then(|bytes| import::import_certificate(&bytes).map_err(WizardFailure::from));
             match result {
                 Ok(certificate) => return Ok(certificate),
-                Err(error) => self.rejected(&error.to_string())?,
+                Err(error) => self.rejected(&snafu::Report::from_error(&error).to_string())?,
             }
         }
     }
@@ -190,7 +190,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             let bytes = match self.host.read_input(Path::new(&path)) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    self.rejected(&error.to_string())?;
+                    self.rejected(&snafu::Report::from_error(&error).to_string())?;
                     continue;
                 }
             };
@@ -198,7 +198,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 Ok(key) => return Ok(key),
                 Err(ImportError::PassphraseRequired) => {}
                 Err(error) => {
-                    self.rejected(&error.to_string())?;
+                    self.rejected(&snafu::Report::from_error(&error).to_string())?;
                     continue;
                 }
             }
@@ -211,7 +211,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 match import::import_private_key(&bytes, Some(&passphrase)) {
                     Ok(key) => return Ok(key),
                     Err(error @ ImportError::WrongPassphrase { .. }) => {
-                        self.rejected(&error.to_string())?;
+                        self.rejected(&snafu::Report::from_error(&error).to_string())?;
                         if attempt == 2 {
                             return Err(error.into());
                         }

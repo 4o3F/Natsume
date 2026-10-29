@@ -10,6 +10,7 @@ use x509_parser::{
     oid_registry::{OID_EC_P256, OID_KEY_TYPE_EC_PUBLIC_KEY},
     parse_x509_certificate,
 };
+use zeroize::Zeroizing;
 
 use crate::{component::gateway::GatewayComponent, config::ServerConfig, tls};
 
@@ -147,8 +148,9 @@ fn validate_origin_key(
     key_der: &[u8],
 ) -> Result<(), DeploymentFailure> {
     let public_key = origin.public_key();
-    let key =
-        KeyPair::try_from(&PrivatePkcs8KeyDer::from(key_der)).context(error::OriginKeySnafu)?;
+    let key = Zeroizing::new(
+        KeyPair::try_from(&PrivatePkcs8KeyDer::from(key_der)).context(error::OriginKeySnafu)?,
+    );
     if public_key.algorithm.algorithm != OID_KEY_TYPE_EC_PUBLIC_KEY
         || public_key
             .algorithm

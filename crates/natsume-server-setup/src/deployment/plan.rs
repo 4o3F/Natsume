@@ -8,11 +8,12 @@ use std::{
 use snafu::{ResultExt as _, Snafu, ensure};
 use zeroize::Zeroizing;
 
-use super::file::{FileSpec, Ownership};
+use super::file::{self, FileError, FileSpec, Ownership};
 use crate::{
     config,
     pki::{Certificate, PrivateKey},
 };
+use std::os::unix::fs::MetadataExt as _;
 
 const DEPLOYMENT_FILES: [&str; 7] = [
     config::ORIGIN_CA_DER,
@@ -49,6 +50,29 @@ pub enum PlanError {
     MissingPrerequisite {
         /// Required directory beneath the target root.
         path: PathBuf,
+    },
+    /// A managed directory has unsafe ownership or permissions.
+    #[snafu(display("directory metadata rejected for {}: expected {}:{} {:04o}, actual {}:{} {:04o}", path.display(), expected_owner.uid, expected_owner.gid, expected_mode, actual_owner.uid, actual_owner.gid, actual_mode))]
+    DirectoryMetadata {
+        /// Rejected directory.
+        path: PathBuf,
+        /// Required ownership.
+        expected_owner: Ownership,
+        /// Required permissions.
+        expected_mode: u32,
+        /// Observed ownership.
+        actual_owner: Ownership,
+        /// Observed permissions.
+        actual_mode: u32,
+    },
+    /// A directory could not be safely opened for inspection.
+    #[snafu(display("cannot inspect deployment directory: {}", path.display()))]
+    Directory {
+        /// Directory inspected through no-follow handles.
+        path: PathBuf,
+        /// Original filesystem failure.
+        #[snafu(source(from(FileError, Box::new)))]
+        source: Box<FileError>,
     },
     /// A deployment path could not be inspected.
     #[snafu(display("cannot inspect deployment path: {}", path.display()))]
@@ -105,7 +129,10 @@ pub(super) struct PlannedDirectory {
 #[derive(Debug)]
 pub struct DeploymentPlan {
     pub(super) files: Vec<PlannedFile>,
-    pub(super) directories: Vec<PlannedDirectory>,
+    pub(super) prerequisites: Vec<PlannedDirectory>,
+    pub(super) directories: [PlannedDirectory; 4],
+    /// Administrator-owned quarantine outside the service state directory.
+    pub(super) rollback_directory: FileSpec,
 }
 
 impl DeploymentPlan {
@@ -151,21 +178,7 @@ pub fn build_plan(
     owners: Owners,
     materials: PlanMaterials<'_>,
 ) -> Result<DeploymentPlan, PlanError> {
-    for prerequisite in [config::SYSTEM_CONFIG_DIRECTORY, config::STATE_DIRECTORY] {
-        let path = rooted(target_root, prerequisite);
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) => ensure!(metadata.is_dir(), MissingPrerequisiteSnafu { path }),
-            Err(source)
-                if matches!(
-                    source.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                ) =>
-            {
-                return MissingPrerequisiteSnafu { path }.fail();
-            }
-            Err(source) => return Err(source).context(InspectSnafu { path }),
-        }
-    }
+    let prerequisites = plan_prerequisites(target_root, owners)?;
     let paths = detect_existing_deployment(target_root)?;
     ensure!(paths.is_empty(), AlreadyDeployedSnafu { paths });
     let files = vec![
@@ -219,7 +232,7 @@ pub fn build_plan(
             materials.config.as_bytes(),
         ),
     ];
-    let directories = vec![
+    let directories = [
         PlannedDirectory {
             path: rooted(target_root, config::CONFIG_DIRECTORY),
             owner: owners.root,
@@ -241,7 +254,87 @@ pub fn build_plan(
             mode: 0o700,
         },
     ];
-    Ok(DeploymentPlan { files, directories })
+    for directory in &directories {
+        if let Some(metadata) =
+            file::directory_metadata(&directory.path).context(DirectorySnafu {
+                path: &directory.path,
+            })?
+        {
+            validate_metadata(&directory.path, &metadata, directory.owner, directory.mode)?;
+        }
+    }
+    let rollback_directory = FileSpec {
+        path: rooted(target_root, "/var/lib/natsume-server-setup-rollback"),
+        owner: owners.root,
+        mode: 0o700,
+    };
+    let path = &rollback_directory.path;
+    file::check_rollback_directory(&rollback_directory, &directories[3].path)
+        .context(DirectorySnafu { path })?;
+    Ok(DeploymentPlan {
+        files,
+        prerequisites,
+        directories,
+        rollback_directory,
+    })
+}
+
+fn plan_prerequisites(
+    target_root: &Path,
+    owners: Owners,
+) -> Result<Vec<PlannedDirectory>, PlanError> {
+    let mut prerequisites = Vec::new();
+    for prerequisite in [config::SYSTEM_CONFIG_DIRECTORY, config::STATE_DIRECTORY] {
+        let path = rooted(target_root, prerequisite);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => ensure!(metadata.is_dir(), MissingPrerequisiteSnafu { path }),
+            Err(source)
+                if matches!(
+                    source.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return MissingPrerequisiteSnafu { path }.fail();
+            }
+            Err(source) => return Err(source).context(InspectSnafu { path }),
+        }
+        let metadata = file::directory_metadata(&path).context(DirectorySnafu { path: &path })?;
+        let Some(metadata) = metadata else {
+            return MissingPrerequisiteSnafu { path }.fail();
+        };
+        let (owner, mode) = if prerequisite == config::STATE_DIRECTORY {
+            (owners.service, 0o750)
+        } else {
+            (owners.root, metadata.mode() & 0o7777 & !0o022)
+        };
+        validate_metadata(&path, &metadata, owner, mode)?;
+        prerequisites.push(PlannedDirectory { path, owner, mode });
+    }
+    Ok(prerequisites)
+}
+
+fn validate_metadata(
+    path: &Path,
+    metadata: &fs::Metadata,
+    owner: Ownership,
+    mode: u32,
+) -> Result<(), PlanError> {
+    let actual_owner = Ownership {
+        uid: metadata.uid(),
+        gid: metadata.gid(),
+    };
+    let actual_mode = metadata.mode() & 0o7777;
+    ensure!(
+        actual_owner == owner && actual_mode == mode,
+        DirectoryMetadataSnafu {
+            path,
+            expected_owner: owner,
+            expected_mode: mode,
+            actual_owner,
+            actual_mode,
+        }
+    );
+    Ok(())
 }
 
 fn planned_file(
@@ -267,7 +360,11 @@ fn rooted(target_root: &Path, destination: &str) -> PathBuf {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use std::{error::Error as _, net::Ipv4Addr, os::unix::fs::symlink};
+    use std::{
+        error::Error as _,
+        net::Ipv4Addr,
+        os::unix::fs::{PermissionsExt as _, symlink},
+    };
 
     use snafu::OptionExt as _;
     use tempfile::TempDir;
@@ -297,7 +394,8 @@ pub(super) mod tests {
         Pem { source: pkcs8::der::pem::Error },
         #[snafu(context(false), display("fixture apply failed"))]
         Apply {
-            source: super::super::apply::ApplyError,
+            #[snafu(source(from(super::super::apply::ApplyError, Box::new)))]
+            source: Box<super::super::apply::ApplyError>,
         },
         #[snafu(display("fixture path lacks parent"))]
         MissingParent,
@@ -318,6 +416,10 @@ pub(super) mod tests {
             let root = tempfile::tempdir()?;
             fs::create_dir_all(rooted(root.path(), config::SYSTEM_CONFIG_DIRECTORY))?;
             fs::create_dir_all(rooted(root.path(), config::STATE_DIRECTORY))?;
+            fs::set_permissions(
+                rooted(root.path(), config::STATE_DIRECTORY),
+                fs::Permissions::from_mode(0o750),
+            )?;
             let now = OffsetDateTime::now_utc();
             let params = DeploymentParameters::new(
                 vec![Ipv4Addr::LOCALHOST.into()],
@@ -379,6 +481,15 @@ pub(super) mod tests {
         pub fn write(&self, destination: &str, contents: &[u8]) -> Result<PathBuf, TestError> {
             let path = self.path(destination);
             fs::create_dir_all(path.parent().context(MissingParentSnafu)?)?;
+            for (directory, mode) in [
+                (config::KEYS_DIRECTORY, 0o700),
+                (config::STATE_DIRECTORY, 0o750),
+            ] {
+                let directory = self.path(directory);
+                if directory.is_dir() {
+                    fs::set_permissions(directory, fs::Permissions::from_mode(mode))?;
+                }
+            }
             fs::write(&path, contents)?;
             Ok(path)
         }
@@ -395,14 +506,8 @@ pub(super) mod tests {
     fn plan_orders_files_and_sets_metadata_without_writing() -> Result<(), TestError> {
         let fixture = Fixture::new()?;
         let owners = Owners {
-            root: Ownership {
-                uid: 1234,
-                gid: 2345,
-            },
-            service: Ownership {
-                uid: 3456,
-                gid: 4567,
-            },
+            root: ownership(),
+            service: ownership(),
         };
         let plan = build_plan(fixture.root.path(), owners, fixture.materials())?;
         assert_eq!(plan.files.len(), 7);
@@ -449,6 +554,53 @@ pub(super) mod tests {
         );
         assert_eq!(fs::read_dir(fixture.root.path())?.count(), 2);
         assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn existing_directory_metadata_is_checked_without_writes() -> Result<(), TestError> {
+        for destination in [
+            config::CONFIG_DIRECTORY,
+            config::TRUST_PARENT_DIRECTORY,
+            config::TRUST_DIRECTORY,
+            config::KEYS_DIRECTORY,
+            config::SYSTEM_CONFIG_DIRECTORY,
+            config::STATE_DIRECTORY,
+        ] {
+            let fixture = Fixture::new()?;
+            let path = fixture.path(destination);
+            fs::create_dir_all(&path)?;
+            let mode = if destination == config::KEYS_DIRECTORY {
+                0o700
+            } else if destination == config::STATE_DIRECTORY {
+                0o750
+            } else {
+                0o755
+            };
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+            fixture.plan()?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o777))?;
+            assert!(
+                matches!(fixture.plan(), Err(TestError::Plan { source: PlanError::DirectoryMetadata { path: rejected, actual_mode: 0o777, .. } }) if rejected == path)
+            );
+            assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+            assert_eq!(fs::metadata(&path)?.mode() & 0o7777, 0o777);
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+            let mut owners = Owners {
+                root: ownership(),
+                service: ownership(),
+            };
+            if destination == config::KEYS_DIRECTORY || destination == config::STATE_DIRECTORY {
+                owners.service.uid += 1;
+            } else {
+                owners.root.uid += 1;
+            }
+            assert!(matches!(
+                build_plan(fixture.root.path(), owners, fixture.materials()),
+                Err(PlanError::DirectoryMetadata { .. })
+            ));
+            assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        }
         Ok(())
     }
 

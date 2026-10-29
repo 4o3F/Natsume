@@ -14,7 +14,7 @@ use crate::{
     config::{ConfigRenderError, DeploymentParameters},
     deployment::{
         apply::{ApplyError, ApplyReport, RollbackOutcome},
-        file::{CreatedFile, FileError},
+        file::{CreatedFile, FileError, Ownership},
         plan::{DeploymentPlan, Owners, PlanError},
     },
     handoff::{CertificateSummary, HandoffError, HandoffReport},
@@ -43,8 +43,8 @@ pub struct WizardContext {
     pub target_root: PathBuf,
     /// Absolute administrator PKI directory, resolved beneath the target root.
     pub pki_dir: PathBuf,
-    /// Public-system and private-service identities for protected publication.
-    pub owners: Owners,
+    /// Administrator identity for protected publication; service ownership comes from preflight.
+    pub root_owner: Ownership,
 }
 
 /// Successful completion, an offline-signing pause, or explicit administrator cancellation.
@@ -191,7 +191,8 @@ pub enum WizardFailure {
     #[snafu(context(false), display("deployment publication failed"))]
     Apply {
         /// Original publication failure including its own rollback result.
-        source: ApplyError,
+        #[snafu(source(from(ApplyError, Box::new)))]
+        source: Box<ApplyError>,
     },
     /// An administrator PKI file could not be published.
     #[snafu(context(false), display("administrator PKI publication failed"))]
@@ -333,6 +334,7 @@ struct Wizard<'a, I, H> {
     interaction: &'a mut I,
     host: &'a mut H,
     context: &'a WizardContext,
+    service_owner: Option<Ownership>,
     answers: Answers,
     pending: Option<PendingRequest>,
     applied: Option<ApplyReport>,
@@ -340,6 +342,15 @@ struct Wizard<'a, I, H> {
     pki_directories: Vec<PathBuf>,
     enabled: bool,
     revealed: bool,
+}
+
+impl<I: Interaction, H: Host> Wizard<'_, I, H> {
+    fn check_interrupted(&self) -> Result<(), WizardFailure> {
+        if self.host.interrupted() {
+            return Err(InteractionError::Interrupted.into());
+        }
+        Ok(())
+    }
 }
 
 fn value<T>(answer: Answer<T>) -> Result<T, WizardFailure> {
@@ -353,6 +364,8 @@ fn value<T>(answer: Answer<T>) -> Result<T, WizardFailure> {
 ///
 /// # Errors
 /// Returns pre-commit failures with cleanup results; failures after health checks remain installed.
+/// Operation errors take precedence over simultaneous cancellation. An [`ApplyError`]'s completed
+/// rollback is transferred into the returned cleanup report and displayed once, without retrying it.
 pub fn run<I: Interaction, H: Host>(
     interaction: &mut I,
     host: &mut H,
@@ -362,6 +375,7 @@ pub fn run<I: Interaction, H: Host>(
         interaction,
         host,
         context,
+        service_owner: None,
         answers: Answers::default(),
         pending: None,
         applied: None,

@@ -47,7 +47,6 @@ pub struct PendingRequest {
     params: DeploymentParameters,
     control_ca: Certificate,
     key: PrivateKey,
-    csr_pem: String,
     path: PathBuf,
     pki_dir: PathBuf,
     files: Vec<CreatedFile>,
@@ -139,11 +138,6 @@ impl PendingRequest {
     pub const fn key(&self) -> &PrivateKey {
         &self.key
     }
-    /// Borrows the public signing request exactly as persisted.
-    #[must_use]
-    pub fn csr_pem(&self) -> &str {
-        &self.csr_pem
-    }
     /// Returns the pending directory beneath the selected target root.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -203,17 +197,16 @@ fn create_request(
             (CA_FILE, control_ca.to_pem().as_bytes()),
             (REQUEST_FILE, text.as_bytes()),
         ] {
-            files.push(
-                file::create_new_file(
-                    &FileSpec {
-                        path: path.join(name),
-                        owner,
-                        mode: 0o600,
-                    },
-                    contents,
-                )
-                .context(FilesystemSnafu)?,
-            );
+            file::create_recorded_file(
+                &FileSpec {
+                    path: path.join(name),
+                    owner,
+                    mode: 0o600,
+                },
+                contents,
+                &mut files,
+            )
+            .context(FilesystemSnafu)?;
         }
         load_request(target_root, pki_dir, OffsetDateTime::UNIX_EPOCH, owner)?
             .context(DisappearedSnafu)
@@ -289,15 +282,12 @@ fn load_request(
         file::read_file(&path.join(CSR_FILE), owner, 0o600, MAX_PENDING_FILE)
             .context(FilesystemSnafu)?;
     files.push(created);
-    let csr_pem = std::str::from_utf8(&csr_bytes)
-        .context(TextSnafu)?
-        .to_owned();
-    verify_csr(&csr_pem, &key, &record)?;
+    let csr_pem = std::str::from_utf8(&csr_bytes).context(TextSnafu)?;
+    verify_csr(csr_pem, &key, &record)?;
     Ok(Some(PendingRequest {
         params,
         control_ca,
         key,
-        csr_pem,
         path,
         pki_dir: pki_dir.into(),
         files,
@@ -531,12 +521,29 @@ mod tests {
             let mut request = CertificateSigningRequestParams::from_pem(csr.pem())?;
             request.params.not_before = self.now - time::Duration::hours(1);
             request.params.not_after = self.now + time::Duration::days(10);
-            let issuer =
-                Issuer::from_ca_cert_der(&CertificateDer::from(ca.der()), ca_key.key_pair()?)?;
+            let issuer_key = ca_key.key_pair()?;
+            let issuer = Issuer::from_ca_cert_der(&CertificateDer::from(ca.der()), &*issuer_key)?;
             Ok(import::import_certificate(
                 request.signed_by(&issuer)?.der(),
             )?)
         }
+    }
+
+    #[test]
+    fn publication_sync_failure_cleans_up_pending_request() -> Result<(), TestError> {
+        for count in 0..4 {
+            let fixture = Fixture::new()?;
+            let _fault = file::tests::fail_publication_sync_after(count);
+            assert!(matches!(
+                fixture.create(),
+                Err(PendingError::Filesystem {
+                    source: FileError::PublishedNotDurable { .. }
+                })
+            ));
+            assert!(fixture.load()?.is_none());
+            assert_eq!(fs::read_dir(fixture.root.path())?.count(), 0);
+        }
+        Ok(())
     }
 
     #[test]
@@ -548,7 +555,7 @@ mod tests {
         assert_eq!(loaded.params(), &fixture.params);
         assert_eq!(loaded.control_ca(), &fixture.ca);
         assert_eq!(loaded.key().pkcs8_der(), fixture.key.pkcs8_der());
-        assert_eq!(loaded.csr_pem(), fixture.csr.pem());
+        assert_eq!(fs::read_to_string(loaded.csr_path())?, fixture.csr.pem());
         assert_eq!(loaded.path(), created.path());
         assert!(!format!("{loaded:?}").contains(&hex::encode(fixture.key.pkcs8_der())));
         let signed = fixture.signed(&fixture.ca, &fixture.ca_key, &fixture.csr)?;
@@ -652,7 +659,7 @@ mod tests {
         ));
         let mut params = rcgen::CertificateParams::default();
         params.subject_alt_names = vec![rcgen::SanType::IpAddress(Ipv4Addr::LOCALHOST.into())];
-        let request = params.serialize_request(&fixture.key.key_pair()?)?;
+        let request = params.serialize_request(&*fixture.key.key_pair()?)?;
         let request = sign_request(&fixture, &request)?;
         assert!(matches!(
             pending.accept_signed(&request),
@@ -666,10 +673,9 @@ mod tests {
         request: &rcgen::CertificateSigningRequest,
     ) -> Result<Certificate, TestError> {
         let csr = CertificateSigningRequestParams::from_der(request.der())?;
-        let issuer = Issuer::from_ca_cert_der(
-            &CertificateDer::from(fixture.ca.der()),
-            fixture.ca_key.key_pair()?,
-        )?;
+        let issuer_key = fixture.ca_key.key_pair()?;
+        let issuer =
+            Issuer::from_ca_cert_der(&CertificateDer::from(fixture.ca.der()), &*issuer_key)?;
         Ok(import::import_certificate(csr.signed_by(&issuer)?.der())?)
     }
 
@@ -713,7 +719,7 @@ mod tests {
         assert!(matches!(
             fixture.load(),
             Err(PendingError::Filesystem {
-                source: FileError::Metadata { .. }
+                source: FileError::DirectoryMetadata { .. }
             })
         ));
         Ok(())

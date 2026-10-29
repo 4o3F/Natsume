@@ -66,8 +66,6 @@ pub struct DeploymentParameters {
     contest_end: String,
     /// Original strict UTC Gateway certificate expiry timestamp.
     gateway_not_after: String,
-    /// Parsed contest end used for validity coverage checks.
-    contest_end_timestamp: OffsetDateTime,
     /// Parsed Gateway expiry used for certificate validity checks.
     gateway_not_after_timestamp: OffsetDateTime,
 }
@@ -161,7 +159,6 @@ impl DeploymentParameters {
             domjudge_origin,
             contest_end,
             gateway_not_after,
-            contest_end_timestamp,
             gateway_not_after_timestamp,
         })
     }
@@ -200,12 +197,6 @@ impl DeploymentParameters {
     #[must_use]
     pub fn gateway_not_after(&self) -> &str {
         &self.gateway_not_after
-    }
-
-    /// Returns the parsed contest end instant.
-    #[must_use]
-    pub const fn contest_end_timestamp(&self) -> OffsetDateTime {
-        self.contest_end_timestamp
     }
 
     /// Returns the parsed Gateway expiry instant for certificate validation.
@@ -531,10 +522,6 @@ mod tests {
             actual["runtime"]["domjudge_origin"]
                 .as_str()
                 .unwrap_or_default()
-        );
-        assert_eq!(
-            params.contest_end_timestamp(),
-            OffsetDateTime::parse(params.contest_end(), &Rfc3339)?
         );
         assert_eq!(
             params.gateway_not_after_timestamp(),

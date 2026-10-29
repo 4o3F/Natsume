@@ -11,10 +11,7 @@ fn run() -> std::process::ExitCode {
     use clap::Parser as _;
     use natsume_server_setup::{
         cli::{Cli, Command},
-        deployment::{
-            file::{Ownership, ROOT_OWNER},
-            plan::Owners,
-        },
+        deployment::file::ROOT_OWNER,
         host::SystemHost,
         interaction::terminal::TerminalInteraction,
         probe,
@@ -34,13 +31,7 @@ fn run() -> std::process::ExitCode {
             let context = WizardContext {
                 target_root: "/".into(),
                 pki_dir: cli.pki_dir,
-                owners: Owners {
-                    root: ROOT_OWNER,
-                    service: Ownership {
-                        uid: host.account().uid,
-                        gid: host.account().gid,
-                    },
-                },
+                root_owner: ROOT_OWNER,
             };
             match wizard::run(&mut TerminalInteraction, &mut host, &context) {
                 Ok(WizardOutcome::Installed(_) | WizardOutcome::PendingSignature { .. }) => {

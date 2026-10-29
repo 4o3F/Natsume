@@ -81,15 +81,20 @@ pub async fn wait_for_health(
     address: SocketAddr,
     attempts: usize,
     interval: Duration,
+    interrupted: impl Fn() -> bool,
 ) -> Result<(), HealthError> {
     let mut last = None;
     for attempt in 0..attempts {
-        match check_health(control_ca, address).await {
+        ensure!(!interrupted(), InterruptedSnafu);
+        let result = check_health(control_ca, address).await;
+        ensure!(!interrupted(), InterruptedSnafu);
+        match result {
             Ok(()) => return Ok(()),
             Err(error) => last = Some(error),
         }
         if attempt + 1 < attempts {
             tokio::time::sleep(interval).await;
+            ensure!(!interrupted(), InterruptedSnafu);
         }
     }
     Err(last.context(NoAttemptsSnafu)?)
@@ -98,6 +103,9 @@ pub async fn wait_for_health(
 /// Health check failure without recording response bodies or private material.
 #[derive(Debug, Snafu)]
 pub enum HealthError {
+    /// Installation cancellation stopped the retry loop.
+    #[snafu(display("health check interrupted"))]
+    Interrupted,
     /// The sole trust anchor or TLS protocol configuration was rejected.
     #[snafu(display("health TLS configuration failed"))]
     Tls {
@@ -225,12 +233,27 @@ mod tests {
     #[tokio::test]
     async fn accepts_exact_ok_and_retries() -> Result<(), TestError> {
         let (ca, address, task) = server("200 OK", r#"{"status":"ok"}"#, 1).await?;
-        wait_for_health(&ca, address, 3, Duration::ZERO).await?;
+        wait_for_health(&ca, address, 3, Duration::ZERO, || false).await?;
         task.await??;
         assert!(matches!(
-            wait_for_health(&ca, address, 0, Duration::ZERO).await,
+            wait_for_health(&ca, address, 0, Duration::ZERO, || false).await,
             Err(HealthError::NoAttempts)
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn interruption_stops_health_retries() -> Result<(), TestError> {
+        let (ca, address, task) = server("503 Unavailable", r#"{"status":"ok"}"#, 1).await?;
+        let checks = std::cell::Cell::new(0);
+        let result = wait_for_health(&ca, address, 20, Duration::ZERO, || {
+            let count = checks.get();
+            checks.set(count + 1);
+            count >= 2
+        })
+        .await;
+        assert!(matches!(result, Err(HealthError::Interrupted)));
+        task.await??;
         Ok(())
     }
 
@@ -269,7 +292,7 @@ mod tests {
         let (other, _) =
             generate::generate_ca("Other", "Natsume", time::OffsetDateTime::now_utc())?;
         assert!(matches!(
-            wait_for_health(&other, address, 2, Duration::ZERO).await,
+            wait_for_health(&other, address, 2, Duration::ZERO, || false).await,
             Err(HealthError::Request { .. })
         ));
         task.await??;

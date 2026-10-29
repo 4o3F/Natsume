@@ -396,6 +396,94 @@ fn certificate_only_defaults_to_csr_and_writes_only_four_pending_files() -> Test
     pending_first_run(&mut fixture, &ca)
 }
 
+#[test]
+fn csr_publication_interrupt_aborts_and_removes_new_pending_without_system_writes() -> TestResult {
+    for published in 0..4 {
+        let mut fixture = Fixture::new()?;
+        let (ca, _) = generate::generate_ca("Offline Control", "Natsume", fixture.host.now)?;
+        fixture.host.input("control.crt", ca.der());
+        let mut prompts = parameters();
+        import_control(&mut prompts, false);
+        prompts.extend([
+            (PromptId::ServerTlsSource, Reply::Select(2)),
+            (PromptId::PlanConfirmation, Reply::Confirm(true)),
+        ]);
+        let mut script = ScriptedInteraction::new(prompts);
+        let _interrupt = crate::deployment::file::tests::interrupt_publication_after(
+            published,
+            std::sync::Arc::clone(&fixture.host.interrupted),
+        );
+        assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+        assert!(fixture.host.interrupted());
+        assert!(!fixture.path("/admin/pki/pending").exists());
+        assert!(
+            !script
+                .notices
+                .iter()
+                .any(|notice| matches!(notice, Notice::OfflineSigningInstructions { .. }))
+        );
+        fixture.assert_no_deployment()?;
+        assert!(files_under(&fixture.path("/etc"))?.is_empty());
+        assert!(files_under(&fixture.path("/var/lib"))?.is_empty());
+        assert!(!fixture.path(config::KEYS_DIRECTORY).exists());
+        assert_eq!(
+            fixture.host.calls,
+            [Call::Preflight, Call::Read("control.crt".into())]
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn csr_instructions_interrupt_aborts_and_removes_new_pending() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let (ca, _) = generate::generate_ca("Offline Control", "Natsume", fixture.host.now)?;
+    fixture.host.input("control.crt", ca.der());
+    let mut prompts = parameters();
+    import_control(&mut prompts, false);
+    prompts.extend([
+        (PromptId::ServerTlsSource, Reply::Select(2)),
+        (PromptId::PlanConfirmation, Reply::Confirm(true)),
+    ]);
+    let mut script = ScriptedInteraction::new(prompts);
+    script.signing_interrupt = Some(std::sync::Arc::clone(&fixture.host.interrupted));
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    assert!(!fixture.path("/admin/pki/pending").exists());
+    fixture.assert_no_deployment()?;
+    assert!(files_under(&fixture.path("/var/lib"))?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn csr_resume_interrupt_preserves_original_pending() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let (ca, key) = generate::generate_ca("Offline Control", "Natsume", fixture.host.now)?;
+    pending_first_run(&mut fixture, &ca)?;
+    let paths = files_under(&fixture.path("/admin/pki/pending"))?;
+    let before = paths.iter().map(fs::read).collect::<Result<Vec<_>, _>>()?;
+    let signed = sign_pending(&fixture, &ca, &key, false)?;
+    fixture.host.input("signed.crt", signed.der());
+    fixture.host.interrupt_after = Some(Call::Read("signed.crt".into()));
+    fixture.host.calls.clear();
+    let mut script = ScriptedInteraction::new(vec![(
+        PromptId::SignedCertificatePath,
+        Reply::text("signed.crt"),
+    )]);
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    assert_eq!(files_under(&fixture.path("/admin/pki/pending"))?, paths);
+    let after = paths.iter().map(fs::read).collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        after, before,
+        "resumed pending files must remain byte-for-byte unchanged"
+    );
+    fixture.assert_no_deployment()?;
+    assert_eq!(
+        fixture.host.calls,
+        [Call::Preflight, Call::Read("signed.crt".into())]
+    );
+    Ok(())
+}
+
 fn sign_pending(
     fixture: &Fixture,
     ca: &Certificate,
@@ -845,7 +933,7 @@ fn escape_from_server_tls_reselects_control_and_clears_downstream_answers() -> T
         &fixture.context.target_root,
         &fixture.context.pki_dir,
         fixture.host.now,
-        fixture.context.owners.root,
+        fixture.context.root_owner,
     )?
     else {
         panic!("replacement CSR must exist")
@@ -1396,5 +1484,212 @@ fn not_root_preflight_fails_once_without_prompting_or_writes() -> TestResult {
     assert_eq!(fixture.host.calls, [Call::Preflight]);
     assert!(script.notices.is_empty());
     assert!(files_under(fixture.root.path())?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn interrupt_during_bootstrap_rolls_back() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.host.install_probes(ProbeExit::NotInitialized);
+    fixture.host.interrupt_after = Some(Call::Bootstrap);
+    let mut script = generated_script(true);
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    fixture.assert_no_deployment()?;
+    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert!(
+        fixture
+            .host
+            .calls
+            .contains(&Call::Systemctl(ServiceAction::Stop))
+    );
+    Ok(())
+}
+
+#[test]
+fn interrupt_during_health_rolls_back() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.host.install_probes(ProbeExit::Passed);
+    fixture.host.interrupt_after = Some(Call::Health(SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        8443,
+    )));
+    let mut script = generated_script(true);
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    fixture.assert_no_deployment()?;
+    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert!(
+        fixture
+            .host
+            .calls
+            .contains(&Call::Systemctl(ServiceAction::Disable))
+    );
+    Ok(())
+}
+
+#[test]
+fn interrupt_after_commit_keeps_installed_deployment() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.host.install_probes(ProbeExit::Passed);
+    let mut script = generated_script(true);
+    script.summary_interrupt = Some(Arc::clone(&fixture.host.interrupted));
+    assert!(matches!(
+        fixture.run(&mut script)?,
+        WizardOutcome::Installed(_)
+    ));
+    assert!(fixture.host.interrupted());
+    fixture.assert_installed()?;
+    assert!(
+        !fixture
+            .host
+            .calls
+            .contains(&Call::Systemctl(ServiceAction::Stop))
+    );
+    Ok(())
+}
+
+#[test]
+fn validation_notices_preserve_safe_error_chains() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.host.input("/malformed", b"invalid certificate");
+    let mut prompts = parameters();
+    prompts.extend([
+        (PromptId::ControlCaSource, Reply::Select(2)),
+        (PromptId::ControlCaCertificatePath, Reply::text("/missing")),
+        (
+            PromptId::ControlCaCertificatePath,
+            Reply::text("/malformed"),
+        ),
+        (PromptId::ControlCaCertificatePath, Reply::Interrupt),
+    ]);
+    let mut script = ScriptedInteraction::new(prompts);
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    let messages: Vec<_> = script
+        .notices
+        .iter()
+        .filter_map(|notice| match notice {
+            Notice::ValidationFailed { message } => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages.len(), 2);
+    assert!(
+        messages
+            .first()
+            .is_some_and(|message| message.contains("cannot read input file")
+                && message.contains(&io::Error::from(io::ErrorKind::NotFound).to_string()))
+    );
+    assert!(messages.get(1).is_some_and(
+        |message| message.contains("PKI import failed") && message.contains("certificate")
+    ));
+    fixture.assert_no_deployment()?;
+    Ok(())
+}
+
+#[test]
+fn publication_sync_failure_rolls_back_saved_pki() -> TestResult {
+    for count in 0..3 {
+        let mut fixture = Fixture::new()?;
+        let _fault = crate::deployment::file::tests::fail_publication_sync_after(count);
+        let mut prompts = generated_prefix();
+        let mut saves = retention(true);
+        if count == 0 {
+            saves.truncate(1);
+        }
+        prompts.extend(saves);
+        let mut script = ScriptedInteraction::new(prompts);
+        let Err(error) = fixture.run(&mut script) else {
+            panic!("PKI publication fsync fault must fail")
+        };
+        assert!(matches!(
+            error,
+            WizardError::Failed {
+                source: WizardFailure::File {
+                    source: FileError::PublishedNotDurable { .. }
+                },
+                ..
+            }
+        ));
+        fixture.assert_no_deployment()?;
+        assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+        assert!(script.notices.iter().any(|notice| matches!(notice, Notice::RollbackReport { failures, .. } if failures.is_empty())));
+    }
+    Ok(())
+}
+
+#[test]
+fn publication_interrupt_preserves_apply_error_and_partial_rollback() -> TestResult {
+    use crate::deployment::{apply::ApplyError, file::tests};
+    let mut fixture = Fixture::new()?;
+    let mut script = generated_script(true);
+    let _interrupt = tests::interrupt_publication_after(9, Arc::clone(&fixture.host.interrupted));
+    let _fault = tests::fail_publication_sync_after(9);
+    tests::modify_next_rollback_file();
+    let Err(WizardError::Failed {
+        source: WizardFailure::Apply { source },
+        rollback: Some(rollback),
+    }) = fixture.run(&mut script)
+    else {
+        panic!("simultaneous cancellation must preserve the ApplyError and rollback results");
+    };
+    assert!(fixture.host.interrupted());
+    assert!(matches!(
+        source.as_ref(),
+        ApplyError::CreateFile {
+            source: FileError::PublishedNotDurable { .. },
+            ..
+        }
+    ));
+    assert_eq!(rollback.files.failures.len(), 1, "{rollback:?}");
+    let failed = &rollback.files.failures[0];
+    assert_eq!(failed.path, fixture.path(config::CONFIG_PATH));
+    assert!(matches!(
+        failed.source,
+        FileError::ChangedSinceCreation { .. }
+    ));
+    assert!(
+        rollback
+            .files
+            .removed
+            .contains(&fixture.path(config::ORIGIN_CA_KEY))
+    );
+    assert_eq!(fs::read(&failed.path)?, b"modified during rollback");
+    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    let reports: Vec<_> = script
+        .notices
+        .iter()
+        .filter_map(|notice| match notice {
+            Notice::RollbackReport { failures, .. } => Some(failures),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reports, [&vec![failed.path.clone()]]);
+    assert_eq!(
+        fixture.host.calls,
+        [Call::Preflight, Call::Systemctl(ServiceAction::Stop)]
+    );
+    Ok(())
+}
+
+#[test]
+fn health_failure_takes_precedence_over_simultaneous_interrupt() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.host.install_probes(ProbeExit::Passed);
+    fixture.host.health = Some(Err(HealthError::Unhealthy));
+    fixture.host.interrupt_after = Some(Call::Health(SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        8443,
+    )));
+    let mut script = generated_script(true);
+    assert!(matches!(
+        fixture.run(&mut script),
+        Err(WizardError::Failed {
+            source: WizardFailure::Health {
+                source: HealthError::Unhealthy
+            },
+            rollback: Some(_)
+        })
+    ));
+    fixture.assert_no_deployment()?;
+    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
     Ok(())
 }
