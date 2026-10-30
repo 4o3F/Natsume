@@ -452,7 +452,11 @@ if [ "$1 $2" = 'nextest --version' ] && [ "$NATSUME_TEST_MISSING_NEXTEST" = '1' 
       const packages = target === "rust"
         ? `--workspace --exclude ${helper}`
         : (target === "shared"
-          ? ["natsume-print-client"]
+          ? [
+            "natsume-photo-client",
+            "natsume-photo-protocol",
+            "natsume-print-client",
+          ]
           : packageTargets[target as keyof typeof packageTargets].crates)
           .filter((name) => name !== helper)
           .map((name) => `-p ${name}`).join(" ");
@@ -1141,6 +1145,7 @@ Deno.test("Release collects both package formats and refuses missing or mismatch
     );
     const publish = () => command("tools/release.ts", "publish", directory);
     await zip("2.10.3-rc.1");
+    await zip("2.10.3-rc.1", "photo-client");
     await zip("2.10.3-rc.1", "future-client");
     const good = await publish();
     assert(good.success, new TextDecoder().decode(good.stderr));
@@ -1154,6 +1159,7 @@ Deno.test("Release collects both package formats and refuses missing or mismatch
     for (
       const name of [
         ...names.map((name) => `${name}_${version}_amd64.deb`),
+        "natsume-photo-client_2.10.3-rc.1_windows_amd64.zip",
         "natsume-print-client_2.10.3-rc.1_windows_amd64.zip",
         "natsume-future-client_2.10.3-rc.1_windows_amd64.zip",
       ]
