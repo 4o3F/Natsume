@@ -120,6 +120,10 @@ export type AuditRoute =
   | "printer_pairing_code"
   | "print_sources"
   | "print_source"
+  | "photo_sources"
+  | "photo_pairing_code"
+  | "photo_enrollment_reset"
+  | "photo_source_state"
   | "provisioning"
   | "target_submission";
 
@@ -131,6 +135,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -144,6 +149,7 @@ export type AuditTarget =
       import?: never;
       invitation?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -157,6 +163,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -171,6 +178,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -183,6 +191,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -196,6 +205,7 @@ export type AuditTarget =
       import?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -210,6 +220,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -222,6 +233,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -236,7 +248,22 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ photo_source: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
       printer?: never;
       review?: never;
       seat?: never;
@@ -249,6 +276,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       review?: never;
@@ -262,6 +290,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_source?: never;
       print_source?: never;
       printer?: never;
       review?: never;
@@ -274,6 +303,7 @@ export type AuditTarget =
       import?: never;
       invitation?: never;
       operator?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -741,6 +771,9 @@ export type ExportLine =
 /**  Desired Session foreground role accepted and returned by the API. */
 export type ForegroundTargetResponse = "contest" | "waiting";
 
+/**  The initialization snapshot format currently supported by both consumers. */
+export type FormatVersion = number;
+
 export type GapKind = "pruned" | "dropped" | "paused" | "unreadable";
 
 /**  Latest validated Gateway Actual reported by the current lease. */
@@ -985,6 +1018,9 @@ export type LifecycleState = "enabled" | "disabled" | "revoked";
 
 export type LoggedOut = Record<string, never>;
 
+/**  Logos are normalized by Contest before entering this protocol. */
+export type LogoContentType = "image/png";
+
 export type OperationId =
   /**  Operation correlation UUID supplied explicitly by the producer. */
   string;
@@ -1105,6 +1141,86 @@ export type PasswordResetCompleted = Record<string, never>;
 export type PasswordResetIssued = Record<string, never>;
 
 export type PauseReason = "disk_budget";
+
+/**  Confirms that the issued enrollment is bound to the original signing key. */
+export type PhotoConfirmation = {
+  enrollment_id: string;
+  signing_public_key: SigningPublicKey;
+};
+
+/**  Contains a secret: intentionally has no Debug implementation. */
+export type PhotoEnrollmentIssued = {
+  source_id: string;
+  enrollment_id: string;
+  token: string;
+  expires_at_unix_ms: number;
+};
+
+export type PhotoInitialization = {
+  format_version: FormatVersion;
+  source_id: string;
+  dataset_id: string;
+  initialization_id: string;
+  teams: PhotoTeam[];
+  school_logos: PhotoLogo[];
+};
+
+/**  Idempotent completion receipt, sent only after local integrity verification. */
+export type PhotoInitializationComplete = {
+  initialization_id: string;
+  manifest_sha256: Sha256Digest;
+  request_id: string;
+};
+
+export type PhotoLogo = {
+  organization_id: number;
+  sha256: Sha256Digest;
+  content_type: LogoContentType;
+  size_bytes: number;
+};
+
+/**  First enrollment request. The one-time code is sensitive. */
+export type PhotoPairRequest = {
+  code: string;
+  signing_public_key: SigningPublicKey;
+  client_version: string;
+};
+
+export type PhotoPairingCode = {
+  source_id: string;
+  code: string;
+  expires_at_unix_ms: number;
+};
+
+export type PhotoPairingCodeRequest = Record<string, never>;
+
+/**  Public source projection used by Operators and the enrollment confirmation. */
+export type PhotoSource = {
+  source_id: string;
+  name: string;
+  state: SourceState;
+  enrollment_confirmed: boolean;
+  initialization_completed: boolean;
+};
+
+export type PhotoSourceCreate = {
+  name: string;
+};
+
+export type PhotoSourceStateUpdate = {
+  state: SourceState;
+};
+
+export type PhotoTeam = {
+  account_id: string;
+  /**  External Team ID, the `DOMjudge` username; never a password or seat. */
+  account: string;
+  organization_id: number;
+  school_name_zh: string;
+  school_name_en?: string;
+  team_name_zh: string;
+  team_name_en?: string;
+};
 
 export type PrintAdmission = {
   ready_sequence: number;
@@ -1421,6 +1537,15 @@ export type SessionStateResponse =
   "none" | "starting" | "running" | "terminating" | "ambiguous" | "error";
 
 export type Severity = "info" | "warning" | "error";
+
+/**  A validated lowercase SHA-256 digest, distinct from identities and keys. */
+export type Sha256Digest = string;
+
+/**  Canonical non-weak Ed25519 public key; distinct from a digest. */
+export type SigningPublicKey = string;
+
+/**  Source lifecycle; authority remains entirely on Server. */
+export type SourceState = "enabled" | "disabled" | "revoked";
 
 export type TargetAction =
   "set_foreground" | "terminate_session" | "reset_home" | "power_off";

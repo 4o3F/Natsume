@@ -27,13 +27,15 @@ fn print_migrations_create_and_remove_all_print_tables_together() {
     );
     assert_eq!(
         must(connection.run_pending_migrations(must(migrations()))).len(),
-        2
+        3
     );
     assert_eq!(
         must(sql::<BigInt>(print_tables).get_result::<i64>(&mut connection)),
         7
     );
     assert!(must(connection.run_pending_migrations(must(migrations()))).is_empty());
+    // Remove the later Photo migration before both Print migrations.
+    must(connection.revert_last_migration(must(migrations())));
     must(connection.revert_last_migration(must(migrations())));
     must(connection.revert_last_migration(must(migrations())));
     assert_eq!(
@@ -51,7 +53,7 @@ fn print_migrations_create_and_remove_all_print_tables_together() {
     );
     assert_eq!(
         must(connection.run_pending_migrations(must(migrations()))).len(),
-        2
+        3
     );
     assert_eq!(
         must(sql::<BigInt>(print_tables).get_result::<i64>(&mut connection)),

@@ -229,6 +229,10 @@ const auditRouteLabels = {
   printer_pairing_code: "Printer pairing code",
   print_sources: "Print sources",
   print_source: "Print source",
+  photo_sources: "Photo sources",
+  photo_pairing_code: "Photo pairing code",
+  photo_enrollment_reset: "Photo enrollment reset",
+  photo_source_state: "Photo source state",
   provisioning: "Provisioning window",
   target_submission: "Target submission",
 } as const satisfies Record<AuditRoute, string>;
@@ -254,6 +258,7 @@ const auditTargetLabels = {
   password_reset: "Password reset",
   print_execution: "Print execution",
   print_source: "Print source",
+  photo_source: "Photo source",
   printer: "Printer",
   review: "Review",
   seat: "Seat",

@@ -21,6 +21,7 @@ pub struct ServerConfig {
     journal: JournalConfig,
     organization_logos_path: PathBuf,
     print_documents_path: PathBuf,
+    photo_initializations_path: PathBuf,
     vault_master_key_path: PathBuf,
     tls_certificate_path: PathBuf,
     tls_private_key_path: PathBuf,
@@ -30,6 +31,10 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
+    pub(crate) fn photo_initializations_path(&self) -> &Path {
+        &self.photo_initializations_path
+    }
+
     /// Loads the fixed deployment-owned Server configuration.
     ///
     /// # Errors
@@ -66,12 +71,17 @@ impl ServerConfig {
         if !is_canonical_https_origin(&raw.runtime.domjudge_origin) {
             return Err(ConfigError::InvalidDomjudgeOrigin);
         }
+        let photo_initializations_path = raw
+            .storage
+            .photo_initializations
+            .unwrap_or_else(|| raw.storage.database.with_extension("photo"));
         let journal_path = raw
             .storage
             .journal
             .unwrap_or_else(|| raw.storage.database.with_file_name("natsume-journal.db"));
         raw.journal.validate()?;
         let config = Self {
+            photo_initializations_path,
             listen_address,
             log_level: raw.log.level,
             database_path: raw.storage.database,
@@ -99,6 +109,10 @@ impl ServerConfig {
         {
             return Err(ConfigError::SharedJournalPath);
         }
+        require_absolute(
+            &self.photo_initializations_path,
+            ConfigError::RelativePhotoInitializationsPath,
+        )?;
         require_absolute(
             &self.organization_logos_path,
             ConfigError::RelativeOrganizationLogosPath,
@@ -276,6 +290,8 @@ struct RawListenConfig {
 
 #[derive(Deserialize)]
 struct RawStorageConfig {
+    #[serde(default)]
+    photo_initializations: Option<PathBuf>,
     database: PathBuf,
     journal: Option<PathBuf>,
     root_key: PathBuf,
@@ -511,6 +527,8 @@ impl GatewayNotAfter {
 /// Redacted Server configuration failure.
 #[derive(Debug, Snafu)]
 pub enum ConfigError {
+    #[snafu(display("storage.photo_initializations must be an absolute path"))]
+    RelativePhotoInitializationsPath,
     #[snafu(display(
         "cannot read UTF-8 configuration ({kind:?}); check file existence and read permissions"
     ))]
@@ -631,6 +649,37 @@ domjudge_origin = "https://judge.contest.example"
         let config = ServerConfig::load_from(fixture.path())
             .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         assert_eq!(config.domjudge_origin(), "https://judge.contest.example");
+        assert_eq!(
+            config.photo_initializations_path(),
+            Path::new("/var/lib/natsume-server/natsume.photo")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn photo_storage_override_requires_absolute_path() -> Result<(), TestFailure> {
+        for (path, valid) in [
+            ("/var/lib/natsume-server/photo-initializations", true),
+            ("relative/photo", false),
+        ] {
+            let contents = VALID_CONFIG.replace(
+                "[storage]",
+                &format!("[storage]\nphoto_initializations = \"{path}\""),
+            );
+            let fixture = ConfigFixture::new(&contents)?;
+            let result = ServerConfig::load_from(fixture.path());
+            if valid {
+                let config = result.map_err(|source| {
+                    TestFailure::from(crate::test_error::TestError::from(source))
+                })?;
+                assert_eq!(config.photo_initializations_path(), Path::new(path));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ConfigError::RelativePhotoInitializationsPath)
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -649,12 +698,16 @@ domjudge_origin = "https://judge.contest.example"
         assert_eq!(config.journal().max_bytes, 512 * 1024 * 1024);
         assert_eq!(config.journal().min_free_bytes, 1024 * 1024 * 1024);
         let encoded = VALID_CONFIG
-            .replace("[storage]", "[storage]\njournal = '/tmp/custom-journal.db'")
+            .replace("[storage]", "[storage]\njournal = '/tmp/custom-journal.db'\nphoto_initializations = '/tmp/custom-photo'")
             + "\n[journal]\nmax_age_days = 7\nmax_rows = 100\nmax_bytes = 8192\nmin_free_bytes = 4096\n";
         let fixture = ConfigFixture::new(&encoded)?;
         let config = ServerConfig::load_from(fixture.path())
             .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         assert_eq!(config.journal_path(), Path::new("/tmp/custom-journal.db"));
+        assert_eq!(
+            config.photo_initializations_path(),
+            Path::new("/tmp/custom-photo")
+        );
         assert_eq!(config.journal().max_age_days, 7);
         assert_eq!(config.journal().max_rows, 100);
         assert_eq!(config.journal().max_bytes, 8192);

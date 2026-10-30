@@ -661,3 +661,115 @@ async fn panic_and_shutdown_refusal_keep_the_captured_request_trace() -> TestRes
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn photo_administrator_mutations_are_audited_without_credentials() -> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let mut f = Fixture::new().await?;
+    let name = "photo-source-name-secret-canary";
+    let response = f
+        .request(
+            Method::POST,
+            "/api/v2/photo/sources",
+            Some(&f.admin_cookie),
+            &json!({"name":name}).to_string(),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let source: Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 8192).await?)?;
+    let id = source["source_id"]
+        .as_str()
+        .ok_or(TestError::missing("photo source id"))?;
+    let records = f.records();
+    let record = request_record(&records, AuditRoute::PhotoSources, StatusCode::CREATED);
+    assert_eq!(
+        record.actor_operator_id.as_ref().map(OperatorId::value),
+        Some(f.admin_id)
+    );
+    let details: Value = serde_json::from_str(&record.details())?;
+    assert_eq!(details["targets"], json!([{"photo_source":id}]));
+    assert!(!record.details().contains(name));
+    let pairing_path = format!("/api/v2/photo/sources/{id}/pairing-code");
+    let response = f
+        .request(Method::POST, &pairing_path, Some(&f.admin_cookie), "{}")
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let issued: Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 8192).await?)?;
+    let code = issued["code"]
+        .as_str()
+        .ok_or(TestError::missing("pairing code"))?;
+    let records = f.records();
+    let record = request_record(&records, AuditRoute::PhotoPairingCode, StatusCode::OK);
+    assert!(!record.details().contains(code));
+    let details: Value = serde_json::from_str(&record.details())?;
+    assert_eq!(details["targets"], json!([{"photo_source":id}]));
+    let reset_path = format!("/api/v2/photo/sources/{id}/reset-enrollment");
+    let reset = f
+        .request(Method::POST, &reset_path, Some(&f.admin_cookie), "{}")
+        .await?;
+    assert_eq!(reset.status(), StatusCode::OK);
+    request_record(
+        &f.records(),
+        AuditRoute::PhotoEnrollmentReset,
+        StatusCode::OK,
+    );
+    let state_path = format!("/api/v2/photo/sources/{id}/state");
+    let response = f
+        .request(
+            Method::POST,
+            &state_path,
+            Some(&f.admin_cookie),
+            "{\"state\":\"disabled\"}",
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    request_record(
+        &f.records(),
+        AuditRoute::PhotoSourceState,
+        StatusCode::NO_CONTENT,
+    );
+    for (cookie, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(f.viewer_cookie.clone()), StatusCode::FORBIDDEN),
+    ] {
+        let response = f
+            .request(Method::POST, &pairing_path, cookie.as_deref(), "{}")
+            .await?;
+        assert_eq!(response.status(), status);
+        request_record(&f.records(), AuditRoute::PhotoPairingCode, status);
+    }
+    f.request(
+        Method::GET,
+        "/api/v2/photo/sources",
+        Some(&f.admin_cookie),
+        "",
+    )
+    .await?;
+    assert!(f.records().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn photo_client_enrollment_is_excluded_from_operator_audit() -> TestResult {
+    let mut f = Fixture::new().await?;
+    for path in [
+        "/api/v2/photo/enrollment/pair",
+        "/api/v2/photo/enrollment/confirm",
+        "/api/v2/photo/client/initialization/complete",
+    ] {
+        f.request(
+            Method::POST,
+            path,
+            None,
+            "{\"token\":\"photo-secret-canary\"}",
+        )
+        .await?;
+        assert!(
+            f.records().is_empty(),
+            "Photo Client routes are outside Operator audit scope"
+        );
+    }
+    Ok(())
+}

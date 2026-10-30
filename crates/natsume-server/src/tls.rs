@@ -313,6 +313,10 @@ pub(crate) mod tests {
                 TestSupportError::from(crate::test_error::TestError::from(source))
             })?;
             ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            // Distinct issuer/leaf names let Windows build the test certificate chain.
+            ca_params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, "Natsume test origin CA");
             ca_params.key_usages = vec![
                 KeyUsagePurpose::DigitalSignature,
                 KeyUsagePurpose::KeyCertSign,

@@ -323,6 +323,8 @@ async fn requeue_migration_preserves_live_attempts_and_receipts_and_refuses_loss
         f.path.to_str().unwrap_or_else(|| panic!("database path")),
     ));
     must(connection.batch_execute("PRAGMA foreign_keys = ON"));
+    // Remove Photo initialization first so this test still exercises migration 8.
+    must(connection.revert_last_migration(migrations()));
     must(connection.revert_last_migration(migrations()));
     must(connection.run_next_migration(migrations()));
     assert_eq!(

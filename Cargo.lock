@@ -3379,6 +3379,7 @@ version = "0.38.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
 dependencies = [
+ "cc",
  "pkg-config",
  "vcpkg",
 ]
@@ -3754,6 +3755,56 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
 
 [[package]]
+name = "natsume-photo-client"
+version = "2.12.0"
+dependencies = [
+ "clap",
+ "diesel",
+ "diesel_migrations",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "hex",
+ "image",
+ "libsqlite3-sys",
+ "natsume-photo-protocol",
+ "percent-encoding",
+ "rcgen",
+ "reqwest",
+ "rpassword",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "snafu 0.9.2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "windows",
+ "zeroize",
+]
+
+[[package]]
+name = "natsume-photo-protocol"
+version = "2.12.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "snafu 0.9.2",
+ "specta",
+ "specta-typescript",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "natsume-print-client"
 version = "2.12.0"
 dependencies = [
@@ -3827,6 +3878,7 @@ dependencies = [
  "hex",
  "image",
  "lopdf",
+ "natsume-photo-protocol",
  "natsume-print-domjudge",
  "natsume-workstation-protocol",
  "opentelemetry",

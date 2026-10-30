@@ -89,6 +89,9 @@ jobs:
           - module: print-client
             os: windows-2022
             ubuntu_packages: ""
+          - module: photo-client
+            os: windows-2022
+            ubuntu_packages: ""
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ./.github/actions/prepare-build

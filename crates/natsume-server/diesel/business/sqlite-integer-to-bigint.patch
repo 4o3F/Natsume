@@ -1,59 +1,70 @@
---- generated-schema.rs
-+++ diesel-schema.rs
-@@ -14 +14 @@
+--- schema.rs
++++ schema.rs
+@@ -14 +14 @@ diesel::table! {
 -        credential_revision -> Integer,
 +        credential_revision -> BigInt,
-@@ -22 +22 @@
+@@ -22 +22 @@ diesel::table! {
 -        submission_epoch -> Nullable<Integer>,
 +        submission_epoch -> Nullable<BigInt>,
-@@ -41,2 +41,2 @@
+@@ -41,2 +41,2 @@ diesel::table! {
 -        activated_at_unix_ms -> Integer,
 -        retired_at_unix_ms -> Nullable<Integer>,
 +        activated_at_unix_ms -> BigInt,
 +        retired_at_unix_ms -> Nullable<BigInt>,
-@@ -49 +49 @@
+@@ -49 +49 @@ diesel::table! {
 -        reset_epoch -> Nullable<Integer>,
 +        reset_epoch -> Nullable<BigInt>,
-@@ -56,2 +56,2 @@
+@@ -56,2 +56,2 @@ diesel::table! {
 -        shutdown_epoch -> Nullable<Integer>,
 -        expires_at_unix_ms -> Nullable<Integer>,
 +        shutdown_epoch -> Nullable<BigInt>,
 +        expires_at_unix_ms -> Nullable<BigInt>,
-@@ -65 +65 @@
+@@ -65 +65 @@ diesel::table! {
 -        terminate_epoch -> Nullable<Integer>,
 +        terminate_epoch -> Nullable<BigInt>,
-@@ -75 +75 @@
+@@ -75 +75 @@ diesel::table! {
 -        created_at_unix_ms -> Integer,
 +        created_at_unix_ms -> BigInt,
-@@ -78 +78 @@
+@@ -78 +78 @@ diesel::table! {
 -        ip_observed_at_unix_ms -> Nullable<Integer>,
 +        ip_observed_at_unix_ms -> Nullable<BigInt>,
-@@ -97 +97 @@
+@@ -97 +97 @@ diesel::table! {
 -        credential_revision -> Integer,
 +        credential_revision -> BigInt,
-@@ -107,2 +107,2 @@
+@@ -107,2 +107,2 @@ diesel::table! {
 -        created_at_unix_ms -> Integer,
 -        expires_at_unix_ms -> Integer,
 +        created_at_unix_ms -> BigInt,
 +        expires_at_unix_ms -> BigInt,
-@@ -118,2 +118,2 @@
+@@ -118,2 +118,2 @@ diesel::table! {
 -        created_at_unix_ms -> Integer,
 -        expires_at_unix_ms -> Integer,
 +        created_at_unix_ms -> BigInt,
 +        expires_at_unix_ms -> BigInt,
-@@ -127 +127 @@
+@@ -127 +127 @@ diesel::table! {
 -        expires_at_unix_ms -> Integer,
 +        expires_at_unix_ms -> BigInt,
-@@ -133 +133 @@
+@@ -133 +133 @@ diesel::table! {
 -        organization_id -> Integer,
 +        organization_id -> BigInt,
-@@ -145 +145 @@
+@@ -145 +145 @@ diesel::table! {
 -        expires_at_unix_ms -> Integer,
 +        expires_at_unix_ms -> BigInt,
-@@ -157 +157 @@
+@@ -161 +161 @@ diesel::table! {
+-        completed_at_unix_ms -> Nullable<Integer>,
++        completed_at_unix_ms -> Nullable<BigInt>,
+@@ -181 +181 @@ diesel::table! {
+-        pairing_expires_at_unix_ms -> Nullable<Integer>,
++        pairing_expires_at_unix_ms -> Nullable<BigInt>,
+@@ -183,2 +183,2 @@ diesel::table! {
+-        token_expires_at_unix_ms -> Nullable<Integer>,
+-        created_at_unix_ms -> Integer,
++        token_expires_at_unix_ms -> Nullable<BigInt>,
++        created_at_unix_ms -> BigInt,
+@@ -191 +191 @@ diesel::table! {
 -        ready_sequence -> Integer,
 +        ready_sequence -> BigInt,
-@@ -162,7 +162,7 @@
+@@ -196,7 +196,7 @@ diesel::table! {
 -        claimed_at_unix_ms -> Integer,
 -        prepare_expires_at_unix_ms -> Integer,
 -        lease_expires_at_unix_ms -> Integer,
@@ -68,10 +79,10 @@
 +        last_observed_at_unix_ms -> Nullable<BigInt>,
 +        job_id -> Nullable<BigInt>,
 +        finished_at_unix_ms -> Nullable<BigInt>,
-@@ -184 +184 @@
+@@ -219 +219 @@ diesel::table! {
 -        ready_sequence -> Integer,
 +        ready_sequence -> BigInt,
-@@ -188,5 +188,5 @@
+@@ -223,5 +223,5 @@ diesel::table! {
 -        bytes -> Integer,
 -        pages -> Integer,
 -        ahead_tasks -> Integer,
@@ -82,17 +93,17 @@
 +        ahead_tasks -> BigInt,
 +        ahead_pages -> BigInt,
 +        in_progress_tasks -> BigInt,
-@@ -198 +198 @@
+@@ -233 +233 @@ diesel::table! {
 -        ready_sequence -> Integer,
 +        ready_sequence -> BigInt,
-@@ -201,2 +201,2 @@
+@@ -236,2 +236,2 @@ diesel::table! {
 -        available_at_unix_ms -> Integer,
 -        queue_order -> Integer,
 +        available_at_unix_ms -> BigInt,
 +        queue_order -> BigInt,
-@@ -212 +212 @@
+@@ -248 +248 @@ diesel::table! {
 -        pairing_expires_at_unix_ms -> Nullable<Integer>,
 +        pairing_expires_at_unix_ms -> Nullable<BigInt>,
-@@ -283 +283 @@
+@@ -319 +319 @@ diesel::table! {
 -        organization_id -> Integer,
 +        organization_id -> BigInt,

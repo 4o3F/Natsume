@@ -107,6 +107,10 @@ Read [DESIGN.md](DESIGN.md) before changing Web layouts, components, or styles. 
 
 ## Agent skills
 
+### Rust development
+
+Use the installed `rust-best-practices` skill when writing, changing, debugging, or explaining Rust. Use `rust-review` when reviewing Rust code. Repository-specific Snafu, tracing, Diesel, and safety rules above take precedence over the skills' general recommendations.
+
 ### Pre-commit hooks
 
 This repository uses `prek` to run the `.pre-commit-config.yaml` hooks. After changes that affect the hook scope, run `prek run --all-files`; this is the only pre-commit check entry point. Do not assume the separate `pre-commit` CLI is installed.

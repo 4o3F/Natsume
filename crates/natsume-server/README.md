@@ -53,11 +53,45 @@ Enter the target login name and the same new password twice. Reset advances the 
 
 ## HTTP request bodies
 
+Photo client enrollment JSON has a separate 8 KiB extraction limit; Photo administrator routes retain the Panel limit described below.
+
 The Panel API does not set per-route body-size overrides. JSON and Bytes extraction use Axum's default 2 MiB limit. JSON extraction failures retain the API's 400 error mapping; oversized XLSX uploads return 413. Format-specific constraints remain owned by their components, independently of the HTTP extractor limit. See the [HTTP boundary rules](../../docs/architecture.md#153-desired-state-operator-api).
 
 Import admits one heavy operation at a time before buffering the workbook, shared by preview creation and commit. Busy requests return 503 with `Retry-After: 1`, without reading or queueing their bodies. Lightweight import queries remain available. Capacity remains reserved until queued/running blocking work and its transaction finish, even if the caller is cancelled. Parsed cell text is separately bounded to 64 MiB, counting repeated shared-string references before copying.
 
 The current `axum::serve` entry point does not install a Hyper timer, so the default HTTP/1 request-header timeout is not active. There is also no API-wide processing deadline or independent body-read timer; slow uploads can retain Import capacity until the request ends. See [resource-protection verification](docs/resource-limits.md) for tests, opt-in measurements and acceptance limitations.
+
+## Photo initialization
+
+Photo Client goes online only for first-time initialization. Administrators use the existing Operator session; clients use a separate Photo-only bearer credential. The Windows [Client adapter and initialization command](../natsume-photo-client/README.md#启动与操作) use these APIs. Web UI and result ZIP ingestion are not implemented. The authoritative lifecycle is [architecture section 23.4](../../docs/architecture.md#234-离线工作区与队伍优先拍摄组).
+
+All paths below are relative to `/api/v2`; JSON rejects unknown fields. Admin routes require an admin Operator cookie. Client routes never accept that cookie as Photo authorization.
+
+Photo administrator mutations use the shared operational journal: source creation, pairing-code issuance/replacement, and source-state updates record `OperatorRequest` with the authenticated actor, request correlation, typed source ID, route, HTTP status and API error metadata. GETs and Photo Client enrollment/download/completion routes are outside Operator audit scope. Pairing codes, bearer credentials, public keys and request/response bodies are not journal details. This best-effort history does not participate in Photo transactions. Photo tables remain in the business database; the journal uses its separate database and migration tree.
+
+| Method and path | Authorization | Request / result |
+| --- | --- | --- |
+| `POST /photo/sources` | Admin | `{name}` → 201 source |
+| `GET /photo/sources` | Admin | 200 sources, without secrets or signing keys |
+| `POST /photo/sources/{source_id}/pairing-code` | Admin | `{replace_pending_enrollment?: boolean}` → 200 code and expiry |
+| `POST /photo/sources/{source_id}/state` | Admin | `{state: "enabled" / "disabled" / "revoked"}` → 204 |
+| `POST /photo/enrollment/pair` | One-time code | `{code, signing_public_key, client_version}` → 201 source ID, enrollment ID, token, expiry |
+| `POST /photo/enrollment/confirm` | Photo bearer | `{enrollment_id, signing_public_key}` → 200 source |
+| `GET /photo/client/initialization` | Confirmed Photo bearer | 200 immutable JSON; quoted SHA-256 in `ETag` |
+| `GET /photo/client/resources/{sha256}` | Confirmed Photo bearer | 200 PNG from this source's snapshot |
+| `POST /photo/client/initialization/complete` | Photo bearer | `{initialization_id, manifest_sha256, request_id}` → 204 |
+
+Source responses contain `source_id`, `name`, `state`, `enrollment_confirmed` and `initialization_completed`. IDs are canonical lowercase UUID strings. A signing public key is 32-byte Ed25519 encoded as 64 lowercase hexadecimal characters; weak keys are rejected. `client_version` is SemVer. Clients must persist their signing key before pairing and persist the enrollment credential before confirming. No private key is sent to Server.
+
+Codes expire after ten minutes and are consumed atomically. Tokens expire after one hour. Server stores only hashes of codes and tokens. Reissuing a code after any binding requires explicit `replace_pending_enrollment: true` and is allowed only for enabled sources whose initialization has not completed. Replacement atomically invalidates the old enrollment, public key and token and removes the uncompleted snapshot record; the next binding downloads a new immutable snapshot. Completed sources cannot be reset. Unreferenced cache files are retained for maintenance. Disabled sources can be enabled again; revoked sources cannot. Expired confirmed enrollments that never completed can recover through this explicit administrator replacement; the Client must initialize a new workspace path using the new code. Existing failed staging directories are retained, and old Client journals are not automatically rebound. Pairing admits at most five requests per peer IP and sixty globally in a rolling minute, per Server process; it requires the TLS listener's peer-address extension.
+
+Initialization returns `{format_version: 1, source_id, dataset_id, initialization_id, teams, school_logos}`. Every team contains exactly `account_id`, `account`, `organization_id`, `school_name_zh`, `school_name_en`, `team_name_zh`, `team_name_en`. No seat, password or credential revision is read into the projection. Each logo contains `organization_id`, `sha256`, `content_type: "image/png"`, `size_bytes`; map teams to logos using `organization_id`. Missing or ambiguous logos are omitted. Matched invalid logos abort initialization. PNG conversion preserves dimensions. The Client does not configure a default presentation image; the presentation remains empty when no photo is available.
+
+The first successful download freezes both JSON and logo bytes for that enrollment; retries and Server restarts use the saved snapshot. An explicit administrator replacement of an uncompleted enrollment removes its snapshot reference and permits a new snapshot. Limits are 2,000 teams, 4 MiB JSON, 16 MiB per normalized PNG and 256 MiB unique PNG data per snapshot, in addition to Contest's source-image limits. At most one snapshot is prepared and two resource responses are held per process; busy requests return 503. Resource files are synced before database publication, and downloads validate size and hash. Incomplete unpublished directories are retained for operator maintenance; this feature does not add a cache sweeper or HTTP body-read deadline.
+
+After durably saving all local data, Client completes with the initialization ID, SHA-256 of the **exact received JSON bytes** and a durably saved UUID request ID. Completion closes all downloads. Repeating the exact completion receipt remains safe after token expiry; a different request ID conflicts. Disabled/revoked sources still fail authentication. All Photo responses use `Cache-Control: no-store`. Invalid inputs return 400, missing/wrong/expired credentials 401, unconfirmed downloads 403, unknown resources 404, lifecycle conflicts 409, resource limits 413 and pairing admission limits 429.
+
+The additive migration creates `photo_server_metadata`, `photo_sources` and `photo_initializations`; it changes no existing team, account, seat or printing tables. Binary cache files live under optional absolute `[storage].photo_initializations`, defaulting to the database path with its extension replaced by `.photo`. The service user needs write access there. Back up the database and cache together. Existing deployments need no new mandatory configuration field.
 
 ## DOMjudge print admission
 

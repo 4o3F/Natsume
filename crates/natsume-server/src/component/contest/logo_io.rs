@@ -200,6 +200,21 @@ pub(crate) struct LogoImage {
 }
 
 impl DecodedLogo {
+    pub(super) fn encode_photo_png(self) -> Result<Vec<u8>, LogoError> {
+        match self.0 {
+            LogoContent::Raster { image, .. } => {
+                let mut output = Cursor::new(Vec::new());
+                image
+                    .write_to(&mut output, ImageFormat::Png)
+                    .map_err(|source| LogoError::Decode { source })?;
+                Ok(output.into_inner())
+            }
+            LogoContent::Svg(image) => image.encode_png().map_err(|source| LogoError::Encode {
+                source: io::Error::other(source),
+            }),
+        }
+    }
+
     /// Preserve raster source bytes; rasterize SVG for safe browser delivery.
     ///
     /// # Errors

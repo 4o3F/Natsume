@@ -68,6 +68,66 @@ const INVENTORY: &[Route] = &[
     Route {
         principal: Principal::Public,
         admin: false,
+        method: Method::POST,
+        path: "/photo/enrollment/pair",
+    },
+    Route {
+        principal: Principal::Public,
+        admin: false,
+        method: Method::POST,
+        path: "/photo/enrollment/confirm",
+    },
+    Route {
+        principal: Principal::Public,
+        admin: false,
+        method: Method::POST,
+        path: "/photo/client/initialization",
+    },
+    Route {
+        principal: Principal::Public,
+        admin: false,
+        method: Method::GET,
+        path: "/photo/client/resources/{sha256}",
+    },
+    Route {
+        principal: Principal::Public,
+        admin: false,
+        method: Method::POST,
+        path: "/photo/client/initialization/complete",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
+        path: "/photo/sources",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::GET,
+        path: "/photo/sources",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
+        path: "/photo/sources/{source_id}/pairing-code",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
+        path: "/photo/sources/{source_id}/state",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
+        path: "/photo/sources/{source_id}/reset-enrollment",
+    },
+    Route {
+        principal: Principal::Public,
+        admin: false,
         method: Method::GET,
         path: "/device/control",
     },
@@ -506,6 +566,11 @@ pub(super) async fn mounted_route_responses(
                 StatusCode::NOT_FOUND
             }
             (Principal::Public, _, "/print/client/confirmation") => StatusCode::UNAUTHORIZED,
+            (Principal::Public, _, path)
+                if path.starts_with("/photo/") && path != "/photo/enrollment/pair" =>
+            {
+                StatusCode::UNAUTHORIZED
+            }
             (Principal::Public, _, _) => StatusCode::BAD_REQUEST,
             _ => StatusCode::UNAUTHORIZED,
         };
@@ -668,7 +733,9 @@ async fn assert_principal_boundary(
         );
     }
     let response = drive(application, anonymous).await?;
-    if route.principal == Principal::Public {
+    if route.principal == Principal::Public
+        && !(route.path.starts_with("/photo/") && route.path != "/photo/enrollment/pair")
+    {
         assert_ne!(
             response.status,
             StatusCode::UNAUTHORIZED,

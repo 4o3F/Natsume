@@ -822,7 +822,9 @@ Server按调用职责分成四层，依赖只向下：
 
 `ServerState`是组合入口构造后交给入口层的共享句柄容器，不是额外一层。HTTP从容器取得具体组件或协调器；WSS处理取得显式传入的`Arc<DeviceControl>`，后台任务只保留自己需要的依赖，不重新组装组件，也不让协调器反向依赖`ServerState`。
 
-协调层有两个成员：`DeviceControl`负责设备mutation与运行时编排，`JournalQuery`负责只读日志查询、时间线重建、概要、导出和状态。`JournalQuery`只持有`JournalComponent::reader()`、共享`Arc<OperatorComponent>`和构造时注入的`LiveLeaseView`；该view只弱引用Registry目录、读取actor维护的当前session cell，不持有整个DeviceControl、不发送actor消息、不延长协调器或actor生命周期。另一协调器所需的运行时事实必须通过这种窄只读视图注入，不能互持协调器句柄。Operator通过自己的只读DB方法批量解析当前显示名；失败时保留ID，显示名未知。handler只解析／校验输入、检查权限、调用`state.journal_query()`并序列化，不实现重建或跨组件业务规则。
+协调层按具体用例划分：`DeviceControl`负责设备mutation与运行时编排，`JournalQuery`负责只读日志查询、时间线重建、概要、导出和状态。`JournalQuery`只持有`JournalComponent::reader()`、共享`Arc<OperatorComponent>`和构造时注入的`LiveLeaseView`；该view只弱引用Registry目录、读取actor维护的当前session cell，不持有整个DeviceControl、不发送actor消息、不延长协调器或actor生命周期。另一协调器所需的运行时事实必须通过这种窄只读视图注入，不能互持协调器句柄。Operator通过自己的只读DB方法批量解析当前显示名；失败时保留ID，显示名未知。handler只解析／校验输入、检查权限、调用`state.journal_query()`并序列化，不实现重建或跨组件业务规则。
+
+Photo 初始化使用 `PreparePhotoInitialization`，显式借用 Contest 和 Photo；它只组织事实读取与发布，草稿校验、资源预算和存储仍由 Photo 独占。
 
 1. **依赖只向下。** 组件只持有自身需要的基础设施，不持有协调器、Registry或其他组件实例；不为日志发出互调组件。TargetSubmission既有的同步事务业务入口继续遵循§10.5，不扩展成组件实例间的隐式调用。协调器依赖具体组件和基础设施，不能依赖入口或父容器；协调器之间也不互相依赖。
 2. **调用路径由实际用例决定。** 单组件操作由入口直调组件；设备mutation只有跨组件编排或需要Registry、fence、actor等运行时状态时才走`DeviceControl`；日志查询由`JournalQuery`协调只读依赖。协调器不增加一对一转发方法；组件返回的`TargetChange`仍由调用方交给`publish`，组件不反向通知Registry。
@@ -1270,7 +1272,7 @@ Operator API及Operator公开认证流程的mutation审计固定层次（外→�
 
 审计范围仅包括Operator认证路由和Operator公开认证流程（session登录／登出、邀请注册及inspect、密码重置及inspect、本人改密）；Print Client／Source认证路由、机器配对／确认及未挂载路径不产生审计记录。范围内的非GET／HEAD请求在完成后尝试发出一个`OperatorRequest`，包括401、403、400、405、取消调用方后的真实完成结果及panic→500；GET／HEAD不产生通用请求记录。panic由现有任务边界脱敏为500，审计完成guard在展开时记录同一静态错误分类，不读取panic payload；调用方取消不取消已获准的mutation，也不额外伪造一次取消记录。
 
-`MatchedPath`只映射为封闭`AuditRoute`，路由清单测试约束所有Operator mutation及Operator公开认证mutation都有映射，并证明Print Client／Source路由没有映射。targets按route解析canonical UUIDv7／正序号，非法值省略，未分类路径不审计，不回退原URI、query或路径文本。handler只从已经校验或提交的结果补充operation/result ID，不重新查询业务库；targets去重并最多保留16个，保证details的2 KiB上限，批量操作的完整逐设备事实由`TargetSubmitted`及共同operation ID关联。`ApiError`只在response extensions附加封闭`ApiErrorCode`和编译期static cause，供audit写入可选`api_code`／`cause`；不读取错误title、source chain、headers或body作为事件内容，不改变既有响应格式。
+`MatchedPath`只映射为封闭`AuditRoute`，路由清单测试约束所有Operator mutation及Operator公开认证mutation都有映射，并证明Print Client／Source路由没有映射。Photo 管理员创建来源、签发配对码、重置绑定、更新来源状态也在审计范围内，分别映射为 PhotoSources、PhotoPairingCode、PhotoEnrollmentReset、PhotoSourceState，并只关联 typed PhotoSource ID；Photo Client 配对／确认／下载／完成不属于 Operator 审计。新来源创建成功后 handler 补记返回的来源 ID，配对码、token、公钥和请求／响应正文不写入详情。targets按route解析canonical UUIDv7／正序号，非法值省略，未分类路径不审计，不回退原URI、query或路径文本。handler只从已经校验或提交的结果补充operation/result ID，不重新查询业务库；targets去重并最多保留16个，保证details的2 KiB上限，批量操作的完整逐设备事实由`TargetSubmitted`及共同operation ID关联。`ApiError`只在response extensions附加封闭`ApiErrorCode`和编译期static cause，供audit写入可选`api_code`／`cause`；不读取错误title、source chain、headers或body作为事件内容，不改变既有响应格式。
 
 Auth事实只由`OperatorComponent`发出：成功创建session后记`AuthSucceeded`，仅登录尝试失败记`AuthFailed`，按invalid credentials／rate limited／infrastructure封闭分类；普通会话校验无论成功、过期或无效都不产生认证事件，mutation的401由`OperatorRequest`记录。删除确实存在的session后记`LoggedOut`，重复或未知logout只保留请求记录；本人改密、重置签发／消费及邀请注册在各自提交后发对应事件。logout和reset completion从原有查询／事务结果返回已知Operator ID，不新增认证或用户名查询。事件不保存尝试登录名、密码、token、session credential或响应中的秘密。离线CLI bootstrap／password reset继续使用数据库边界，不打开或写入journal。request span中的有效trace ID在`RequestAudit`创建时一次捕获，随后显式传给所有auth／domain事件及最终请求记录，包括panic和关闭准入拒绝路径；没有有效OpenTelemetry上下文时省略。
 
@@ -1579,6 +1581,7 @@ crates/natsume-workstation-ipc/
 crates/natsume-print-client/
 crates/natsume-print-domjudge/
 crates/natsume-photo-client/
+crates/natsume-photo-protocol/   # 首次授权初始化的双端 HTTP 数据契约
 crates/natsume-contest-domain/    # 实际多生产消费者需要时提取
 crates/natsume-photo-package/     # 成果包契约随双端实现提取，不预建空包
 ```
@@ -1588,6 +1591,8 @@ crates/natsume-photo-package/     # 成果包契约随双端实现提取，不�
 目录／Cargo 命名迁移与业务重构分别审阅，更新 workspace、依赖、生成工具、CI、 架构检查、打包与文档路径。显式保持现有安装 binary、systemd 与 D-Bus 名称， 必要时用 `[[bin]]` 固定目标名；不修改 Device wire、密码 profile 或既有部署语义。 XLSX／密码输入归 Server Import 内部，校徽文件与图像处理归 Server Contest 内部，不建立独立 roster 公共库或离线校徽预检工具。
 
 `natsume-contest-domain` 只承载共同需要的稳定身份、非秘密基础资料和纯值约束， 不含 DB、网络、文件系统、GUI、输入格式或业务编排，不创建第二套队伍身份。 `natsume-photo-package` 只承载专用成果格式与签名／完整性契约，不接管名单、来源授权和审批。 域类型共享不共享 authority，也不把所有领域状态机、DTO 或错误码塞进全局 core。
+
+`natsume-photo-protocol` 承载当前 Server 和 Photo Client 都消费的首次初始化 HTTP 请求、响应、快照关系校验和协议值类型，不承载未来的照片成果包。`PhotoTeam` 是既有 Contest account/team 事实的七字段传输投影，沿用 `account_id`，不生成或维护另一套队伍身份；将来其他领域确实需要共同的身份约束时，再按上面的条件提取 `natsume-contest-domain`。本 PR 尚未发布的版本 1 契约允许双端同步修改；发布后的版本变更必须显式协调，不能通过手动重复校验掩盖漂移。
 
 共享 crate准入条件：
 
@@ -2341,10 +2346,30 @@ sequenceDiagram
 
 Photo Client 首次联网登记来源、信任和非秘密名单快照，之后可离线搜索、收图、 重照、确认、导出并在重启后恢复。不使用含密码的原始 XLSX 或 DOMjudge 全量导出 ZIP 作为初始化资料，不依赖在线 Operator cookie 或 Web 缓存维持本地工作区。
 
+管理员沿用 Operator 登录，创建独立 Photo source 并签发十分钟一次性配对码。Photo Client 先在本地保存 Ed25519 签名密钥，再用配对码、公钥与版本兑换一小时的 Photo 专用初始化凭据；本地可靠保存后回显 enrollment ID 与公钥确认绑定。凭据不复用 Operator、Print 或 Device 授权，Server 只保存配对码和凭据的哈希。启用且尚未完成初始化的来源，可由管理员明确替换 enrollment（包括已确认绑定）；替换在同一事务中失效旧绑定、公钥和 token，并移除未完成快照引用，重新绑定后发布新快照。普通发码不能隐式覆盖绑定，已完成来源禁止重置；禁用可恢复，撤销永久生效。
+
+初始化快照获取使用 `POST /photo/client/initialization`，因为首次请求会写缓存与数据库；复用 ServerLifecycle mutation 准入、在途跟踪与停止等待。资源 GET 保持只读。普通 `POST /photo/sources/{source_id}/pairing-code` 不重置授权；显式重置使用独立的 `POST /photo/sources/{source_id}/reset-enrollment`，生成新码与失效旧绑定在同一事务内完成，并形成可区分的 OperatorRequest 路由分类。
+
+Photo 与 Contest 的初始化编排由具体 `PreparePhotoInitialization` 协调入口负责，PhotoComponent 不持有或接收 ContestComponent 实例。Contest 提供非秘密名单和按学校名称解析的 PNG；Photo 拥有来源验证、快照发布与存储。`natsume-photo-protocol` 统一配对、确认、完成的请求和响应、初始化快照、不同用途的规范 UUIDv7 类型、摘要、格式版本、资源限额和发布／安装校验；Bearer token 对 Client 不透明，其内部编码只由 Server 解析；不承载数据库、HTTP 或 Windows 凭据逻辑。私有缓存启动时校验 owner／权限，运行时以固定目录句柄进行相对打开，拒绝符号链接；容量拒绝给出 Retry-After，Client 只对快照获取与资源下载做有界重试，不自动重试配对和完成操作。Print／Photo 共用配对原语与一分钟阻断机制，各自保留独立领域预算。
+
+首次下载发布来源专属、不可变的初始化 JSON 快照，包含独立 dataset ID、initialization ID、七字段队伍名单与按 organization ID 关联的 PNG 校徽目录。名单保持 Contest 原有队伍／账号／学校／座位关联语义，但只选择 account_id、account、organization_id、学校及队伍的中英文名，不读取密码或输出座位、credential revision。校徽归 Contest 解析并转换为保持原尺寸的 PNG；同校共用，缺失或名称匹配不唯一时省略，已匹配但损坏时整体失败。Client 不配置默认展示图；没有照片时展示留空。
+
+快照先同步资源文件，再提交数据库中的 JSON 与哈希；同一绑定内重试及 Server 重启返回相同字节，不追随实时名单／校徽变更。资源下载只允许访问本来源已发布快照列出的哈希。Client 校验并可靠保存后，以 initialization ID、JSON 原始字节 SHA-256 与稳定 request ID 提交完成；Server 持久化完成回执并关闭该来源全部下载，同一完成请求可在凭据过期后重放，其他 request ID 冲突，禁用／撤销仍拒绝。Photo 新增独立来源、数据集元信息及初始化表，不改写名单、座位或其他业务表；未发布的中断缓存保留供维护，不自动回收。
+
+Windows Photo Client 将签名种子和初始化凭据保存到当前用户凭据库，非秘密的来源、信任 origin、客户端身份和恢复阶段保存在目标同级的初始化日志中。只接受 HTTPS origin，不跟随重定向，不跳过证书验证；可显式配置部署 CA。Client 在暂存工作区内校验名单、校徽和原始 JSON 哈希，先记录稳定完成请求，再通知 Server；完成响应丢失时只重放同一回执，本地文件损坏则停止。收到成功回执后发布正式工作区，重试发布与日常打开不依赖网络。管理员替换未完成来源后，Client 使用新目标路径和新码重新初始化，旧失败日志不自动改绑；旧暂存及未引用快照文件保留供维护。完成与替换在事务内竞争：完成先提交则拒绝替换，替换先提交则旧凭据不能发布或完成。未完成目录不冒充正式目标，不自动覆盖已有工作区；日志中断恢复及文件发布遵守各平台文件同步语义，Windows 不宣称与 Unix 父目录 fsync 相同的断电保证。
+
+Client 在创建初始化目录之前取得目标同级排他锁；只有没有配对标记或其他业务事实的空目录／空首记录可以恢复为新初始化。verify、publish、doctor 共同验证严格授权字段及凭据库私钥与公钥匹配，完成前不通过则不关闭下载权。工作区可写所有者持有进程级文件锁，拍摄会话延长该锁的生命周期；doctor 通过只读连接检查，不声称拥有拍摄权限。
+
+`CaptureSession` 拥有 Session 和收图命令的顺序协调，Ingestion 仅接收明确的会话上下文处理文件，不拥有队伍选择策略。操作先发布快照再应答。周期扫描先比较元数据，未变原图不每轮全量哈希；保留全局每三十秒至多一个原图的有界内容复核，以覆盖保留元数据的改写，这类改写的发现延迟随目录大小增长。消失来源告警可明确确认处理，返回的来源仍需人工归属，不因切队而自动归到下一队。任务失败发布停止状态并通过 shutdown 返回。
+
+工作区读写能力由类型区分，只有持有工作区写所有权的入口可以拍摄；只读和可写打开均校验就绪、名单和资源，授权绑定由初始化与离线诊断另行校验。初始化所有权与工作区写所有权分别由自己的模块创建，不能互换；实际副作用任务结束前不得因调用方取消而释放所有权。日志只通过明确的阶段转换提交。标记和授权资料以完整、同步且不覆盖的方式发布，已经验证的下载可修复同摘要缓存。完成前及正式发布前校验本地资料，发布消费已经验证的工作区，保持写入排他，不重复扫描资源。
+
+初始化使用共享的规范 ID、公钥、格式和资源类型；持久化表示在 Photo 私有数据库边界映射和校验，不在 handler 中组织事务。Client 区分用户输入的服务器 URL 与验证后的 HTTPS origin，凭据、本地授权和恢复资料使用同一个规范 origin。管理员可修正的非法名单以 409 冲突拒绝发布，错误日志保留脱敏的具体原因；持久化损坏仍是内部错误。
+
 摄影师窗口与选手展示窗口分开，流程为：
 
 ```text
-先选定队伍 → 选手屏显示 Waiting 风格资料 → 口头核对，摄影师开始本队拍摄组
+先选定队伍 → 选手屏显示队伍资料（不包含座位号）→ 口头核对，摄影师开始本队拍摄组
   → 拍摄／收图，持续展示本组最新有效候选
   → 不满意则继续重拍，所有照片仍属于本组
   → 摄影师确认实际显示的具体队伍／照片／呈现版本，锁定成品
@@ -2355,13 +2380,15 @@ Photo Client 首次联网登记来源、信任和非秘密名单快照，之后�
 
 ### 23.5 热文件夹与安全接管
 
-首期只监控热文件夹，JPEG／PNG 输入，不做 RAW 显影、相机 SDK、远程快门或实时协作修图。 通知只用于发现，须处理未写完、重复事件、同名变更、重启补扫、解码限额和失败恢复。 客户端工作区保留稳定素材身份与归属，预览不引用会被上游覆盖的源路径。
+`CaptureSession` 拥有队伍选择、拍摄组、任务登记、暂停／恢复和对外状态；私有 Ingestion 根据当前组身份报告来源事实，不修改 Session。原生目录通知和文件归档是私有低层能力，不反向依赖会话策略。拍摄和数据库任务延长工作区写所有权，操作先发布状态再应答，停止时等待已启动归档并报告失败。
+
+首期只监控热文件夹，JPEG／PNG 输入，不做 RAW 显影、相机 SDK、远程快门或实时协作修图。 通知只用于发现，须处理未写完、重复事件、同名变更、重启补扫、解码限额和失败恢复。 客户端工作区保留稳定素材身份与归属，预览不引用会被上游覆盖的源路径。只有完整、有效的目录枚举才能确认待归档源消失：移除其 pending 并结束准确的组任务，同时在内存快照保留源路径和原组的待核对事实，不伪造归档成功。同轮新路径保守待核对；目录不可读仍暂停，已有归档不因源消失被删除。
 
 复制／移动均可配置，默认模式另定规格（建议复制）。移动必须先安全接管并持久化再移除 同一源文件，覆盖跨卷／中断／删除失败／源文件被替换，不能丢图或盲删新文件。 无活动组的来图先待归组，不自动挂下一队；未确认图片允许显式排除／纠正归组。 Client 必须等待所有已知归档工作，但无法证明相机／上游没有尚未到达的照片； 安静窗口不等于可靠相机批次结束，未知跨组迟到也不能靠时间戳自动证明归属。
 
 ### 23.6 成果包、接收与外部图片交付
 
-只有确认成品交付。在线提交与离线签名包经 Web Panel 导入使用同一接收规则； 成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希， 由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
+只有确认成品交付。Photo Client 仅首次初始化联网，之后全程离线；Manifest、签名与成品图片组成一个 ZIP，经 Web Panel 一次上传。Server 使用有界流式解压和验证，限制压缩包、条目、解压总量与图像解码资源，不整包加载到内存。成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希，由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
 
 先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值， 显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理， 其他有效项继续接收，不按队名、校名或复用账号猜测 identity。 人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。
 
@@ -2369,7 +2396,7 @@ Server 管理当前成品和待处理候选，不做原片云盘、全量历史�
 
 ### 23.7 GUI 及目标环境验证
 
-核心逻辑采用 Rust，GUI 首轮只比较 Slint／Tauri，GPUI 不进入首轮，.NET 不是默认选择。 同场景验证中文 IME／长名称、双窗口／混合 DPI／拔插、最新图／确认竞态、离线重启、 干净 Windows 安装及实际资源开销后选择一种。
+Photo Client 核心逻辑采用 Rust，GUI 采用 Slint。原生界面参考提供的摄影工作台模板，操作窗口与只读选手窗口分离。启动时检测显示器；双屏由用户分别选择操作屏和展示屏，展示屏默认全屏；单屏先提示“选择单屏启动”，确认后打开两个非全屏窗口。没有照片时展示留空，不引入座位数据或工位 Waiting 界面。必须验证中文 IME／长名称、双窗口／混合 DPI／拔插、最新图／确认竞态、离线重启、干净 Windows 安装及实际资源开销；界面演示不能代替这些生产验收。
 
 Slint 不直接移植现有强制 Wayland／D-Bus Agent；需核对 Windows backend、renderer、 字体与原生运行库。Tauri 可复用纯 UI，不复用在线 Panel 登录／轮询为离线生命周期； 须处理 WebView2 离线部署、逐窗口权限、受限本地图片访问，不把私钥交给 JS， 也不用 Base64／JSON 事件高频传送全分辨率照片。展示窗口不得继承摄影师全部能力。
 

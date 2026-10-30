@@ -16,6 +16,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+natsume-photo-protocol = { path = "../natsume-photo-protocol", features = ["typescript"] }
 argon2.workspace = true
 axum.workspace = true
 base64.workspace = true
@@ -25,6 +26,8 @@ clap.workspace = true
 cookie.workspace = true
 diesel.workspace = true
 diesel_migrations.workspace = true
+ed25519-dalek.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 image.workspace = true
@@ -70,8 +73,6 @@ zip.workspace = true
 trybuild.workspace = true
 natsume-print-domjudge = { path = "../natsume-print-domjudge" }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
-ed25519-dalek.workspace = true
-futures-util.workspace = true
 regex.workspace = true
 rustls = { workspace = true, features = ["tls12"] }
 tokio = { workspace = true, features = ["test-util"] }

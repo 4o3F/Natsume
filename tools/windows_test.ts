@@ -43,6 +43,12 @@ Deno.test("package defaults and explicit selections respect the host platform", 
     "Windows all must use the package definitions",
   );
   rejects(() => selection(["print-client"], "linux"));
+  rejects(() => selection(["photo-client"], "linux"));
+  assert(
+    rustArguments("windows").includes("--workspace") &&
+      packageTargets["photo-client"].crates.includes("natsume-photo-client"),
+    "Windows workspace checks must include the photo backend",
+  );
   rejects(() => selection(["client"], "windows"));
 });
 

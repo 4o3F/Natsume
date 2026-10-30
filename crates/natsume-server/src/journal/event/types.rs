@@ -395,6 +395,10 @@ pub(crate) enum AuditRoute {
     PrinterPairingCode,
     PrintSources,
     PrintSource,
+    PhotoSources,
+    PhotoPairingCode,
+    PhotoEnrollmentReset,
+    PhotoSourceState,
     Provisioning,
     TargetSubmission,
 }
@@ -428,6 +432,7 @@ pub(crate) enum AuditTarget {
     Review(ReviewId),
     Import(Uuid),
     PrintSource(Uuid),
+    PhotoSource(Uuid),
     Printer(Uuid),
     PrintExecution(#[specta(type = specta_typescript::Number)] i64),
     PasswordReset(Uuid),

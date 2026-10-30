@@ -79,3 +79,24 @@ it("omits malformed API codes and bounds audit targets", () => {
     "PATCH Device · HTTP 403 · Review abcdef01",
   );
 });
+
+it("labels Photo administrator audit routes and source targets", () => {
+  for (const [route, label] of [
+    ["photo_sources", "Photo sources"],
+    ["photo_pairing_code", "Photo pairing code"],
+    ["photo_enrollment_reset", "Photo enrollment reset"],
+    ["photo_source_state", "Photo source state"],
+  ] as const) {
+    expect(
+      describeEvent({
+        kind: "operator_request",
+        route,
+        method: "post",
+        status: 200,
+        api_code: null,
+        cause: null,
+        targets: [{ photo_source: "01912345-6789-7abc-8def-0123456789ab" }],
+      }),
+    ).toBe(`POST ${label} · HTTP 200 · Photo source 01912345`);
+  }
+});

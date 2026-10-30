@@ -11,6 +11,7 @@ use crate::{
         home::HomeComponent,
         import::ImportComponent,
         operator::OperatorComponent,
+        photo::PhotoComponent,
         power::PowerControlComponent,
         print::PrintComponent,
         provisioning::ProvisioningComponent,
@@ -38,6 +39,7 @@ pub(crate) struct ServerState {
     /// Read-only journal coordinator with bounded storage, names and narrow lease dependencies.
     journal_query: JournalQuery,
     print: PrintComponent,
+    photo: PhotoComponent,
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: Arc<ProvisioningComponent>,
@@ -88,6 +90,15 @@ impl ServerState {
         )
         .await
         .map_err(|source| ServerStateError::PrintStorage { source })?;
+        let photo_database = database.clone();
+        let photo_path = config.photo_initializations_path().to_path_buf();
+        let photo =
+            tokio::task::spawn_blocking(move || PhotoComponent::new(photo_database, &photo_path))
+                .await
+                .map_err(|source| ServerStateError::PhotoStorage {
+                    source: crate::component::photo::InitializationError::Worker { source },
+                })?
+                .map_err(|source| ServerStateError::PhotoStorage { source })?;
         let journal =
             JournalComponent::start(config.journal_path().to_owned(), config.journal().clone());
         Ok(Self::from_parts(
@@ -95,7 +106,7 @@ impl ServerState {
             print,
             vault,
             gateway,
-            config.organization_logos_path().to_path_buf(),
+            (config.organization_logos_path().to_path_buf(), photo),
             journal,
             utc_offset,
         ))
@@ -106,7 +117,7 @@ impl ServerState {
         print: PrintComponent,
         vault: VaultSession,
         gateway: GatewayComponent,
-        logos: std::path::PathBuf,
+        (logos, photo): (std::path::PathBuf, PhotoComponent),
         journal: JournalComponent,
         utc_offset: time::UtcOffset,
     ) -> Self {
@@ -145,6 +156,7 @@ impl ServerState {
             operator,
             journal_query,
             print,
+            photo,
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
             target_submission: TargetSubmissionComponent::new(database.clone(), journal.emitter()),
             import: ImportComponent::new(database, vault),
@@ -171,6 +183,18 @@ impl ServerState {
 
     pub(crate) const fn print(&self) -> &PrintComponent {
         &self.print
+    }
+
+    pub(crate) fn photo_initialization(
+        &self,
+    ) -> crate::photo_initialization::PreparePhotoInitialization<'_> {
+        crate::photo_initialization::PreparePhotoInitialization {
+            photo: &self.photo,
+            contest: &self.contest,
+        }
+    }
+    pub(crate) const fn photo(&self) -> &PhotoComponent {
+        &self.photo
     }
 
     pub(crate) const fn journal_query(&self) -> &JournalQuery {
@@ -223,6 +247,10 @@ fn map_gateway_load_error(error: GatewayLoadError) -> ServerStateError {
 
 #[derive(Debug, Snafu)]
 pub(crate) enum ServerStateError {
+    #[snafu(display("Photo storage initialization failed"))]
+    PhotoStorage {
+        source: crate::component::photo::InitializationError,
+    },
     #[snafu(display("server configuration failed"))]
     Configuration { source: crate::config::ConfigError },
     #[snafu(display("vault startup failed"))]
@@ -293,14 +321,18 @@ pub(crate) mod tests {
         })?;
         let gateway =
             GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
+        let photo_directory = documents.with_extension("photo-initializations");
         let print = crate::component::print::PrintComponent::for_test(database.clone(), documents)
             .map_err(|source| ServerStateError::PrintStorage { source })?;
+        let photo =
+            crate::component::photo::PhotoComponent::new(database.clone(), &photo_directory)
+                .map_err(|source| ServerStateError::PhotoStorage { source })?;
         Ok(ServerState::from_parts(
             database,
             print,
             vault,
             gateway,
-            logos,
+            (logos, photo),
             journal,
             time::UtcOffset::UTC,
         ))
