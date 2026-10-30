@@ -4,7 +4,7 @@ use axum::{
     body::{Body, Bytes},
     extract::{
         ConnectInfo, DefaultBodyLimit, FromRequest as _, Path, Request, State,
-        rejection::JsonRejection,
+        rejection::{JsonRejection, PathRejection},
     },
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse as _, Response},
@@ -110,9 +110,12 @@ async fn list_sources(State(state): State<AppState>) -> Response {
 }
 async fn issue_code(
     State(state): State<AppState>,
-    Path(id): Path<natsume_photo_protocol::SourceId>,
+    path: Result<Path<natsume_photo_protocol::SourceId>, PathRejection>,
     body: Result<Json<PhotoPairingCodeRequest>, JsonRejection>,
 ) -> Response {
+    let Ok(Path(id)) = path else {
+        return ApiError::invalid_request("photo_identifier").into_response();
+    };
     let Ok(Json(_body)) = body else {
         return ApiError::invalid_request("photo_pairing_code_json").into_response();
     };
@@ -127,8 +130,11 @@ async fn issue_code(
 }
 async fn reset_enrollment(
     State(state): State<AppState>,
-    Path(id): Path<natsume_photo_protocol::SourceId>,
+    path: Result<Path<natsume_photo_protocol::SourceId>, PathRejection>,
 ) -> Response {
+    let Ok(Path(id)) = path else {
+        return ApiError::invalid_request("photo_identifier").into_response();
+    };
     match state
         .photo()
         .issue_code(id, PendingEnrollment::Replace)
@@ -140,9 +146,12 @@ async fn reset_enrollment(
 }
 async fn update_state(
     State(state): State<AppState>,
-    Path(id): Path<natsume_photo_protocol::SourceId>,
+    path: Result<Path<natsume_photo_protocol::SourceId>, PathRejection>,
     body: Result<Json<PhotoSourceStateUpdate>, JsonRejection>,
 ) -> Response {
+    let Ok(Path(id)) = path else {
+        return ApiError::invalid_request("photo_identifier").into_response();
+    };
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("photo_source_state_json").into_response();
     };
@@ -217,9 +226,12 @@ async fn initialization(State(state): State<AppState>, headers: HeaderMap) -> Re
 }
 async fn resource(
     State(state): State<AppState>,
-    Path(hash): Path<String>,
+    path: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
 ) -> Response {
+    let Ok(Path(hash)) = path else {
+        return ApiError::invalid_request("photo_resource_path").into_response();
+    };
     let token = match bearer(&headers) {
         Ok(token) => token,
         Err(error) => return error.into_response(),

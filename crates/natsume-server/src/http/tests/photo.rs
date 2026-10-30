@@ -31,6 +31,109 @@ mod client_interop;
 mod recovery;
 
 #[tokio::test]
+async fn source_path_rejections_use_json_errors_without_changing_authority() -> TestResult {
+    use super::{
+        LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, header_text, login_request,
+        seed_operator,
+    };
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let f = Fixture::new().await?;
+    seed_operator(&f.database.database, LOGIN_NAME, PASSWORD).await?;
+    let login = drive(&f.app, login_request(LOGIN_NAME, PASSWORD)?).await?;
+    let cookie = header_text(&login.headers, &header::SET_COOKIE)?
+        .split(';')
+        .next()
+        .ok_or(TestError::missing("administrator cookie"))?;
+    let before = serde_json::to_value(f.state.photo().list_sources().await?)?;
+    for (action, body) in [
+        ("pairing-code", json!({})),
+        ("reset-enrollment", json!({})),
+        ("state", json!({"state":"disabled"})),
+    ] {
+        for id in [
+            "invalid-photo-path-canary",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "%FF",
+        ] {
+            let path = format!("sources/{id}/{action}");
+            let unauthorized = f.send(Method::POST, &path, body.clone()).await?;
+            assert_eq!(unauthorized.status, StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&unauthorized.body)?["code"],
+                "AUTHENTICATION_FAILED"
+            );
+            let response = drive(
+                &f.app,
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v2/photo/{path}"))
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))?,
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::BAD_REQUEST);
+            assert_eq!(response.headers[header::CONTENT_TYPE], "application/json");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response.body)?,
+                json!({"title":"Bad Request", "status":400, "code":"INVALID_REQUEST"})
+            );
+        }
+        let missing = natsume_photo_protocol::SourceId::generate();
+        let response = drive(
+            &f.app,
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v2/photo/sources/{missing}/{action}"))
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))?,
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::NOT_FOUND);
+        assert_eq!(response.headers[header::CONTENT_TYPE], "application/json");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body)?["code"],
+            "RESOURCE_NOT_FOUND"
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(f.state.photo().list_sources().await?)?,
+        before
+    );
+    f.state
+        .photo()
+        .check_token(&f.token, CredentialUse::Initialization)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_resource_paths_use_json_errors_before_bearer_validation() -> TestResult {
+    let f = Fixture::new().await?;
+    for with_token in [false, true] {
+        let request = Request::builder().uri("/api/v2/photo/client/resources/%FFphoto-path-canary");
+        let request = if with_token {
+            request.header(header::AUTHORIZATION, format!("Bearer {}", f.token))
+        } else {
+            request
+        };
+        let response = drive(&f.app, request.body(Body::empty())?).await?;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers[header::CONTENT_TYPE], "application/json");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body)?,
+            json!({"title":"Bad Request", "status":400, "code":"INVALID_REQUEST"})
+        );
+    }
+    f.state
+        .photo()
+        .check_token(&f.token, CredentialUse::Initialization)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn invalid_server_roster_is_a_recoverable_conflict_and_cannot_publish_a_snapshot()
 -> TestResult {
     let f = Fixture::new().await?;
