@@ -37,7 +37,12 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 /// Exclusive filesystem ownership permitting capture and workspace writes.
-pub struct Writable(std::sync::Arc<std::fs::File>);
+pub struct Writable(WorkspaceWriter);
+/// Shared ownership of an acquired workspace write lock; cannot be constructed by callers.
+#[derive(Clone)]
+pub(crate) struct WorkspaceWriter {
+    _handle: std::sync::Arc<std::fs::File>,
+}
 /// Read-only access; cannot be passed to capture or mutation APIs.
 pub struct ReadOnly;
 /// A fully validated workspace with access selected by its type.
@@ -48,75 +53,20 @@ pub struct Workspace<Access = Writable> {
 }
 
 impl Workspace {
-    /// Creates a fresh roster workspace; production enrollment uses the initializer.
-    /// # Errors
-    /// Rejects existing targets or failed storage, resource or roster writes.
-    pub async fn create(root: &Path, roster: &Roster) -> Result<Self> {
-        Self::create_prepared(root, roster, None).await
-    }
-    /// Creates a new workspace with validated school logos and no fallback image.
-    /// # Errors
-    /// Rejects invalid logos and existing targets without overwriting them.
-    pub async fn create_with_resources(
-        root: &Path,
-        roster: &Roster,
-        manifest: &Path,
-    ) -> Result<Self> {
-        let manifest = manifest.to_owned();
-        let organizations = roster.teams().iter().map(|t| t.organization_id).collect();
-        let prepared =
-            tokio::task::spawn_blocking(move || Prepared::load(&manifest, &organizations))
-                .await
-                .context(WorkerSnafu)?
-                .context(ResourceSnafu)?;
-        Self::create_prepared(root, roster, Some(prepared)).await
-    }
-    pub(crate) async fn create_with_logos(
-        root: &Path,
-        roster: &Roster,
-        source: PathBuf,
-        logos: Vec<resources::SchoolLogo>,
-        initialization_lease: std::sync::Arc<std::fs::File>,
-    ) -> Result<Self> {
-        let organizations = roster
-            .teams()
-            .iter()
-            .map(|team| team.organization_id)
-            .collect();
-        let teams = roster.teams().to_vec();
-        let root = root.to_owned();
-        tokio::task::spawn_blocking(move || {
-            // This one task owns every preparation side effect, even if its caller is cancelled.
-            let _lease = initialization_lease;
-            let prepared =
-                Prepared::from_paths(&source, logos, &organizations).context(ResourceSnafu)?;
-            Self::create_blocking(root, teams, Some(prepared))
-        })
-        .await
-        .context(WorkerSnafu)?
-    }
-    async fn create_prepared(
-        root: &Path,
-        roster: &Roster,
-        prepared: Option<Prepared>,
-    ) -> Result<Self> {
-        let root = root.to_owned();
-        let teams = roster.teams().to_vec();
-        tokio::task::spawn_blocking(move || Self::create_blocking(root, teams, prepared))
-            .await
-            .context(WorkerSnafu)?
-    }
-    fn create_blocking(
+    pub(crate) fn create_with_logos(
         root: PathBuf,
         teams: Vec<PhotoTeam>,
-        prepared: Option<Prepared>,
+        source: &Path,
+        logos: Vec<resources::SchoolLogo>,
     ) -> Result<Self> {
+        let organizations = teams.iter().map(|team| team.organization_id).collect();
+        let prepared =
+            Prepared::from_paths(source, logos, &organizations).context(ResourceSnafu)?;
+        Self::create_blocking(root, teams, prepared)
+    }
+    fn create_blocking(root: PathBuf, teams: Vec<PhotoTeam>, prepared: Prepared) -> Result<Self> {
         let (root, database, writer) = storage::create(root).context(StorageSnafu)?;
-        let cache = prepared
-            .map(|p| p.copy_to(&root))
-            .transpose()
-            .context(ResourceSnafu)?
-            .unwrap_or_default();
+        let cache = prepared.copy_to(&root).context(ResourceSnafu)?;
         database
             .save_roster_blocking(teams, cache)
             .context(PersistenceSnafu)?;
@@ -126,30 +76,21 @@ impl Workspace {
             access: Writable(writer),
         })
     }
-    pub(crate) async fn publish_verified(
-        verified: WorkspaceReader,
-        target: PathBuf,
-        initialization_lease: std::sync::Arc<std::fs::File>,
-    ) -> Result<Self> {
-        tokio::task::spawn_blocking(move || {
-            let _lease = initialization_lease;
-            let Workspace {
-                root,
-                database,
-                access: _,
-            } = verified;
-            // SQLite handles must be closed before moving the directory on Windows.
-            drop(database);
-            let (root, database, writer) =
-                storage::publish_verified(root, &target).context(StorageSnafu)?;
-            Ok(Self {
-                root,
-                database,
-                access: Writable(writer),
-            })
+    pub(crate) fn publish_verified(verified: WorkspaceReader, target: &Path) -> Result<Self> {
+        let Workspace {
+            root,
+            database,
+            access: _,
+        } = verified;
+        // Windows directory publication requires closing SQLite before rename.
+        drop(database);
+        let (root, database, writer) =
+            storage::publish_verified(root, target).context(StorageSnafu)?;
+        Ok(Self {
+            root,
+            database,
+            access: Writable(writer),
         })
-        .await
-        .context(WorkerSnafu)?
     }
     /// Opens and validates a workspace while retaining exclusive write ownership.
     /// # Errors
@@ -166,8 +107,8 @@ impl Workspace {
         workspace.verify().await?;
         Ok(workspace)
     }
-    pub(crate) fn writable_owner(&self) -> std::sync::Arc<std::fs::File> {
-        std::sync::Arc::clone(&self.access.0)
+    pub(crate) fn writable_owner(&self) -> WorkspaceWriter {
+        self.access.0.clone()
     }
 }
 /// Read-only view of a fully validated workspace.
@@ -289,3 +230,15 @@ impl<Access> Workspace<Access> {
 #[cfg(test)]
 #[path = "../../tests/unit/workspace_publication.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/workspace_operations.rs"]
+mod workspace_operations;
+
+#[cfg(test)]
+#[path = "../../tests/unit/resource_operations.rs"]
+mod resource_operations;
+
+#[cfg(test)]
+#[path = "../../tests/unit/workspace_fixture.rs"]
+pub(crate) mod fixture;

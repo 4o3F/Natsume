@@ -1,10 +1,10 @@
 use std::{net::IpAddr, time::Instant};
 
+use natsume_photo_protocol::{EnrollmentId, SourceId};
 use natsume_photo_protocol::{PhotoConfirmation, PhotoPairRequest};
 use sha2::{Digest as _, Sha256};
 use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
 use subtle::ConstantTimeEq as _;
-use uuid::Uuid;
 
 use super::{PhotoComponent, db};
 use crate::db::{PersistenceError, Transaction, TransactionError};
@@ -18,12 +18,8 @@ pub(crate) enum EnrollmentError {
     StatePoisoned { source: std::sync::PoisonError<()> },
     #[snafu(display("Photo source name is invalid"))]
     InvalidName,
-    #[snafu(display("Photo identifier is invalid"))]
-    InvalidId,
     #[snafu(display("Photo pairing request is invalid"))]
     InvalidPairing,
-    #[snafu(display("Photo signing public key is invalid"))]
-    InvalidKey,
     #[snafu(display("Photo authentication failed"))]
     Authentication,
     #[snafu(display("Photo source does not exist"))]
@@ -35,14 +31,19 @@ pub(crate) enum EnrollmentError {
     #[snafu(display("Photo enrollment entropy is unavailable"))]
     Entropy { source: getrandom::Error },
     #[snafu(display("Photo enrollment persistence failed"))]
-    Persistence { source: PersistenceError },
+    Persistence { source: db::PersistenceError },
 }
 impl From<PersistenceError> for EnrollmentError {
     fn from(source: PersistenceError) -> Self {
-        PersistenceSnafu.into_error(source)
+        PersistenceSnafu.into_error(source.into())
     }
 }
 
+impl From<db::PersistenceError> for EnrollmentError {
+    fn from(source: db::PersistenceError) -> Self {
+        PersistenceSnafu.into_error(source)
+    }
+}
 pub(crate) use natsume_photo_protocol::{PhotoSource, SourceState};
 fn source_state_wire(state: SourceState) -> &'static str {
     match state {
@@ -76,7 +77,7 @@ pub(crate) enum PendingEnrollment {
 
 #[derive(serde::Serialize, specta::Type)]
 pub(crate) struct PhotoPairingCode {
-    pub source_id: String,
+    pub source_id: SourceId,
     pub code: String,
     #[specta(type = specta_typescript::Number)]
     pub expires_at_unix_ms: i64,
@@ -86,23 +87,15 @@ pub(crate) use natsume_photo_protocol::PhotoEnrollmentIssued;
 
 #[derive(Clone)]
 pub(super) struct Credential {
-    pub source: String,
-    pub enrollment: String,
+    pub source: SourceId,
+    pub enrollment: EnrollmentId,
     pub hash: [u8; 32],
-}
-
-pub(super) fn canonical_id(value: &str) -> Result<(), EnrollmentError> {
-    ensure!(
-        natsume_photo_protocol::is_canonical_uuid_v7(value),
-        InvalidIdSnafu
-    );
-    Ok(())
 }
 
 pub(super) fn hash(value: &[u8]) -> [u8; 32] {
     Sha256::digest(value).into()
 }
-fn credential_parts(token: &str) -> Option<(&str, &str)> {
+pub(super) fn credential(token: &str) -> Result<Credential, EnrollmentError> {
     let mut parts = token.split('.');
     let (Some("nph1"), Some(source), Some(enrollment), Some(secret), None) = (
         parts.next(),
@@ -111,19 +104,21 @@ fn credential_parts(token: &str) -> Option<(&str, &str)> {
         parts.next(),
         parts.next(),
     ) else {
-        return None;
+        return AuthenticationSnafu.fail();
     };
-    (natsume_photo_protocol::is_canonical_uuid_v7(source)
-        && natsume_photo_protocol::is_canonical_uuid_v7(enrollment)
-        && natsume_photo_protocol::is_lowercase_sha256(secret))
-    .then_some((source, enrollment))
-}
-
-pub(super) fn credential(token: &str) -> Result<Credential, EnrollmentError> {
-    let (source, enrollment) = credential_parts(token).context(AuthenticationSnafu)?;
+    // Authentication failures deliberately disclose neither token layout nor rejected values.
+    let source = source.parse().ok().context(AuthenticationSnafu)?;
+    let enrollment = enrollment.parse().ok().context(AuthenticationSnafu)?;
+    ensure!(
+        secret.len() == 64
+            && secret
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+        AuthenticationSnafu
+    );
     Ok(Credential {
-        source: source.to_owned(),
-        enrollment: enrollment.to_owned(),
+        source,
+        enrollment,
         hash: hash(token.as_bytes()),
     })
 }
@@ -138,7 +133,7 @@ pub(super) fn authorized(
     let source = db::source(tx, &credential.source)?.context(AuthenticationSnafu)?;
     ensure!(
         matches!(source.state, SourceState::Enabled)
-            && source.enrollment_id.as_deref() == Some(&credential.enrollment)
+            && source.enrollment_id.as_ref() == Some(&credential.enrollment)
             && source
                 .token_hash
                 .as_deref()
@@ -161,10 +156,7 @@ fn projection(
 ) -> Result<PhotoSource, EnrollmentError> {
     Ok(PhotoSource {
         initialization_completed: db::initialization_completed(tx, &source.id)?,
-        source_id: source
-            .id
-            .parse()
-            .map_err(|_| PersistenceError::invalid("photo source id"))?,
+        source_id: source.id,
         name: source.name,
         state: source.state,
         enrollment_confirmed: source.confirmed,
@@ -202,7 +194,7 @@ impl PhotoComponent {
                 && !name.chars().any(char::is_control),
             InvalidNameSnafu
         );
-        let id = Uuid::now_v7().to_string();
+        let id = SourceId::generate();
         self.database
             .write(move |tx| {
                 let now = db::now(tx)?;
@@ -228,10 +220,9 @@ impl PhotoComponent {
 
     pub(crate) async fn set_state(
         &self,
-        id: String,
+        id: SourceId,
         state: SourceState,
     ) -> Result<(), EnrollmentError> {
-        canonical_id(&id)?;
         self.database
             .write(move |tx| {
                 let source = db::source(tx, &id)?.context(NotFoundSnafu)?;
@@ -249,10 +240,9 @@ impl PhotoComponent {
 
     pub(crate) async fn issue_code(
         &self,
-        id: String,
+        id: SourceId,
         pending: PendingEnrollment,
     ) -> Result<PhotoPairingCode, EnrollmentError> {
-        canonical_id(&id)?;
         let mut random = [0; 8];
         getrandom::fill(&mut random).context(EntropySnafu)?;
         let raw = super::super::pairing::code(random);
@@ -296,18 +286,7 @@ impl PhotoComponent {
             semver::Version::parse(&version).is_ok(),
             InvalidPairingSnafu
         );
-        let key: [u8; 32] = hex::decode(&public_key)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .context(InvalidKeySnafu)?;
-        let verifying = ed25519_dalek::VerifyingKey::from_bytes(&key)
-            .ok()
-            .context(InvalidKeySnafu)?;
-        ensure!(
-            !verifying.is_weak() && hex::encode(key) == public_key,
-            InvalidKeySnafu
-        );
-        let enrollment = Uuid::now_v7().to_string();
+        let enrollment = EnrollmentId::generate();
         let mut secret = [0; 32];
         getrandom::fill(&mut secret).context(EntropySnafu)?;
         let code_hash = hash(raw.as_bytes());
@@ -338,12 +317,8 @@ impl PhotoComponent {
                     expires,
                 )?;
                 Ok(PhotoEnrollmentIssued {
-                    source_id: id
-                        .parse()
-                        .map_err(|_| PersistenceError::invalid("photo source id"))?,
-                    enrollment_id: enrollment
-                        .parse()
-                        .map_err(|_| PersistenceError::invalid("photo enrollment id"))?,
+                    source_id: id,
+                    enrollment_id: enrollment,
                     token,
                     expires_at_unix_ms: expires,
                 })
@@ -362,9 +337,8 @@ impl PhotoComponent {
             .write(move |tx| {
                 let source = authorized(tx, &credential, CredentialUse::Initialization)?;
                 ensure!(
-                    source.enrollment_id.as_deref() == Some(request.enrollment_id.as_str())
-                        && source.public_key.as_deref()
-                            == Some(request.signing_public_key.as_str()),
+                    source.enrollment_id.as_ref() == Some(&request.enrollment_id)
+                        && source.public_key.as_ref() == Some(&request.signing_public_key),
                     ConflictSnafu
                 );
                 db::confirm(tx, &source.id)?;

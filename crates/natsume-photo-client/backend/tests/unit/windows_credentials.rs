@@ -14,7 +14,11 @@ enum TestError {
 async fn blocking_thread_round_trip_uses_and_removes_an_isolated_vault_entry()
 -> std::result::Result<(), TestError> {
     tokio::task::spawn_blocking(|| {
-        let origin = format!("https://photo-vault-test-{}.invalid", uuid::Uuid::now_v7());
+        let origin = crate::initialization::ServerOrigin::parse(&format!(
+            "https://photo-vault-test-{}.invalid",
+            uuid::Uuid::now_v7()
+        ))
+        .unwrap_or_else(|error| panic!("valid isolated vault origin: {error:?}"));
         let slot = SecretSlot::new(
             crate::initialization::ClientId::generate(),
             SecretKind::Signing,

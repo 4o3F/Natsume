@@ -254,3 +254,7 @@ impl Session {
 #[cfg(test)]
 #[path = "../tests/unit/capture.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/capture_operations.rs"]
+mod capture_operations;

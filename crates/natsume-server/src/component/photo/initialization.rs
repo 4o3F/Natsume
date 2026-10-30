@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
 use tokio::sync::OwnedSemaphorePermit;
-use uuid::Uuid;
 
 use super::{
     CredentialUse, PhotoComponent, db,
@@ -39,14 +38,10 @@ pub(crate) enum InitializationError {
     InvalidContract {
         source: natsume_photo_protocol::ValidationError,
     },
-    #[snafu(display("Photo persisted snapshot identity is invalid"))]
-    InvalidSnapshot {
-        source: natsume_photo_protocol::ValueError,
-    },
     #[snafu(display("Photo initialization cache is inconsistent"))]
     Corrupt,
     #[snafu(display("Photo initialization persistence failed"))]
-    Persistence { source: PersistenceError },
+    Persistence { source: db::PersistenceError },
     #[snafu(display("Photo initialization storage operation failed"))]
     Io { source: std::io::Error },
     #[snafu(display("Photo initialization encoding failed"))]
@@ -54,17 +49,22 @@ pub(crate) enum InitializationError {
 }
 impl From<PersistenceError> for InitializationError {
     fn from(source: PersistenceError) -> Self {
-        PersistenceSnafu.into_error(source)
+        PersistenceSnafu.into_error(source.into())
     }
 }
 
+impl From<db::PersistenceError> for InitializationError {
+    fn from(source: db::PersistenceError) -> Self {
+        PersistenceSnafu.into_error(source)
+    }
+}
 use natsume_photo_protocol::{
     DatasetId, FormatVersion, InitializationId, LogoContentType, PhotoInitialization,
     PhotoInitializationComplete, PhotoLogo, PhotoTeam, Sha256Digest, SourceId,
 };
 pub(crate) struct SnapshotDownload {
     pub json: String,
-    pub sha256: String,
+    pub sha256: Sha256Digest,
 }
 pub(crate) struct ResourceDownload {
     pub bytes: Vec<u8>,
@@ -74,7 +74,7 @@ pub(crate) struct ResourceDownload {
 fn snapshot(record: db::InitializationRecord) -> Result<SnapshotDownload, InitializationError> {
     ensure!(
         record.json.len() <= SNAPSHOT_LIMIT
-            && hex::encode(enrollment::hash(record.json.as_bytes())) == record.hash,
+            && Sha256Digest::of(record.json.as_bytes()) == record.hash,
         CorruptSnafu
     );
     Ok(SnapshotDownload {
@@ -174,14 +174,13 @@ impl PhotoComponent {
             .database
             .write(move |tx| -> Result<_, InitializationError> {
                 enrollment::authorized(tx, &identity, CredentialUse::Initialization)?;
-                Ok(db::dataset_id(tx, &Uuid::now_v7().to_string())?)
+                Ok(db::dataset_id(tx, &DatasetId::generate())?)
             })
             .await
             .map_err(TransactionError::into_error)?;
         let id = InitializationId::generate();
         let files = self.storage.begin(id.clone()).await?;
-        let source_id: SourceId = credential.source.parse().context(InvalidSnapshotSnafu)?;
-        let dataset_id: DatasetId = dataset_id.parse().context(InvalidSnapshotSnafu)?;
+        let source_id: SourceId = credential.source.clone();
         Ok(Preparation::Build(Box::new(InitializationDraft {
             credential,
             permit,
@@ -216,7 +215,7 @@ impl PhotoComponent {
         let json = serde_json::to_string(&manifest).context(JsonSnafu)?;
         ensure!(json.len() <= SNAPSHOT_LIMIT, LimitSnafu);
         files.finish().await?;
-        let hash = hex::encode(enrollment::hash(json.as_bytes()));
+        let hash = Sha256Digest::of(json.as_bytes());
         let id = manifest.initialization_id;
         self.database
             .write(move |tx| -> Result<_, InitializationError> {
@@ -226,7 +225,7 @@ impl PhotoComponent {
                 if let Some(existing) = db::initialization(tx, &source.id)? {
                     return snapshot(existing);
                 }
-                db::insert_initialization(tx, &source.id, id.as_str(), &json, &hash)?;
+                db::insert_initialization(tx, &source.id, &id, &json, &hash)?;
                 Ok(SnapshotDownload { json, sha256: hash })
             })
             .await
@@ -262,10 +261,7 @@ impl PhotoComponent {
         let download = snapshot(record)?;
         let manifest: PhotoInitialization =
             serde_json::from_str(&download.json).context(JsonSnafu)?;
-        ensure!(
-            manifest.source_id.as_str() == credential.source,
-            CorruptSnafu
-        );
+        ensure!(manifest.source_id == credential.source, CorruptSnafu);
         let logo = manifest
             .school_logos
             .iter()
@@ -303,19 +299,16 @@ impl PhotoComponent {
                 let source = enrollment::authorized(tx, &credential, CredentialUse::Completion)?;
                 ensure!(source.confirmed, UnconfirmedSnafu);
                 let record = db::initialization(tx, &source.id)?.context(NotFoundSnafu)?;
-                ensure!(
-                    record.id == id.as_str() && record.hash == hash.as_str(),
-                    ConflictSnafu
-                );
+                ensure!(record.id == id && record.hash == hash, ConflictSnafu);
                 if let Some(previous) = record.completion_request {
                     ensure!(
-                        previous == request.as_str() && record.completed_at.is_some(),
+                        previous == request && record.completed_at.is_some(),
                         ConflictSnafu
                     );
                     return Ok(());
                 }
                 let now = db::now(tx)?;
-                db::complete(tx, id.as_str(), request.as_str(), now)?;
+                db::complete(tx, &id, &request, now)?;
                 Ok(())
             })
             .await

@@ -16,7 +16,8 @@ snafu.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 sha2.workspace = true
-hex.workspace = true
+hex = { workspace = true, features = ["std"] }
+ed25519-dalek.workspace = true
 specta = { workspace = true, optional = true }
 specta-typescript = { workspace = true, optional = true }
 

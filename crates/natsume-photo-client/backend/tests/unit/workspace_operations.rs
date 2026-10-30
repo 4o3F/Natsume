@@ -1,24 +1,16 @@
-#![cfg(windows)]
-
-use natsume_photo_client::{
+use crate::{
     roster::Roster,
     workspace::{Error as WorkspaceError, Workspace},
 };
 use snafu::{ResultExt as _, Snafu};
 
-const FIXTURE: &[u8] = include_bytes!("fixtures/roster.json");
+const FIXTURE: &[u8] = include_bytes!("../fixtures/roster.json");
 
 #[derive(Debug, Snafu)]
 enum Error {
-    Io {
-        source: std::io::Error,
-    },
-    Roster {
-        source: natsume_photo_client::roster::Error,
-    },
-    Workspace {
-        source: WorkspaceError,
-    },
+    Io { source: std::io::Error },
+    Roster { source: crate::roster::Error },
+    Workspace { source: WorkspaceError },
 }
 type Result<T = ()> = std::result::Result<T, Error>;
 
@@ -27,17 +19,17 @@ async fn only_one_writable_owner_is_allowed_but_readonly_diagnosis_can_open() ->
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
     let root = directory.path().join("workspace");
-    let owner = Workspace::create(&root, &roster)
+    let owner = crate::workspace::fixture::create(&root, &roster)
         .await
         .context(WorkspaceSnafu)?;
     assert!(matches!(
         Workspace::open(&root).await,
         Err(WorkspaceError::Storage {
-            source: natsume_photo_client::workspace::StorageError::Busy
+            source: crate::workspace::StorageError::Busy
         })
     ));
     drop(
-        natsume_photo_client::workspace::WorkspaceReader::inspect(&root)
+        crate::workspace::WorkspaceReader::inspect(&root)
             .await
             .context(WorkspaceSnafu)?,
     );
@@ -54,7 +46,7 @@ async fn roster_survives_close_reopen_and_source_removal() -> Result {
     let roster = Roster::load(&source).context(RosterSnafu)?;
     let root = directory.path().join("工作区 #1% 比赛");
     drop(
-        Workspace::create(&root, &roster)
+        crate::workspace::fixture::create(&root, &roster)
             .await
             .context(WorkspaceSnafu)?,
     );
@@ -86,22 +78,22 @@ async fn create_never_overwrites_existing_targets_or_neighbor_files() -> Result 
     std::fs::write(&neighbor, b"keep").context(IoSnafu)?;
     let root = directory.path().join("workspace");
     drop(
-        Workspace::create(&root, &roster)
+        crate::workspace::fixture::create(&root, &roster)
             .await
             .context(WorkspaceSnafu)?,
     );
     let database = root.join("workspace.sqlite3");
     let before = std::fs::read(&database).context(IoSnafu)?;
     assert!(matches!(
-        Workspace::create(&root, &roster).await,
+        crate::workspace::fixture::create(&root, &roster).await,
         Err(WorkspaceError::Storage {
-            source: natsume_photo_client::workspace::StorageError::Exists
+            source: crate::workspace::StorageError::Exists
         })
     ));
     assert!(matches!(
-        Workspace::create(&neighbor, &roster).await,
+        crate::workspace::fixture::create(&neighbor, &roster).await,
         Err(WorkspaceError::Storage {
-            source: natsume_photo_client::workspace::StorageError::Exists
+            source: crate::workspace::StorageError::Exists
         })
     ));
     assert_eq!(std::fs::read(database).context(IoSnafu)?, before);
@@ -114,23 +106,23 @@ async fn invalid_paths_and_file_failures_never_create_a_ready_workspace() -> Res
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
     assert!(matches!(
-        Workspace::create(std::path::Path::new("relative"), &roster).await,
+        crate::workspace::fixture::create(std::path::Path::new("relative"), &roster).await,
         Err(WorkspaceError::Storage {
-            source: natsume_photo_client::workspace::StorageError::Path
+            source: crate::workspace::StorageError::Path
         })
     ));
     let escaping = directory.path().join("..").join("not-created");
     assert!(matches!(
-        Workspace::create(&escaping, &roster).await,
+        crate::workspace::fixture::create(&escaping, &roster).await,
         Err(WorkspaceError::Storage {
-            source: natsume_photo_client::workspace::StorageError::Path
+            source: crate::workspace::StorageError::Path
         })
     ));
     let missing_parent = directory.path().join("missing").join("workspace");
     assert!(matches!(
-        Workspace::create(&missing_parent, &roster).await,
+        crate::workspace::fixture::create(&missing_parent, &roster).await,
         Err(WorkspaceError::Storage {
-            source: natsume_photo_client::workspace::StorageError::Io { .. }
+            source: crate::workspace::StorageError::Io { .. }
         })
     ));
     assert!(!directory.path().join("missing").exists());
@@ -143,7 +135,7 @@ async fn open_rejects_missing_and_corrupt_databases_without_creating_one() -> Re
     assert!(matches!(
         Workspace::open(directory.path()).await,
         Err(WorkspaceError::Storage {
-            source: natsume_photo_client::workspace::StorageError::Io { .. }
+            source: crate::workspace::StorageError::Io { .. }
         })
     ));
     let database = directory.path().join("workspace.sqlite3");

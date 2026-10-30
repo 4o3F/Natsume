@@ -40,8 +40,6 @@ pub enum CredentialError {
         visibility(pub(super))
     )]
     Windows { source: ::windows::core::Error },
-    #[snafu(display("credential adapter is unavailable"))]
-    Unavailable,
 }
 /// Result returned by platform credential adapters.
 pub type CredentialResult<T> = std::result::Result<T, CredentialError>;
@@ -51,9 +49,18 @@ pub trait Secrets: Clone + Send + Sync + 'static {
     /// Reads without logging; absence differs from failure.
     /// # Errors
     /// Reports a credential-adapter failure.
-    fn load(&self, origin: &str, slot: &SecretSlot) -> CredentialResult<Option<Zeroizing<String>>>;
+    fn load(
+        &self,
+        origin: &super::ServerOrigin,
+        slot: &SecretSlot,
+    ) -> CredentialResult<Option<Zeroizing<String>>>;
     /// Saves under a typed initialization slot.
     /// # Errors
     /// Reports a credential-adapter failure.
-    fn save(&self, origin: &str, slot: &SecretSlot, value: &str) -> CredentialResult<()>;
+    fn save(
+        &self,
+        origin: &super::ServerOrigin,
+        slot: &SecretSlot,
+        value: &str,
+    ) -> CredentialResult<()>;
 }

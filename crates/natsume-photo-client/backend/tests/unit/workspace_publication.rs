@@ -1,6 +1,6 @@
 use super::*;
 use snafu::{OptionExt as _, Snafu};
-use std::{fs, os::windows::fs::OpenOptionsExt as _, sync::Arc};
+use std::{fs, os::windows::fs::OpenOptionsExt as _};
 
 #[derive(Debug, Snafu)]
 enum TestError {
@@ -27,7 +27,7 @@ async fn completed_publication_consumes_verified_reader_without_reading_logos_ag
         "school_logos": [{"organization_id": roster.teams()[0].organization_id, "path": "school.png"}],
     })).context(JsonSnafu)?).context(IoSnafu)?;
     let staging = directory.path().join("staged");
-    let workspace = Workspace::create_with_resources(&staging, &roster, &resources)
+    let workspace = crate::workspace::fixture::create_with_resources(&staging, &roster, &resources)
         .await
         .context(WorkspaceSnafu)?;
     let logo = workspace
@@ -46,12 +46,8 @@ async fn completed_publication_consumes_verified_reader_without_reading_logos_ag
         .open(&logo)
         .context(IoSnafu)?;
     assert!(fs::read(&logo).is_err());
-    let initialization_lease =
-        Arc::new(fs::File::create(directory.path().join("initialization.lock")).context(IoSnafu)?);
     let target = staging.clone();
-    let published = Workspace::publish_verified(verified, target.clone(), initialization_lease)
-        .await
-        .context(WorkspaceSnafu)?;
+    let published = Workspace::publish_verified(verified, &target).context(WorkspaceSnafu)?;
     assert_eq!(
         published.root(),
         fs::canonicalize(&target).context(IoSnafu)?
@@ -88,16 +84,14 @@ async fn publication_rejects_active_writers_and_preserves_existing_targets() -> 
     let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
     let source = directory.path().join("staged");
     let target = directory.path().join("published");
-    let workspace = Workspace::create(&source, &roster)
+    let workspace = crate::workspace::fixture::create(&source, &roster)
         .await
         .context(WorkspaceSnafu)?;
-    let lease =
-        Arc::new(fs::File::create(directory.path().join("initialization.lock")).context(IoSnafu)?);
     let verified = WorkspaceReader::inspect(&source)
         .await
         .context(WorkspaceSnafu)?;
     assert!(matches!(
-        Workspace::publish_verified(verified, target.clone(), Arc::clone(&lease)).await,
+        Workspace::publish_verified(verified, &target),
         Err(Error::Storage {
             source: StorageError::Busy
         })
@@ -110,7 +104,7 @@ async fn publication_rejects_active_writers_and_preserves_existing_targets() -> 
         .await
         .context(WorkspaceSnafu)?;
     assert!(matches!(
-        Workspace::publish_verified(verified, target.clone(), lease).await,
+        Workspace::publish_verified(verified, &target),
         Err(Error::Storage {
             source: StorageError::Exists
         })

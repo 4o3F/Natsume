@@ -1,6 +1,6 @@
 use super::super::*;
 use super::*;
-use crate::hot_folder::{Error, archive};
+use crate::{capture_session::Error, hot_folder::archive};
 use snafu::Snafu;
 use std::time::Instant;
 type Inner = CaptureState;
@@ -477,11 +477,15 @@ fn missing_source_acknowledgement_does_not_erase_reappearance_uncertainty() -> T
 #[tokio::test]
 async fn shutdown_preserves_a_worker_failure_instead_of_returning_success() -> TestResult {
     let (directory, inner) = fixture()?;
-    let owner = fs::File::create_new(directory.path().join("owner.lock")).context(IoSnafu)?;
+    let roster = crate::roster::Roster::parse(include_bytes!("../fixtures/roster.json"))
+        .unwrap_or_else(|error| panic!("fixture roster: {error:?}"));
+    let workspace = crate::workspace::fixture::create(&directory.path().join("workspace"), &roster)
+        .await
+        .unwrap_or_else(|error| panic!("fixture workspace: {error:?}"));
     let (commands, _receive) = mpsc::channel(1);
     let (_publish, snapshots) = watch::channel(inner.snapshot(0));
     let capture = CaptureSession {
-        _workspace_owner: std::sync::Arc::new(owner),
+        _workspace_owner: workspace.writable_owner(),
         commands,
         snapshots,
         stop: CancellationToken::new(),

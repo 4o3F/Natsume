@@ -3338,7 +3338,9 @@ async fn exclusively_locked_journal_does_not_block_device_disconnect_and_reconne
         path.to_str()
             .ok_or(crate::test_error::TestError::missing("path"))?,
     )?;
-    lock.batch_execute("BEGIN EXCLUSIVE")?;
+    // Let preceding journal writes finish before injecting contention. This
+    // timeout affects only the lock holder; the writer still fails fast.
+    lock.batch_execute("PRAGMA busy_timeout = 5000; BEGIN EXCLUSIVE")?;
     journal.emit(
         crate::journal::event::Event::ReviewCreated(
             crate::journal::event::payload::ReviewCreated {

@@ -1,5 +1,5 @@
 use super::ClientId;
-use super::{AuthorizationSnafu, MissingSecretSnafu, Result, Secrets, WorkspaceSnafu, api, store};
+use super::{AuthorizationSnafu, MissingSecretSnafu, Result, Secrets, WorkspaceSnafu, store};
 use crate::workspace::{Workspace, WorkspaceReader};
 use natsume_photo_protocol::{DatasetId, InitializationId, Sha256Digest, SourceId};
 use serde::{Deserialize, Serialize};
@@ -9,9 +9,9 @@ use zeroize::Zeroizing;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Authorization {
-    pub server_url: String,
+    pub server_url: super::ServerOrigin,
     pub client_id: ClientId,
-    pub signing_public_key: String,
+    pub signing_public_key: natsume_photo_protocol::SigningPublicKey,
     pub source_id: SourceId,
     pub dataset_id: DatasetId,
     pub initialization_id: InitializationId,
@@ -53,11 +53,6 @@ pub(super) async fn verify_authorization<Access>(
             8192,
         )?)
         .map_err(super::json_error)?;
-        ensure!(
-            api::origin(&identity.server_url)? == identity.server_url
-                && natsume_photo_protocol::is_lowercase_sha256(&identity.signing_public_key),
-            AuthorizationSnafu
-        );
         let secret = secrets
             .load(
                 &identity.server_url,
@@ -69,7 +64,7 @@ pub(super) async fn verify_authorization<Access>(
         hex::decode_to_slice(secret.as_str(), seed.as_mut()).map_err(super::key_encoding_error)?;
         let key = ed25519_dalek::SigningKey::from_bytes(&seed);
         ensure!(
-            hex::encode(key.verifying_key().to_bytes()) == identity.signing_public_key,
+            hex::encode(key.verifying_key().to_bytes()) == identity.signing_public_key.as_str(),
             AuthorizationSnafu
         );
         let bytes = store::read_bounded(

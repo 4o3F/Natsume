@@ -2,6 +2,7 @@
 mod api;
 mod doctor;
 mod identity;
+mod origin;
 mod secrets;
 mod store;
 mod windows;
@@ -18,8 +19,9 @@ use natsume_photo_protocol::{PhotoEnrollmentIssued, PhotoInitialization};
 use store::{Phase, Receipt, Store};
 
 pub use doctor::{diagnose, diagnose_path};
+pub use identity::ClientId;
 use identity::PreparedId;
-pub use identity::{ClientId, LocalIdentityError};
+pub use origin::{OriginError, ServerOrigin};
 pub use secrets::{CredentialError, CredentialResult, SecretKind, SecretSlot, Secrets};
 pub use windows::VaultSecrets;
 
@@ -29,8 +31,10 @@ pub use windows::VaultSecrets;
 pub enum Error {
     #[snafu(display("Photo initialization blocking task failed"))]
     Worker { source: tokio::task::JoinError },
-    #[snafu(display("Photo server URL could not be parsed"))]
-    Url { source: url::ParseError },
+    #[snafu(display("Photo initialization value is invalid"))]
+    Value {
+        source: natsume_photo_protocol::ValueError,
+    },
     #[snafu(display("Photo signing credential encoding is invalid ({kind})"))]
     KeyEncoding { kind: &'static str },
     #[snafu(display("Photo initialization storage operation failed"))]
@@ -45,10 +49,12 @@ pub enum Error {
     Journal,
     #[snafu(display("Photo workspace authorization is inconsistent"))]
     Authorization,
-    #[snafu(display("Photo workspace path must be absolute without parent traversal"))]
+    #[snafu(display(
+        "Photo workspace target must have a parent and file name and be absolute without parent traversal"
+    ))]
     Path,
     #[snafu(display("Photo server origin is invalid"))]
-    Origin,
+    Origin { source: OriginError },
     #[snafu(display("Photo initialization data exceeds the byte limit ({limit})"))]
     Limit { limit: usize },
     #[snafu(display("Photo CA bundle contains no certificates"))]
@@ -59,7 +65,7 @@ pub enum Error {
     Confirmation,
     #[snafu(display("Photo downloaded resource integrity check failed"))]
     Integrity,
-    #[snafu(display("Photo initialization file conflicts with existing content"))]
+    #[snafu(display("Photo initialization destination conflicts with existing content"))]
     FileConflict,
     #[snafu(display("Photo initialization expected a directory"))]
     NotDirectory,
@@ -117,7 +123,8 @@ pub struct Config {
 /// No network client is constructed until a network operation is required.
 pub struct Initializer<S> {
     store: Store,
-    config: Config,
+    origin: ServerOrigin,
+    ca_certificate: Option<PathBuf>,
     secrets: S,
 }
 
@@ -125,12 +132,13 @@ impl<S: Secrets> Initializer<S> {
     /// Opens or resumes initialization without overwriting an existing workspace.
     /// # Errors
     /// Rejects unsafe paths, changed origins, concurrent runs or damaged local state.
-    pub fn open(mut config: Config, secrets: S) -> Result<Self> {
-        config.server_url = api::origin(&config.server_url)?;
-        let store = Store::open(&config)?;
+    pub fn open(config: Config, secrets: S) -> Result<Self> {
+        let origin = ServerOrigin::parse(&config.server_url).context(OriginSnafu)?;
+        let store = Store::open(&config.workspace, &origin)?;
         Ok(Self {
             store,
-            config,
+            origin,
+            ca_certificate: config.ca_certificate,
             secrets,
         })
     }
@@ -142,7 +150,7 @@ impl<S: Secrets> Initializer<S> {
         Ok(matches!(self.store.state().phase, Phase::Unpaired)
             && self
                 .secrets
-                .load(&self.config.server_url, &self.slot(SecretKind::Enrollment))
+                .load(&self.origin, &self.slot(SecretKind::Enrollment))
                 .context(CredentialSnafu)?
                 .is_none())
     }
@@ -153,47 +161,52 @@ impl<S: Secrets> Initializer<S> {
 
     async fn signing_key(&self) -> Result<ed25519_dalek::SigningKey> {
         let secrets = self.secrets.clone();
-        let origin = self.config.server_url.clone();
+        let origin = self.origin.clone();
         let slot = self.slot(SecretKind::Signing);
         let unpaired = matches!(self.store.state().phase, Phase::Unpaired);
         let marker = self.store.root().join("pairing-started");
-        run_with_initialization_lease(self.store.lease(), move || {
-            let secret = secrets.load(&origin, &slot).context(CredentialSnafu)?;
-            let seed = if let Some(secret) = secret {
-                let mut seed = Zeroizing::new([0; 32]);
-                hex::decode_to_slice(secret.as_str(), seed.as_mut()).map_err(key_encoding_error)?;
-                seed
-            } else {
-                ensure!(unpaired, MissingSecretSnafu);
-                // Do not replace a key after a pairing request could have reached Server.
-                ensure!(!marker.exists(), MissingSecretSnafu);
-                let mut seed = Zeroizing::new([0; 32]);
-                getrandom::fill(seed.as_mut()).context(EntropySnafu)?;
-                secrets
-                    .save(&origin, &slot, &Zeroizing::new(hex::encode(seed.as_ref())))
-                    .context(CredentialSnafu)?;
-                seed
-            };
-            Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
-        })
-        .await
+        self.store
+            .lease()
+            .run(move || {
+                let secret = secrets.load(&origin, &slot).context(CredentialSnafu)?;
+                let seed = if let Some(secret) = secret {
+                    let mut seed = Zeroizing::new([0; 32]);
+                    hex::decode_to_slice(secret.as_str(), seed.as_mut())
+                        .map_err(key_encoding_error)?;
+                    seed
+                } else {
+                    ensure!(unpaired, MissingSecretSnafu);
+                    // Do not replace a key after a pairing request could have reached Server.
+                    ensure!(!marker.exists(), MissingSecretSnafu);
+                    let mut seed = Zeroizing::new([0; 32]);
+                    getrandom::fill(seed.as_mut()).context(EntropySnafu)?;
+                    secrets
+                        .save(&origin, &slot, &Zeroizing::new(hex::encode(seed.as_ref())))
+                        .context(CredentialSnafu)?;
+                    seed
+                };
+                Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
+            })
+            .await
     }
 
     async fn enrollment(&self) -> Result<PhotoEnrollmentIssued> {
         let secrets = self.secrets.clone();
-        let origin = self.config.server_url.clone();
+        let origin = self.origin.clone();
         let slot = self.slot(SecretKind::Enrollment);
-        run_with_initialization_lease(self.store.lease(), move || {
-            let secret = secrets
-                .load(&origin, &slot)
-                .context(CredentialSnafu)?
-                .ok_or_else(|| MissingSecretSnafu.build())?;
-            let issued: PhotoEnrollmentIssued =
-                serde_json::from_str(&secret).map_err(json_error)?;
-            issued.validate().context(ContractSnafu)?;
-            Ok(issued)
-        })
-        .await
+        self.store
+            .lease()
+            .run(move || {
+                let secret = secrets
+                    .load(&origin, &slot)
+                    .context(CredentialSnafu)?
+                    .ok_or_else(|| MissingSecretSnafu.build())?;
+                let issued: PhotoEnrollmentIssued =
+                    serde_json::from_str(&secret).map_err(json_error)?;
+                issued.validate().context(ContractSnafu)?;
+                Ok(issued)
+            })
+            .await
     }
 
     /// Pairs, downloads, saves, acknowledges and publishes the offline workspace.
@@ -206,8 +219,8 @@ impl<S: Secrets> Initializer<S> {
         }
         let key = self.signing_key().await?;
         let public_key = key.verifying_key();
-        let origin = self.config.server_url.clone();
-        let ca = self.config.ca_certificate.clone();
+        let origin = self.origin.clone();
+        let ca = self.ca_certificate.clone();
         let api = run_blocking(move || PhotoEnrollmentClient::load_tls(origin, ca)).await?;
         self.pair(&api, code, &public_key).await?;
         let enrollment = self.enrollment().await?;
@@ -257,31 +270,35 @@ impl<S: Secrets> Initializer<S> {
             return Ok(());
         }
         let secrets = self.secrets.clone();
-        let origin = self.config.server_url.clone();
+        let origin = self.origin.clone();
         let slot = self.slot(SecretKind::Enrollment);
-        let existing = run_with_initialization_lease(self.store.lease(), move || {
-            secrets.load(&origin, &slot).context(CredentialSnafu)
-        })
-        .await?;
+        let existing = self
+            .store
+            .lease()
+            .run(move || secrets.load(&origin, &slot).context(CredentialSnafu))
+            .await?;
         if existing.is_none() {
             let code = code
                 .filter(|code| !code.trim().is_empty())
                 .ok_or_else(|| MissingSecretSnafu.build())?;
             let marker = self.store.root().join("pairing-started");
             self.store
-                .with_locked_files(move || store::save_new_or_verify(&marker, b"1"))
+                .lease()
+                .run(move || store::save_new_or_verify(&marker, b"1"))
                 .await?;
             let issued = api.pair(code, public_key).await?;
             let encoded = Zeroizing::new(serde_json::to_string(&issued).map_err(json_error)?);
             let secrets = self.secrets.clone();
-            let origin = self.config.server_url.clone();
+            let origin = self.origin.clone();
             let slot = self.slot(SecretKind::Enrollment);
-            run_with_initialization_lease(self.store.lease(), move || {
-                secrets
-                    .save(&origin, &slot, &encoded)
-                    .context(CredentialSnafu)
-            })
-            .await?;
+            self.store
+                .lease()
+                .run(move || {
+                    secrets
+                        .save(&origin, &slot, &encoded)
+                        .context(CredentialSnafu)
+                })
+                .await?;
         }
         let issued = self.enrollment().await?;
         self.store.record_pairing(issued.source_id.clone()).await
@@ -303,7 +320,8 @@ impl<S: Secrets> Initializer<S> {
             .join(format!("downloads-{}", manifest.initialization_id));
         let directory = download.clone();
         self.store
-            .with_locked_files(move || {
+            .lease()
+            .run(move || {
                 std::fs::create_dir_all(&directory).context(IoSnafu)?;
                 ensure!(
                     std::fs::canonicalize(&directory).context(IoSnafu)? == directory,
@@ -321,7 +339,8 @@ impl<S: Secrets> Initializer<S> {
                 let directory = download.clone();
                 let digest = logo.sha256.clone();
                 self.store
-                    .with_locked_files(move || store::save_download(&directory, &digest, &image))
+                    .lease()
+                    .run(move || store::save_download(&directory, &digest, &image))
                     .await?;
             }
             logos.push(crate::workspace::resources::SchoolLogo {
@@ -331,15 +350,29 @@ impl<S: Secrets> Initializer<S> {
         }
         let workspace = self.store.root().join(prepared.as_str());
         drop(
-            Workspace::create_with_logos(&workspace, &roster, download, logos, self.store.lease())
-                .await
-                .context(WorkspaceSnafu)?,
+            self.store
+                .lease()
+                .run({
+                    let workspace = workspace.clone();
+                    move || {
+                        Workspace::create_with_logos(
+                            workspace,
+                            roster.teams().to_vec(),
+                            &download,
+                            logos,
+                        )
+                        .context(WorkspaceSnafu)
+                    }
+                })
+                .await?,
         );
         let hash = Sha256Digest::of(bytes);
         let identity = doctor::Authorization {
-            server_url: self.config.server_url.clone(),
+            server_url: self.origin.clone(),
             client_id: self.store.state().client_id.clone(),
-            signing_public_key: hex::encode(public_key.as_bytes()),
+            signing_public_key: hex::encode(public_key.as_bytes())
+                .parse()
+                .context(ValueSnafu)?,
             source_id: enrollment.source_id.clone(),
             dataset_id: manifest.dataset_id,
             initialization_id: manifest.initialization_id.clone(),
@@ -347,7 +380,8 @@ impl<S: Secrets> Initializer<S> {
         };
         let bytes = bytes.to_owned();
         self.store
-            .with_locked_files(move || {
+            .lease()
+            .run(move || {
                 store::save_new_or_verify(&workspace.join("initialization.json"), &bytes)?;
                 store::save_new_or_verify(
                     &workspace.join("authorization.json"),
@@ -371,16 +405,4 @@ async fn run_blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(operation)
         .await
         .context(WorkerSnafu)?
-}
-
-// Credential writes may outlive cancellation, so a new initializer must wait for them.
-async fn run_with_initialization_lease<T: Send + 'static>(
-    lease: std::sync::Arc<std::fs::File>,
-    operation: impl FnOnce() -> Result<T> + Send + 'static,
-) -> Result<T> {
-    run_blocking(move || {
-        let _lease = lease;
-        operation()
-    })
-    .await
 }

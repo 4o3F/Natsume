@@ -1,7 +1,6 @@
-#![cfg(windows)]
 use std::path::PathBuf;
 
-use natsume_photo_client::{
+use crate::{
     roster::Roster,
     workspace::{Error as WorkspaceError, Workspace},
 };
@@ -10,37 +9,13 @@ use snafu::{ResultExt as _, Snafu};
 
 #[derive(Debug, Snafu)]
 enum Error {
-    Io {
-        source: std::io::Error,
-    },
-    Image {
-        source: image::ImageError,
-    },
-    Json {
-        source: serde_json::Error,
-    },
-    Roster {
-        source: natsume_photo_client::roster::Error,
-    },
-    Workspace {
-        source: WorkspaceError,
-    },
+    Io { source: std::io::Error },
+    Image { source: image::ImageError },
+    Json { source: serde_json::Error },
+    Roster { source: crate::roster::Error },
+    Workspace { source: WorkspaceError },
 }
 type Result<T = ()> = std::result::Result<T, Error>;
-
-#[tokio::test]
-async fn removed_default_image_input_is_rejected_before_workspace_creation() -> Result {
-    let fixture = Fixture::new()?;
-    fixture.write(&json!({"default_image": "logo.png"}))?;
-    assert!(matches!(
-        Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest).await,
-        Err(WorkspaceError::Resource {
-            source: natsume_photo_client::workspace::ResourceError::Manifest { .. }
-        })
-    ));
-    assert!(!fixture.root().exists());
-    Ok(())
-}
 
 struct Fixture {
     directory: tempfile::TempDir,
@@ -56,7 +31,7 @@ impl Fixture {
             .save(source.join("logo.png"))
             .context(ImageSnafu)?;
         let mut rows: Value =
-            serde_json::from_slice(include_bytes!("fixtures/roster.json")).context(JsonSnafu)?;
+            serde_json::from_slice(include_bytes!("../fixtures/roster.json")).context(JsonSnafu)?;
         rows[1]["organization_id"] = json!(1);
         let roster =
             Roster::parse(&serde_json::to_vec(&rows).context(JsonSnafu)?).context(RosterSnafu)?;
@@ -83,10 +58,13 @@ impl Fixture {
 #[tokio::test]
 async fn shared_school_logo_survive_source_removal_and_reopen() -> Result {
     let fixture = Fixture::new()?;
-    let workspace =
-        Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest)
-            .await
-            .context(WorkspaceSnafu)?;
+    let workspace = crate::workspace::fixture::create_with_resources(
+        &fixture.root(),
+        &fixture.roster,
+        &fixture.manifest,
+    )
+    .await
+    .context(WorkspaceSnafu)?;
     let first = &fixture.roster.teams()[0].account_id;
     let second = &fixture.roster.teams()[1].account_id;
     let logo = workspace.logo_path(first).await.context(WorkspaceSnafu)?;
@@ -117,7 +95,7 @@ async fn shared_school_logo_survive_source_removal_and_reopen() -> Result {
 #[tokio::test]
 async fn absent_resources_are_optional_and_unknown_team_is_distinct() -> Result {
     let fixture = Fixture::new()?;
-    let workspace = Workspace::create(&fixture.root(), &fixture.roster)
+    let workspace = crate::workspace::fixture::create(&fixture.root(), &fixture.roster)
         .await
         .context(WorkspaceSnafu)?;
     assert!(
@@ -137,10 +115,13 @@ async fn absent_resources_are_optional_and_unknown_team_is_distinct() -> Result 
 #[tokio::test]
 async fn valid_but_changed_cached_image_is_rejected_before_and_after_reopen() -> Result {
     let fixture = Fixture::new()?;
-    let workspace =
-        Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest)
-            .await
-            .context(WorkspaceSnafu)?;
+    let workspace = crate::workspace::fixture::create_with_resources(
+        &fixture.root(),
+        &fixture.roster,
+        &fixture.manifest,
+    )
+    .await
+    .context(WorkspaceSnafu)?;
     let logo = workspace
         .logo_path(&fixture.roster.teams()[0].account_id)
         .await
@@ -168,10 +149,13 @@ async fn valid_but_changed_cached_image_is_rejected_before_and_after_reopen() ->
 #[tokio::test]
 async fn missing_cached_resource_is_not_silently_treated_as_unconfigured() -> Result {
     let fixture = Fixture::new()?;
-    let workspace =
-        Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest)
-            .await
-            .context(WorkspaceSnafu)?;
+    let workspace = crate::workspace::fixture::create_with_resources(
+        &fixture.root(),
+        &fixture.roster,
+        &fixture.manifest,
+    )
+    .await
+    .context(WorkspaceSnafu)?;
     if let Some(path) = workspace
         .logo_path(&fixture.roster.teams()[0].account_id)
         .await
@@ -183,7 +167,7 @@ async fn missing_cached_resource_is_not_silently_treated_as_unconfigured() -> Re
     assert!(matches!(
         Workspace::open(&fixture.root()).await,
         Err(WorkspaceError::Resource {
-            source: natsume_photo_client::workspace::ResourceError::Io { .. }
+            source: crate::workspace::ResourceError::Io { .. }
         })
     ));
     Ok(())
@@ -195,10 +179,14 @@ async fn escaping_or_absolute_source_paths_are_rejected_without_target_creation(
     for relative in ["../logo.png", "/outside.png", "C:\\outside.png"] {
         fixture.write(&json!({"school_logos": [{"organization_id": 1, "path": relative}]}))?;
         assert!(matches!(
-            Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest)
-                .await,
+            crate::workspace::fixture::create_with_resources(
+                &fixture.root(),
+                &fixture.roster,
+                &fixture.manifest
+            )
+            .await,
             Err(WorkspaceError::Resource {
-                source: natsume_photo_client::workspace::ResourceError::Path
+                source: crate::workspace::ResourceError::Path
             })
         ));
         assert!(!fixture.root().exists());
@@ -215,8 +203,12 @@ async fn duplicate_or_unknown_school_mappings_are_rejected() -> Result {
     ] {
         fixture.write(&json!({"school_logos": logos}))?;
         assert!(matches!(
-            Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest)
-                .await,
+            crate::workspace::fixture::create_with_resources(
+                &fixture.root(),
+                &fixture.roster,
+                &fixture.manifest
+            )
+            .await,
             Err(WorkspaceError::Resource { .. })
         ));
         assert!(!fixture.root().exists());
@@ -229,9 +221,14 @@ async fn missing_or_fake_images_fail_without_creating_workspace() -> Result {
     let fixture = Fixture::new()?;
     fixture.write(&json!({"school_logos": [{"organization_id": 1, "path": "missing.png"}]}))?;
     assert!(matches!(
-        Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest).await,
+        crate::workspace::fixture::create_with_resources(
+            &fixture.root(),
+            &fixture.roster,
+            &fixture.manifest
+        )
+        .await,
         Err(WorkspaceError::Resource {
-            source: natsume_photo_client::workspace::ResourceError::Io { .. }
+            source: crate::workspace::ResourceError::Io { .. }
         })
     ));
     std::fs::write(
@@ -241,9 +238,13 @@ async fn missing_or_fake_images_fail_without_creating_workspace() -> Result {
     .context(IoSnafu)?;
     fixture.write(&json!({"school_logos": [{"organization_id": 1, "path": "logo.png"}]}))?;
     assert!(
-        Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest)
-            .await
-            .is_err()
+        crate::workspace::fixture::create_with_resources(
+            &fixture.root(),
+            &fixture.roster,
+            &fixture.manifest
+        )
+        .await
+        .is_err()
     );
     assert!(!fixture.root().exists());
     Ok(())
@@ -256,10 +257,13 @@ async fn jpeg_is_cached_with_its_real_extension() -> Result {
         .save(fixture.directory.path().join("input/logo.jpg"))
         .context(ImageSnafu)?;
     fixture.write(&json!({"school_logos": [{"organization_id": 1, "path": "logo.jpg"}]}))?;
-    let workspace =
-        Workspace::create_with_resources(&fixture.root(), &fixture.roster, &fixture.manifest)
-            .await
-            .context(WorkspaceSnafu)?;
+    let workspace = crate::workspace::fixture::create_with_resources(
+        &fixture.root(),
+        &fixture.roster,
+        &fixture.manifest,
+    )
+    .await
+    .context(WorkspaceSnafu)?;
     let path = workspace
         .logo_path(&fixture.roster.teams()[0].account_id)
         .await

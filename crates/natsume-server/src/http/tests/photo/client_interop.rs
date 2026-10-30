@@ -33,7 +33,7 @@ async fn photo_client_initializes_against_real_server_tls_and_then_runs_offline(
     let code = f
         .state
         .photo()
-        .issue_code(source.to_string(), PendingEnrollment::Preserve)
+        .issue_code(source.clone(), PendingEnrollment::Preserve)
         .await?;
     let identity = crate::tls::tests::TestIdentity::new(Ipv4Addr::LOCALHOST)?;
     let listener = crate::tls::TlsListener::bind(

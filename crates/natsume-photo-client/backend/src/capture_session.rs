@@ -1,15 +1,11 @@
 //! Owns capture policy and coordinates ordered ingestion work independently of UI.
-use crate::hot_folder::{
-    self, CaptureSnafu, HotFolderSnapshot, INTERVAL, IngestionState, InvariantSnafu, IoSnafu,
-    MonitorSnafu, MonitorUnavailableSnafu, NotEmptySnafu, NotReviewableSnafu, Result, StoppedSnafu,
-    UnsafePathSnafu, WorkerSnafu, WorkspaceSnafu,
-};
+pub use crate::hot_folder::archive::ArchiveError;
+use crate::hot_folder::{archive, native::NativeMonitor};
 use crate::{
     capture::{self, GroupId, Session},
     workspace::Workspace,
 };
-use hot_folder::native::NativeMonitor;
-use snafu::{IntoError as _, OptionExt as _, ResultExt as _, ensure};
+use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
 use std::time::Duration;
 use std::{
     collections::BTreeMap,
@@ -19,6 +15,77 @@ use std::{
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+const INTERVAL: Duration = Duration::from_millis(250);
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub(crate)))]
+pub enum Error {
+    #[snafu(display("hot-folder directory operation failed"))]
+    Io { source: std::io::Error },
+    #[snafu(display("native directory monitoring failed"))]
+    Monitor { source: windows::core::Error },
+    #[snafu(display("cannot read the workspace roster: {source}"))]
+    Workspace { source: crate::workspace::Error },
+    #[snafu(display("capture transition rejected: {source}"))]
+    Capture { source: capture::Error },
+    #[snafu(display("source archival failed: {source}"))]
+    Archive { source: ArchiveError },
+    #[snafu(display("hot folder must be an absolute local directory outside the workspace"))]
+    UnsafePath,
+    #[snafu(display("a new capture session requires an empty hot folder"))]
+    NotEmpty,
+    #[snafu(display("directory monitoring has not recovered; group transitions are blocked"))]
+    MonitorUnavailable,
+    #[snafu(display("photo cannot be assigned to this active group"))]
+    NotReviewable,
+    #[snafu(display("ingestion state invariant was violated"))]
+    Invariant,
+    #[snafu(display("ingestion worker has stopped"))]
+    Stopped,
+    #[snafu(display("ingestion task failed"))]
+    Worker { source: tokio::task::JoinError },
+}
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Persistent-in-memory worker state, distinct from a failed method call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestionState {
+    Running,
+    RecoveringMonitor,
+    PausedDirectory,
+    PausedArchive,
+    Stopped,
+}
+
+/// A stable source copy, never a decoded candidate or a confirmed final.
+#[derive(Debug, Clone)]
+pub struct ArchivedPhoto {
+    pub id: Uuid,
+    pub source: PathBuf,
+    pub path: PathBuf,
+    pub sha256: String,
+    pub bytes: u64,
+    /// None requires explicit photographer review.
+    pub group_id: Option<GroupId>,
+}
+/// A source that vanished before archival, retained for photographer review.
+#[derive(Debug, Clone)]
+pub struct MissingSource {
+    pub source: PathBuf,
+    pub group_id: Option<GroupId>,
+}
+/// Owned operator facts; this is not the contestant presentation state.
+#[derive(Debug, Clone)]
+pub struct HotFolderSnapshot {
+    pub session_id: Uuid,
+    pub group_id: Option<GroupId>,
+    pub account_id: Option<String>,
+    pub pending_tasks: usize,
+    pub paused: bool,
+    pub state: IngestionState,
+    pub photos: Vec<ArchivedPhoto>,
+    pub missing_sources: Vec<MissingSource>,
+    pub notifications: u64,
+}
 
 mod ingestion;
 use ingestion::Ingestion;
@@ -52,7 +119,7 @@ struct Command {
 
 /// Owns a Tokio worker; explicit shutdown drains running I/O, Drop only requests it.
 pub struct CaptureSession {
-    _workspace_owner: std::sync::Arc<std::fs::File>,
+    _workspace_owner: crate::workspace::WorkspaceWriter,
     commands: mpsc::Sender<Command>,
     snapshots: watch::Receiver<HotFolderSnapshot>,
     stop: CancellationToken,
@@ -96,7 +163,7 @@ impl CaptureSession {
         let startup_guard = stop.clone().drop_guard();
         let (ready, started) = oneshot::channel();
         let worker_stop = stop.clone();
-        let worker_owner = std::sync::Arc::clone(&workspace_owner);
+        let worker_owner = workspace_owner.clone();
         // WinRT query objects are apartment-bound and !Send. Construct, use and
         // release them on one Tokio-managed blocking thread; never assert Send.
         let worker = tokio::task::spawn_blocking(move || {
@@ -474,3 +541,7 @@ impl CaptureState {
         Ok(Response::Done)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/hot_folder_session.rs"]
+mod integration_tests;

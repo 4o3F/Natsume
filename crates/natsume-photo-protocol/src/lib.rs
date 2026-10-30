@@ -13,8 +13,8 @@ pub const ENROLLMENT_RESPONSE_LIMIT: usize = 8192;
 
 mod value;
 pub use value::{
-    DatasetId, EnrollmentId, InitializationId, InitializationRequestId, Sha256Digest, SourceId,
-    ValueError, is_canonical_uuid_v7, is_lowercase_sha256,
+    DatasetId, EnrollmentId, Identity, InitializationId, InitializationRequestId, Sha256Digest,
+    SigningPublicKey, SourceId, ValueError, is_canonical_uuid_v7, is_lowercase_sha256,
 };
 
 /// Relationship or capacity failure in an otherwise decoded snapshot.
@@ -52,8 +52,10 @@ impl TryFrom<u32> for FormatVersion {
     }
 }
 impl From<FormatVersion> for u32 {
-    fn from(_: FormatVersion) -> u32 {
-        1
+    fn from(value: FormatVersion) -> u32 {
+        match value {
+            FormatVersion::V1 => 1,
+        }
     }
 }
 /// An unsupported snapshot version; never silently interpreted as the current one.
@@ -72,7 +74,9 @@ impl LogoContentType {
     /// HTTP media type for this normalized format.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        "image/png"
+        match self {
+            Self::Png => "image/png",
+        }
     }
 }
 
@@ -221,7 +225,7 @@ pub enum SourceState {
 #[serde(deny_unknown_fields)]
 pub struct PhotoPairRequest {
     pub code: String,
-    pub signing_public_key: String,
+    pub signing_public_key: SigningPublicKey,
     pub client_version: String,
 }
 /// Confirms that the issued enrollment is bound to the original signing key.
@@ -230,7 +234,7 @@ pub struct PhotoPairRequest {
 #[serde(deny_unknown_fields)]
 pub struct PhotoConfirmation {
     pub enrollment_id: EnrollmentId,
-    pub signing_public_key: String,
+    pub signing_public_key: SigningPublicKey,
 }
 /// Idempotent completion receipt, sent only after local integrity verification.
 #[derive(Debug, Serialize, Deserialize)]

@@ -1,29 +1,20 @@
-#![cfg(windows)]
-use natsume_photo_client::{
+use crate::{
     capture::{Error as CaptureError, GroupId, GroupState, Session},
     roster::Roster,
     workspace::Workspace,
 };
 use snafu::{OptionExt as _, ResultExt as _, Snafu};
 
-const FIXTURE: &[u8] = include_bytes!("fixtures/roster.json");
+const FIXTURE: &[u8] = include_bytes!("../fixtures/roster.json");
 const TEAM_A: &str = "0199a000-0000-7000-8000-000000000001";
 const TEAM_B: &str = "0199a000-0000-7000-8000-000000000002";
 
 #[derive(Debug, Snafu)]
 enum Error {
-    Roster {
-        source: natsume_photo_client::roster::Error,
-    },
-    Capture {
-        source: CaptureError,
-    },
-    Workspace {
-        source: natsume_photo_client::workspace::Error,
-    },
-    Io {
-        source: std::io::Error,
-    },
+    Roster { source: crate::roster::Error },
+    Capture { source: CaptureError },
+    Workspace { source: crate::workspace::Error },
+    Io { source: std::io::Error },
     Fixture,
 }
 type Result<T = ()> = std::result::Result<T, Error>;
@@ -298,7 +289,7 @@ async fn reopening_workspace_restores_roster_but_not_selection_group_or_pending_
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let root = directory.path().join("工作区");
     let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
-    let workspace = Workspace::create(&root, &roster)
+    let workspace = crate::workspace::fixture::create(&root, &roster)
         .await
         .context(WorkspaceSnafu)?;
     let mut old = Session::new(workspace.roster().await.context(WorkspaceSnafu)?);

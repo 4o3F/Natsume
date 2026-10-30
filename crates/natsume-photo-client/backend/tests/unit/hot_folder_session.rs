@@ -1,11 +1,10 @@
-#![cfg(windows)]
 #[cfg(windows)]
 use std::io::Write as _;
 use std::{fs, path::PathBuf, time::Duration};
 
-use natsume_photo_client::capture_session::CaptureSession;
-use natsume_photo_client::{
-    hot_folder::{Error as HotFolderError, HotFolderSnapshot, IngestionState},
+use crate::capture_session::CaptureSession;
+use crate::{
+    capture_session::{Error as HotFolderError, HotFolderSnapshot, IngestionState},
     roster::Roster,
     workspace::Workspace,
 };
@@ -17,21 +16,11 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Snafu)]
 enum Error {
-    Io {
-        source: std::io::Error,
-    },
-    Roster {
-        source: natsume_photo_client::roster::Error,
-    },
-    Workspace {
-        source: natsume_photo_client::workspace::Error,
-    },
-    HotFolder {
-        source: HotFolderError,
-    },
-    Image {
-        source: image::ImageError,
-    },
+    Io { source: std::io::Error },
+    Roster { source: crate::roster::Error },
+    Workspace { source: crate::workspace::Error },
+    HotFolder { source: HotFolderError },
+    Image { source: image::ImageError },
     Timeout,
     Fixture,
 }
@@ -45,8 +34,8 @@ struct Fixture {
 
 async fn fixture() -> Result<Fixture> {
     let directory = tempfile::tempdir().context(IoSnafu)?;
-    let roster = Roster::parse(include_bytes!("fixtures/roster.json")).context(RosterSnafu)?;
-    let workspace = Workspace::create(&directory.path().join("工作区"), &roster)
+    let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
+    let workspace = crate::workspace::fixture::create(&directory.path().join("工作区"), &roster)
         .await
         .context(WorkspaceSnafu)?;
     let hot = directory.path().join("相机 来图");
@@ -82,8 +71,8 @@ async fn awaited_commands_publish_their_snapshot_and_capture_keeps_workspace_own
     drop(fixture.workspace);
     assert!(matches!(
         Workspace::open(&root).await,
-        Err(natsume_photo_client::workspace::Error::Storage {
-            source: natsume_photo_client::workspace::StorageError::Busy
+        Err(crate::workspace::Error::Storage {
+            source: crate::workspace::StorageError::Busy
         })
     ));
     folder.shutdown().await.context(HotFolderSnafu)?;

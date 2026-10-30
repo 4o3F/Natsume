@@ -1,5 +1,5 @@
 //! Photo enrollment HTTPS transport; retry and response policies are explicit.
-use super::{IoSnafu, RejectedSnafu, Result, TransportSnafu};
+use super::{IoSnafu, RejectedSnafu, Result, ServerOrigin, TransportSnafu};
 use ed25519_dalek::VerifyingKey;
 use natsume_photo_protocol::{
     PhotoConfirmation, PhotoEnrollmentIssued, PhotoInitialization, PhotoInitializationComplete,
@@ -10,20 +10,6 @@ use serde::de::DeserializeOwned;
 use snafu::{ResultExt as _, ensure};
 use std::{path::PathBuf, time::Duration};
 
-pub(super) fn origin(value: &str) -> Result<String> {
-    let url = url::Url::parse(value).context(super::UrlSnafu)?;
-    ensure!(
-        url.scheme() == "https"
-            && url.host_str().is_some()
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.path() == "/"
-            && url.query().is_none()
-            && url.fragment().is_none(),
-        super::OriginSnafu
-    );
-    Ok(url.origin().ascii_serialization())
-}
 #[derive(Clone, Copy)]
 enum Endpoint<'a> {
     Pair,
@@ -60,11 +46,11 @@ pub(super) struct InitializationDownload {
 }
 pub(super) struct PhotoEnrollmentClient {
     http: Client,
-    origin: String,
+    origin: ServerOrigin,
 }
 impl PhotoEnrollmentClient {
     /// Reads an optional CA bundle and builds TLS; called on a blocking thread.
-    pub fn load_tls(origin: String, ca_certificate: Option<PathBuf>) -> Result<Self> {
+    pub fn load_tls(origin: ServerOrigin, ca_certificate: Option<PathBuf>) -> Result<Self> {
         let mut builder = Client::builder()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
@@ -180,7 +166,9 @@ impl PhotoEnrollmentClient {
     ) -> Result<PhotoEnrollmentIssued> {
         let body = PhotoPairRequest {
             code: code.to_owned(),
-            signing_public_key: hex::encode(public_key.as_bytes()),
+            signing_public_key: hex::encode(public_key.as_bytes())
+                .parse()
+                .context(super::ValueSnafu)?,
             client_version: env!("CARGO_PKG_VERSION").to_owned(),
         };
         let issued: PhotoEnrollmentIssued = Self::send_json(
@@ -199,7 +187,9 @@ impl PhotoEnrollmentClient {
     ) -> Result<()> {
         let body = PhotoConfirmation {
             enrollment_id: enrollment.enrollment_id.clone(),
-            signing_public_key: hex::encode(public_key.as_bytes()),
+            signing_public_key: hex::encode(public_key.as_bytes())
+                .parse()
+                .context(super::ValueSnafu)?,
         };
         let source: PhotoSource = Self::send_json(
             self.photo_request(Endpoint::Confirm)

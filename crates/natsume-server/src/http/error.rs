@@ -102,10 +102,8 @@ impl ApiError {
             }
             EnrollmentError::NotFound => Self::not_found("photo_source_not_found"),
             EnrollmentError::Conflict => Self::conflict("photo_source_conflict"),
-            EnrollmentError::InvalidId => Self::invalid_request("photo_identifier"),
             EnrollmentError::InvalidName => Self::invalid_request("photo_source_name"),
             EnrollmentError::InvalidPairing => Self::invalid_request("photo_pairing_request"),
-            EnrollmentError::InvalidKey => Self::invalid_request("photo_signing_key"),
             EnrollmentError::RateLimited => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too Many Requests",
@@ -150,10 +148,9 @@ impl ApiError {
                 Self::internal_error_from(error, "photo_initialization_persistence")
             }
             InitializationError::InvalidRoster { .. } => {
-                Self::internal_error_from(error, "photo_roster_invalid")
+                Self::conflict("photo_roster_invalid").report_from(error)
             }
-            InitializationError::InvalidContract { .. }
-            | InitializationError::InvalidSnapshot { .. } => {
+            InitializationError::InvalidContract { .. } => {
                 Self::internal_error_from(error, "photo_initialization_contract")
             }
             InitializationError::Corrupt => {

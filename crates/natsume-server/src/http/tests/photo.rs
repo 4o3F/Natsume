@@ -31,7 +31,8 @@ mod client_interop;
 mod recovery;
 
 #[tokio::test]
-async fn invalid_server_roster_is_an_internal_error_and_cannot_publish_a_snapshot() -> TestResult {
+async fn invalid_server_roster_is_a_recoverable_conflict_and_cannot_publish_a_snapshot()
+-> TestResult {
     let f = Fixture::new().await?;
     f.confirm().await?;
     f.database
@@ -47,7 +48,7 @@ async fn invalid_server_roster_is_an_internal_error_and_cannot_publish_a_snapsho
     let response = f
         .send(Method::POST, "client/initialization", Value::Null)
         .await?;
-    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status, StatusCode::CONFLICT);
     let published = f
         .database
         .database
@@ -59,6 +60,22 @@ async fn invalid_server_roster_is_an_internal_error_and_cannot_publish_a_snapsho
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     assert_eq!(published, 0);
+    f.database
+        .database
+        .write(|tx| -> Result<(), PersistenceError> {
+            diesel::update(accounts::table.filter(accounts::account_id.eq("account-a")))
+                .set(accounts::domjudge_username.eq("account-a"))
+                .execute(tx.connection())?;
+            Ok(())
+        })
+        .await
+        .map_err(crate::db::TransactionError::into_error)?;
+    assert_eq!(
+        f.send(Method::POST, "client/initialization", Value::Null)
+            .await?
+            .status,
+        StatusCode::OK
+    );
     Ok(())
 }
 
@@ -136,10 +153,10 @@ struct Fixture {
     logos: tempfile::TempDir,
     state: AppState,
     app: axum::Router,
-    source: String,
+    source: natsume_photo_protocol::SourceId,
     token: String,
     enrollment: String,
-    key: String,
+    key: natsume_photo_protocol::SigningPublicKey,
 }
 
 impl Fixture {
@@ -203,13 +220,15 @@ impl Fixture {
             .source_id;
         let code = state
             .photo()
-            .issue_code(source.to_string(), PendingEnrollment::Preserve)
+            .issue_code(source.clone(), PendingEnrollment::Preserve)
             .await?;
-        let key = hex::encode(
+        let key: natsume_photo_protocol::SigningPublicKey = hex::encode(
             ed25519_dalek::SigningKey::from_bytes(&[17; 32])
                 .verifying_key()
                 .to_bytes(),
-        );
+        )
+        .parse()
+        .unwrap_or_else(|error| panic!("generated non-weak public key: {error:?}"));
         let issued = state
             .photo()
             .pair(PhotoPairRequest {
@@ -224,7 +243,7 @@ impl Fixture {
             logos,
             state,
             app,
-            source: source.to_string(),
+            source,
             token: issued.token.clone(),
             enrollment: issued.enrollment_id.to_string(),
             key,
@@ -535,7 +554,7 @@ async fn expired_pairing_code_cannot_be_redeemed() -> TestResult {
     let code = f
         .state
         .photo()
-        .issue_code(source.to_string(), PendingEnrollment::Preserve)
+        .issue_code(source.clone(), PendingEnrollment::Preserve)
         .await?;
     f.database
         .database
@@ -696,7 +715,7 @@ async fn secret_storage_and_resource_ownership_are_scoped() -> TestResult {
     let code = f
         .state
         .photo()
-        .issue_code(source.to_string(), PendingEnrollment::Preserve)
+        .issue_code(source.clone(), PendingEnrollment::Preserve)
         .await?;
     let other = f
         .state
@@ -884,5 +903,49 @@ async fn snapshot_resource_rejects_symlinks_even_with_matching_bytes() -> TestRe
         )
         .await?;
     assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_persisted_photo_identity_preserves_the_value_error() -> TestResult {
+    use std::error::Error as _;
+    let f = Fixture::new().await?;
+    f.database
+        .database
+        .write(|tx| -> Result<(), PersistenceError> {
+            diesel::update(photo_sources::table)
+                .set(photo_sources::enrollment_id.eq("invalid-enrollment"))
+                .execute(tx.connection())?;
+            Ok(())
+        })
+        .await
+        .map_err(crate::db::TransactionError::into_error)?;
+    let error = f
+        .state
+        .photo()
+        .list_sources()
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("invalid persisted identity"));
+    let mut source = error.source();
+    let mut found = false;
+    while let Some(current) = source {
+        found |= current.is::<natsume_photo_protocol::ValueError>();
+        source = current.source();
+    }
+    assert!(
+        found,
+        "retain protocol validation source through the persistence boundary"
+    );
+    assert_eq!(
+        f.send(
+            Method::POST,
+            "enrollment/confirm",
+            json!({"enrollment_id": f.enrollment, "signing_public_key": f.key})
+        )
+        .await?
+        .status,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
     Ok(())
 }

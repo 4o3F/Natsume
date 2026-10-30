@@ -10,7 +10,11 @@ use super::{CredentialResult, SecretSlot, Secrets};
 pub struct VaultSecrets;
 
 impl Secrets for VaultSecrets {
-    fn load(&self, origin: &str, slot: &SecretSlot) -> CredentialResult<Option<Zeroizing<String>>> {
+    fn load(
+        &self,
+        origin: &super::ServerOrigin,
+        slot: &SecretSlot,
+    ) -> CredentialResult<Option<Zeroizing<String>>> {
         let slot = slot.storage_key();
         let vault = PasswordVault::new().context(WindowsSnafu)?;
         let credential = match vault.Retrieve(
@@ -28,7 +32,12 @@ impl Secrets for VaultSecrets {
             credential.Password().context(WindowsSnafu)?.to_string(),
         )))
     }
-    fn save(&self, origin: &str, slot: &SecretSlot, value: &str) -> CredentialResult<()> {
+    fn save(
+        &self,
+        origin: &super::ServerOrigin,
+        slot: &SecretSlot,
+        value: &str,
+    ) -> CredentialResult<()> {
         let slot = slot.storage_key();
         let vault = PasswordVault::new().context(WindowsSnafu)?;
         let credential = PasswordCredential::CreatePasswordCredential(

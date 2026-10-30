@@ -12,18 +12,18 @@ cargo test -p natsume-photo-client --locked
 
 ## 持久化与调用关系
 
-`Initializer::run().await` 完成配对、确认、下载、暂存、完成回执与工作区发布。`Workspace::create_with_logos().await` 从类型化下载资料验证校徽（内部准备不经过 resources.json），调用 `storage::create().await` 创建目录和安装 schema，再将名单、校徽引用和 ready 标记放在同一事务提交。`Workspace::open().await` 只打开现有文件，检查资料就绪、名单和校徽；不迁移、不检查旧格式版本。
+`Initializer::run().await` 完成配对、确认、下载、暂存、完成回执与工作区发布。初始化模块在持锁的单个阻塞任务中调用 `Workspace::create_with_logos()` 从类型化下载资料验证校徽（内部准备不经过 resources.json），调用 `storage::create()` 创建目录和安装 schema，再将名单、校徽引用和 ready 标记放在同一事务提交。`Workspace::open().await` 只打开现有文件，检查资料就绪、名单和校徽；不迁移、不检查旧格式版本。
 
 | 模块 | 职责 |
 | --- | --- |
 | `initialization/` | HTTPS、协议验证、Windows 凭据、恢复日志、只读诊断 |
 | `workspace/mod.rs` | 资料就绪、名单和校徽的业务校验 |
-| `workspace/storage.rs` | 在 Tokio 阻塞任务中装配目录、连接和 schema |
+| `workspace/storage.rs` | 装配目录、工作区写所有权、连接和 schema；创建与发布的阻塞边界由初始化调用方持有 |
 | `workspace/db.rs` | typed Diesel 查询、事务和持久化错误 |
 | `workspace/resources.rs` | 校徽输入、路径、限额、解码和哈希校验 |
 | `capture.rs` | 内存会话、队伍锁定、拍摄组与任务屏障 |
 | `capture_session.rs` | 拍摄会话所有者与有序命令/快照协调 |
-| `hot_folder.rs` | 不拥有 Session 的增量收图状态 |
+| `capture_session/ingestion.rs` | 不拥有 Session 的增量收图状态 |
 | `hot_folder/native.rs` | 安全 WinRT 文件通知，不使用系统索引服务 |
 | `hot_folder/archive.rs` | 有界复制、源版本复核及不覆盖发布 |
 
@@ -43,7 +43,7 @@ cargo test -p natsume-photo-client --locked
 
 ## 测试文件组织
 
-所有测试内容集中在 `tests/`：根目录的 Rust 文件是集成测试，`unit/` 中的七个文件分别测试 capture、hot_folder、native、workspace_db、workspace_resources、初始化日志锁的取消安全，以及显式运行的 Windows 凭据库读写，`fixtures/` 保存测试输入。业务模块通过 `#[cfg(test)]` 和 `#[path = "..."]` 引用对应单元测试，因此仍能访问父模块的私有实现，不需要扩大业务 API 的可见性。`tests/unit/` 没有独立的集成测试入口，Cargo 不会重复运行这些测试。
+所有测试内容集中在 `tests/`：根目录保留 HTTPS 初始化、CLI 和名单的集成测试；`unit/` 覆盖工作区、资源、会话、归档、原生通知、origin、取消安全和数据库错误来源，包含仅供测试的工作区夹具；`fixtures/` 保存输入。业务模块通过 `#[cfg(test)]` 和 `#[path = "..."]` 引用单元测试，因此能访问私有实现而无需扩大生产 API。`tests/unit/` 没有独立的集成测试入口，Cargo 不会重复运行这些测试。
 
 ## 验证
 
@@ -58,3 +58,11 @@ Server 测试在 WSL 运行。真实联调用例由 WSL Server 启动 Windows �
 `capture_session/ingestion.rs` 私有管理文件观测、归档和来源丢失状态。它不修改拍摄会话，`CaptureSession` 根据待处理文件事实登记／结束任务，并决定暂停或恢复。
 
 初始化标记与授权资料先写入同目录临时文件、同步后再以不覆盖方式发布。已由 Server 验证的校徽下载缓存使用内容摘要生成文件名，允许通过同样的完整临时文件替换损坏缓存；不会沿用半写入的下载文件。工作区准备从资源检查、创建、复制到名单事务都由同一个阻塞任务持有初始化 lease，调用方取消后仍等待实际任务结束才释放该锁。
+
+## 类型、模块和本地测试
+
+初始化所有权只在初始化模块内调度实际文件和凭据操作，取消等待不会提前解锁；工作区的写所有权由工作区、拍摄和数据库任务持有。两者不能互换。Config 保留用户 URL 输入，运行中的 HTTPS、凭据定位和授权文件使用验证后的 ServerOrigin。签名公钥与 SHA-256 摘要使用不同类型。
+
+拍摄公开 API、错误、状态和快照统一从 `capture_session` 导入；`hot_folder` 是内部通知和归档实现。公开库不提供测试建库函数。需要直接构造工作区的私有单元测试放在 `tests/unit/`，通过 cfg(test) path 接入；HTTPS 初始化、CLI 和名单仍使用集成测试。测试夹具调用生产准备核心，不维护另一份 schema 或建库逻辑。
+
+`Workspace::open` / `WorkspaceReader::inspect` 检查数据完整性；`Initializer` 和 `doctor` 另行检查本地授权与当前用户凭据中的原签名密钥。打开 SQLite 本身不证明授权绑定有效。

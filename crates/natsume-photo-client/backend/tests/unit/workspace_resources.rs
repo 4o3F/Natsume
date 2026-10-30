@@ -20,15 +20,13 @@ async fn changed_source_during_preparation_leaves_workspace_incomplete() -> Test
     image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3]))
         .save(&logo)
         .context(ImageSnafu)?;
-    let manifest = directory.path().join("resources.json");
-    std::fs::write(
-        &manifest,
-        br#"{"school_logos":[{"organization_id":1,"path":"logo.png"}]}"#,
-    )
-    .context(IoSnafu)?;
     let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
-    let prepared = Prepared::load(
-        &manifest,
+    let prepared = Prepared::from_paths(
+        &std::fs::canonicalize(directory.path()).context(IoSnafu)?,
+        vec![SchoolLogo {
+            organization_id: 1,
+            path: "logo.png".into(),
+        }],
         &roster.teams().iter().map(|t| t.organization_id).collect(),
     )
     .context(ResourceSnafu)?;
@@ -37,7 +35,7 @@ async fn changed_source_during_preparation_leaves_workspace_incomplete() -> Test
         .context(ImageSnafu)?;
     let root = directory.path().join("workspace");
     assert!(matches!(
-        Workspace::create_prepared(&root, &roster, Some(prepared)).await,
+        Workspace::create_blocking(root.clone(), roster.teams().to_vec(), prepared),
         Err(Error::Resource { .. })
     ));
     assert!(matches!(
@@ -75,22 +73,6 @@ fn persisted_path_cannot_escape_content_addressed_resource_directory() -> TestRe
     assert!(matches!(
         reference.verify(directory.path()),
         Err(ResourceError::Path)
-    ));
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_unknown_fields() -> TestResult {
-    let directory = tempfile::tempdir().context(IoSnafu)?;
-    let path = directory.path().join("resources.json");
-    std::fs::write(&path, br#"{"school_logos":[],"password":"forbidden"}"#).context(IoSnafu)?;
-    let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
-    assert!(matches!(
-        Prepared::load(
-            &path,
-            &roster.teams().iter().map(|t| t.organization_id).collect()
-        ),
-        Err(ResourceError::Manifest { .. })
     ));
     Ok(())
 }

@@ -162,3 +162,38 @@ async fn save_roster(database: &Database, teams: Vec<PhotoTeam>) -> Result<()> {
         .await
         .context(super::WorkerSnafu)?
 }
+
+#[tokio::test]
+async fn poisoned_connection_preserves_source_and_never_runs_another_operation() -> TestResult {
+    use std::error::Error as _;
+    let directory = tempfile::tempdir().context(IoSnafu)?;
+    let (_, database, _owner) =
+        storage::create(directory.path().join("workspace")).context(StorageSnafu)?;
+    let connection = Arc::clone(&database.0);
+    assert!(
+        std::thread::spawn(move || {
+            let _guard = connection
+                .lock()
+                .unwrap_or_else(|error| panic!("unpoisoned fixture: {error:?}"));
+            panic!("inject database mutex poison");
+        })
+        .join()
+        .is_err()
+    );
+    let error = database
+        .install()
+        .err()
+        .unwrap_or_else(|| panic!("poisoned database must reject migration"));
+    assert!(matches!(error.source(), Some(source) if source.is::<std::sync::PoisonError<()>>()));
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&ran);
+    let result = database
+        .write(move |_| {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+    assert!(matches!(result, Err(PersistenceError::Unavailable { .. })));
+    assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+    Ok(())
+}

@@ -5,7 +5,7 @@ async fn expire_token(f: &Fixture) -> TestResult {
     f.database
         .database
         .write(move |tx| -> Result<(), PersistenceError> {
-            diesel::update(photo_sources::table.find(source))
+            diesel::update(photo_sources::table.find(source.as_str()))
                 .set(photo_sources::token_expires_at_unix_ms.eq(0_i64))
                 .execute(tx.connection())?;
             Ok(())
@@ -39,11 +39,13 @@ async fn replace_and_confirm(f: &mut Fixture) -> TestResult {
             .await
             .is_err()
     );
-    let key = hex::encode(
+    let key: natsume_photo_protocol::SigningPublicKey = hex::encode(
         ed25519_dalek::SigningKey::from_bytes(&[18; 32])
             .verifying_key()
             .to_bytes(),
-    );
+    )
+    .parse()
+    .unwrap_or_else(|error| panic!("generated non-weak public key: {error:?}"));
     let issued = f
         .state
         .photo()
@@ -53,7 +55,7 @@ async fn replace_and_confirm(f: &mut Fixture) -> TestResult {
             client_version: "2.11.0".into(),
         })
         .await?;
-    assert_eq!(issued.source_id.as_str(), f.source);
+    assert_eq!(issued.source_id, f.source);
     f.token = issued.token.clone();
     f.enrollment = issued.enrollment_id.to_string();
     f.key = key;
@@ -291,7 +293,7 @@ async fn replacement_prevents_old_snapshot_publication() -> TestResult {
         .database
         .read(move |tx| -> Result<_, PersistenceError> {
             photo_initializations::table
-                .filter(photo_initializations::source_id.eq(source))
+                .filter(photo_initializations::source_id.eq(source.as_str()))
                 .count()
                 .get_result(tx.connection())
                 .map_err(PersistenceError::from)

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, ensure};
 
 use super::{ClientId, identity::PreparedId};
-use super::{Config, IoSnafu, JournalSnafu, Result, WorkspaceSnafu};
+use super::{IoSnafu, JournalSnafu, Result, ServerOrigin, WorkspaceSnafu};
 use crate::workspace::{Workspace, WorkspaceReader};
 use natsume_photo_protocol::{InitializationId, InitializationRequestId, Sha256Digest, SourceId};
 
@@ -38,7 +38,7 @@ pub(super) enum Phase {
 #[serde(deny_unknown_fields)]
 pub(super) struct State {
     format_version: u32,
-    origin: String,
+    origin: ServerOrigin,
     target: PathBuf,
     pub client_id: ClientId,
     pub source_id: Option<SourceId>,
@@ -55,11 +55,31 @@ pub(super) struct Store {
     root: PathBuf,
     state: State,
     journal: std::sync::Arc<File>,
-    lock: std::sync::Arc<File>,
+    lock: InitializationLease,
+}
+// A lease can only be acquired by this module's actual OS-lock operation.
+#[derive(Clone)]
+pub(super) struct InitializationLease {
+    _handle: std::sync::Arc<File>,
+}
+impl InitializationLease {
+    // Cancellation drops the waiter, but the real task retains the locked handle.
+    pub async fn run<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let ownership = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ownership = ownership;
+            operation()
+        })
+        .await
+        .context(super::WorkerSnafu)?
+    }
 }
 impl Store {
-    pub fn lease(&self) -> std::sync::Arc<File> {
-        std::sync::Arc::clone(&self.lock)
+    pub fn lease(&self) -> InitializationLease {
+        self.lock.clone()
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -74,8 +94,7 @@ impl Store {
         next.phase = Phase::Paired;
         self.commit(next).await
     }
-    pub fn open(config: &Config) -> Result<Self> {
-        let target = &config.workspace;
+    pub fn open(target: &Path, origin: &ServerOrigin) -> Result<Self> {
         ensure!(
             target.is_absolute()
                 && !target
@@ -83,9 +102,10 @@ impl Store {
                     .any(|c| matches!(c, Component::ParentDir)),
             super::PathSnafu
         );
-        let parent = std::fs::canonicalize(target.parent().ok_or_else(|| JournalSnafu.build())?)
-            .context(IoSnafu)?;
-        let name = target.file_name().ok_or_else(|| JournalSnafu.build())?;
+        let parent =
+            std::fs::canonicalize(target.parent().ok_or_else(|| super::PathSnafu.build())?)
+                .context(IoSnafu)?;
+        let name = target.file_name().ok_or_else(|| super::PathSnafu.build())?;
         let target = parent.join(name);
         let mut staging_name = std::ffi::OsString::from(".");
         staging_name.push(name);
@@ -102,7 +122,7 @@ impl Store {
         }
         ensure!(
             std::fs::canonicalize(&root).context(IoSnafu)? == root,
-            JournalSnafu
+            super::PathSnafu
         );
         let path = root.join("initialization.jsonl");
         let fresh = !path.exists() || std::fs::metadata(&path).context(IoSnafu)?.len() == 0;
@@ -118,7 +138,7 @@ impl Store {
                 !std::fs::symlink_metadata(&path)
                     .context(IoSnafu)?
                     .is_symlink(),
-                JournalSnafu
+                super::PathSnafu
             );
         }
         let mut journal = OpenOptions::new()
@@ -129,10 +149,10 @@ impl Store {
             .open(&path)
             .context(IoSnafu)?;
         let state = if fresh {
-            ensure!(!target.exists(), JournalSnafu);
+            ensure!(!target.exists(), super::FileConflictSnafu);
             State {
                 format_version: 1,
-                origin: config.server_url.clone(),
+                origin: origin.clone(),
                 target: target.clone(),
                 client_id: ClientId::generate(),
                 source_id: None,
@@ -142,9 +162,7 @@ impl Store {
             read_state(&mut journal)?
         };
         ensure!(
-            state.format_version == 1
-                && state.origin == config.server_url
-                && state.target == target,
+            state.format_version == 1 && state.origin == *origin && state.target == target,
             JournalSnafu
         );
         match &state.phase {
@@ -155,7 +173,9 @@ impl Store {
             root,
             state,
             journal: std::sync::Arc::new(journal),
-            lock: std::sync::Arc::new(lock),
+            lock: InitializationLease {
+                _handle: std::sync::Arc::new(lock),
+            },
         };
         if fresh {
             store.append()?;
@@ -164,20 +184,6 @@ impl Store {
         Ok(store)
     }
 
-    // A cancelled async caller must not release ownership while blocking I/O
-    // can still append or publish. The task holds the same locked handle.
-    pub async fn with_locked_files<T: Send + 'static>(
-        &self,
-        operation: impl FnOnce() -> Result<T> + Send + 'static,
-    ) -> Result<T> {
-        let ownership = std::sync::Arc::clone(&self.lock);
-        tokio::task::spawn_blocking(move || {
-            let _ownership = ownership;
-            operation()
-        })
-        .await
-        .context(super::WorkerSnafu)?
-    }
     fn append(&self) -> Result<()> {
         append(&self.journal, &self.root, &self.state)
     }
@@ -203,7 +209,8 @@ impl Store {
         let written = state.clone();
         let journal = std::sync::Arc::clone(&self.journal);
         let root = self.root.clone();
-        self.with_locked_files(move || append(&journal, &root, &written))
+        self.lock
+            .run(move || append(&journal, &root, &written))
             .await?;
         self.state = state;
         Ok(())
@@ -211,7 +218,8 @@ impl Store {
     async fn workspace_path(&self, receipt: &Receipt) -> Result<PathBuf> {
         let staged = self.root.join(receipt.prepared.as_str());
         let target = self.state.target.clone();
-        self.with_locked_files(move || Ok(if staged.exists() { staged } else { target }))
+        self.lock
+            .run(move || Ok(if staged.exists() { staged } else { target }))
             .await
     }
     pub async fn verify(
@@ -240,9 +248,12 @@ impl Store {
         secrets: &impl super::Secrets,
     ) -> Result<Workspace> {
         let verified = self.verify(receipt, secrets).await?;
-        Workspace::publish_verified(verified, self.state.target.clone(), self.lease())
+        self.lock
+            .run({
+                let target = self.state.target.clone();
+                move || Workspace::publish_verified(verified, &target).context(WorkspaceSnafu)
+            })
             .await
-            .context(WorkspaceSnafu)
     }
 }
 

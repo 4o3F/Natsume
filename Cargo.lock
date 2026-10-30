@@ -3702,6 +3702,7 @@ dependencies = [
 name = "natsume-photo-protocol"
 version = "2.11.0"
 dependencies = [
+ "ed25519-dalek",
  "hex",
  "serde",
  "serde_json",

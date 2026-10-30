@@ -59,7 +59,7 @@ Client 在同级 `.Contest.photo-init` 目录记录非秘密恢复日志、暂�
 
 名单是 JSON 数组，每项包含 `account_id`、`account`、`organization_id`、学校与队伍中英文名称。`account_id` 是内部稳定身份，`account` 是外部 Team ID；两者分别不能为空且唯一。英文名可省略并默认为空字符串，不接受 null。身份比较保留原值，不按名称、座位或列表行号猜测队伍。
 
-内部资源准备及测试使用以下清单，例如清单目录中有 `logos/school.png`：
+仅私有测试夹具使用以下清单；生产初始化直接消费已验证的类型化下载资料，例如清单目录中有 `logos/school.png`：
 
 ```json
 {
@@ -114,7 +114,7 @@ cargo fmt -p natsume-photo-client -- --check
 只运行真实文件系统收图测试：
 
 ```powershell
-cargo test -p natsume-photo-client --test hot_folder --locked
+cargo test -p natsume-photo-client --lib capture_session::integration_tests --locked
 ```
 
 现有 Windows 自动化覆盖名单验证、工作区重开及事务回滚、事务失败、资源校验、组锁定、重复/旧回调、原生文件通知、分段写入、归档失败重试、监控目录恢复和重启残留。测试使用临时目录和虚构名单，不需要真实相机，不修改正式摄影资料。真实相机、实际展示确认、成品中断保存和批量性能尚未验收。
@@ -131,8 +131,9 @@ cargo test -p natsume-photo-client --test hot_folder --locked
 | `backend/src/workspace/` | 工作区、私有数据库访问及展示资源缓存 |
 | `backend/src/capture.rs` | 内存会话、拍摄组与任务屏障 |
 | `backend/src/capture_session.rs` | 拥有拍摄会话，顺序协调操作、监控与归档；操作发布快照后应答 |
-| `backend/src/hot_folder.rs`、`backend/src/hot_folder/` | 增量对账、有界内容复核、原生通知和复制归档 |
-| `../natsume-photo-protocol/` | 两端共用的初始化 DTO、凭据格式及校验上限 |
+| `backend/src/capture_session/ingestion.rs` | 增量对账、有界内容复核及来源归属事实 |
+| `backend/src/hot_folder/` | 私有原生通知和复制归档实现 |
+| `../natsume-photo-protocol/` | 两端共用的初始化 DTO、规范值类型及校验上限；token 对 Client 不透明 |
 | `backend/migrations/`、`backend/src/diesel_schema.rs` | 本地数据库迁移和生成 schema |
 | `backend/tests/` | 公共接口、文件系统及 CLI 集成测试；`unit/` 保存私有模块单元测试，`fixtures/` 保存测试数据 |
 
@@ -145,3 +146,5 @@ cargo test -p natsume-photo-client --test hot_folder --locked
 同一工作区只允许一个可写所有者，拍摄会话会延长写锁生命周期。doctor 使用只读数据库连接；`.writer.lock` 和目标同级 `.NAME.photo-init.lock` 是持久锁文件，不要在进程运行时删除。锁文件保留不表示进程仍在运行，系统在句柄关闭或进程退出后释放锁。
 
 热文件夹周期扫描先检查元数据，不每轮读取全部相机原图；全局每三十秒至多额外复核一个未变文件，覆盖保留时间戳的改写，复核发现延迟随文件数增长。消失后的来源重现仍需明确归属，告警确认不会让它自动归给新队伍。Session 由 `CaptureSession` 管理，监控/归档处理不拥有队伍选择策略；尚未实现选定成品与展示确认。
+
+拍摄 API、错误和状态统一位于 `capture_session`，底层 `hot_folder` 为私有实现。工作区完整性检查与授权诊断是两个边界；`open` / `inspect` 检查本地数据，首次初始化恢复和 `doctor` 还核对服务器来源及本机签名密钥。测试直接建库的辅助函数只在 `tests/unit/` 编译，不是生产 API。

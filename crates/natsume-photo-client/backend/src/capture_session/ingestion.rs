@@ -1,9 +1,9 @@
 //! File observations and archival, without capture-session mutation authority.
-use crate::capture::GroupId;
-use crate::hot_folder::{
+use super::{
     ArchiveError, ArchiveSnafu, ArchivedPhoto, Error, INTERVAL, IngestionState, InvariantSnafu,
     IoSnafu, MissingSource, NotReviewableSnafu, Result, UnsafePathSnafu, archive,
 };
+use crate::capture::GroupId;
 use snafu::{IntoError as _, OptionExt as _, ResultExt as _, ensure};
 use std::{
     collections::{BTreeMap, BTreeSet},

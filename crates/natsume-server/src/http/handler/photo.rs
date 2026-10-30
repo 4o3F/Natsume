@@ -110,7 +110,7 @@ async fn list_sources(State(state): State<AppState>) -> Response {
 }
 async fn issue_code(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<natsume_photo_protocol::SourceId>,
     body: Result<Json<PhotoPairingCodeRequest>, JsonRejection>,
 ) -> Response {
     let Ok(Json(_body)) = body else {
@@ -125,7 +125,10 @@ async fn issue_code(
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
 }
-async fn reset_enrollment(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+async fn reset_enrollment(
+    State(state): State<AppState>,
+    Path(id): Path<natsume_photo_protocol::SourceId>,
+) -> Response {
     match state
         .photo()
         .issue_code(id, PendingEnrollment::Replace)
@@ -137,7 +140,7 @@ async fn reset_enrollment(State(state): State<AppState>, Path(id): Path<String>)
 }
 async fn update_state(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<natsume_photo_protocol::SourceId>,
     body: Result<Json<PhotoSourceStateUpdate>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {

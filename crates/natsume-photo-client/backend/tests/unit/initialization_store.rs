@@ -1,3 +1,4 @@
+use super::super::Config;
 use super::*;
 use snafu::Snafu;
 
@@ -87,7 +88,12 @@ fn cancelled_workspace_preparation_retains_initialization_ownership_until_io_fin
             workspace: directory.path().join("workspace"),
             ca_certificate: None,
         };
-        let store = Store::open(&config).context(InitializationSnafu)?;
+        let store = Store::open(
+            &config.workspace,
+            &ServerOrigin::parse(&config.server_url)
+                .unwrap_or_else(|error| panic!("valid fixture origin: {error:?}")),
+        )
+        .context(InitializationSnafu)?;
         let root = store.root().join("prepared");
         let roster = crate::roster::Roster::parse(include_bytes!("../fixtures/roster.json"))
             .context(RosterSnafu)?;
@@ -98,22 +104,27 @@ fn cancelled_workspace_preparation_retains_initialization_ownership_until_io_fin
             let _ = wait.recv();
         });
         started.await.context(SignalSnafu)?;
-        let mut prepare = Box::pin(Workspace::create_with_logos(
-            &root,
-            &roster,
-            directory.path().to_owned(),
-            Vec::new(),
-            store.lease(),
-        ));
+        let lease = store.lease();
+        let prepare_root = root.clone();
+        let source = directory.path().to_owned();
+        let mut prepare = Box::pin(lease.run(move || {
+            Workspace::create_with_logos(prepare_root, roster.teams().to_vec(), &source, Vec::new())
+                .context(super::super::WorkspaceSnafu)
+        }));
         // Poll the real factory until it has queued its owned blocking operation.
         tokio::select! { biased;
             _ = &mut prepare => return FixtureSnafu.fail(),
             () = std::future::ready(()) => {}
         }
         drop(prepare);
+        drop(lease);
         drop(store);
         assert!(matches!(
-            Store::open(&config),
+            Store::open(
+                &config.workspace,
+                &ServerOrigin::parse(&config.server_url)
+                    .unwrap_or_else(|error| panic!("valid fixture origin: {error:?}"))
+            ),
             Err(super::super::Error::Busy)
         ));
         drop(release);
@@ -123,7 +134,11 @@ fn cancelled_workspace_preparation_retains_initialization_ownership_until_io_fin
             .context(InitializationSnafu)?;
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
-                match Store::open(&config) {
+                match Store::open(
+                    &config.workspace,
+                    &ServerOrigin::parse(&config.server_url)
+                        .unwrap_or_else(|error| panic!("valid fixture origin: {error:?}")),
+                ) {
                     Ok(store) => {
                         drop(store);
                         break Ok(());
@@ -155,6 +170,24 @@ fn cancelled_workspace_preparation_retains_initialization_ownership_until_io_fin
 }
 type TestResult = std::result::Result<(), TestError>;
 
+#[test]
+fn a_drive_root_is_an_invalid_target_path_not_a_journal_failure() -> TestResult {
+    let directory = tempfile::tempdir().context(IoSnafu)?;
+    let root = directory
+        .path()
+        .ancestors()
+        .last()
+        .unwrap_or_else(|| panic!("temporary directory has a drive root"));
+    let origin = ServerOrigin::parse("https://localhost")
+        .context(super::super::OriginSnafu)
+        .context(InitializationSnafu)?;
+    assert!(matches!(
+        Store::open(root, &origin),
+        Err(super::super::Error::Path)
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn cancelling_the_caller_keeps_the_lock_until_blocking_io_finishes() -> TestResult {
     cancelled_blocking_work(BlockingBoundary::Files).await?;
@@ -173,7 +206,12 @@ async fn cancelled_blocking_work(boundary: BlockingBoundary) -> TestResult {
         workspace: directory.path().join("workspace"),
         ca_certificate: None,
     };
-    let store = Store::open(&config).context(InitializationSnafu)?;
+    let store = Store::open(
+        &config.workspace,
+        &ServerOrigin::parse(&config.server_url)
+            .unwrap_or_else(|error| panic!("valid fixture origin: {error:?}")),
+    )
+    .context(InitializationSnafu)?;
     let (started, entered) = tokio::sync::oneshot::channel();
     let (release, waiting) = std::sync::mpsc::channel::<()>();
     let task = tokio::spawn(async move {
@@ -184,11 +222,11 @@ async fn cancelled_blocking_work(boundary: BlockingBoundary) -> TestResult {
             Ok(())
         };
         match boundary {
-            BlockingBoundary::Files => store.with_locked_files(operation).await,
+            BlockingBoundary::Files => store.lease().run(operation).await,
             BlockingBoundary::Credentials => {
                 let lease = store.lease();
                 drop(store);
-                super::super::run_with_initialization_lease(lease, operation).await
+                lease.run(operation).await
             }
         }
     });
@@ -196,13 +234,21 @@ async fn cancelled_blocking_work(boundary: BlockingBoundary) -> TestResult {
     task.abort();
     assert!(task.await.is_err_and(|error| error.is_cancelled()));
     assert!(matches!(
-        Store::open(&config),
+        Store::open(
+            &config.workspace,
+            &ServerOrigin::parse(&config.server_url)
+                .unwrap_or_else(|error| panic!("valid fixture origin: {error:?}"))
+        ),
         Err(super::super::Error::Busy)
     ));
     drop(release);
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            match Store::open(&config) {
+            match Store::open(
+                &config.workspace,
+                &ServerOrigin::parse(&config.server_url)
+                    .unwrap_or_else(|error| panic!("valid fixture origin: {error:?}")),
+            ) {
                 Ok(store) => {
                     drop(store);
                     return Ok(());

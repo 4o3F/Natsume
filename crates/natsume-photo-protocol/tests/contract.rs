@@ -136,7 +136,13 @@ fn enrollment_requests_and_confirmation_share_the_same_wire_types() -> Result {
     };
     let pair = PhotoPairRequest {
         code: "one-time-code".into(),
-        signing_public_key: "00".repeat(32),
+        signing_public_key: hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .parse()
+        .unwrap_or_else(|error| panic!("generated public key: {error:?}")),
         client_version: "test".into(),
     };
     let confirmation = PhotoConfirmation {
@@ -167,4 +173,29 @@ fn enrollment_requests_and_confirmation_share_the_same_wire_types() -> Result {
     encoded["state"] = serde_json::json!("unexpected");
     assert!(serde_json::from_value::<PhotoSource>(encoded).is_err());
     Ok(())
+}
+
+#[test]
+fn public_keys_have_their_own_validation_and_wire_representation() {
+    use natsume_photo_protocol::SigningPublicKey;
+    let encoded = hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&[11; 32])
+            .verifying_key()
+            .to_bytes(),
+    );
+    let key: SigningPublicKey = encoded
+        .parse()
+        .unwrap_or_else(|error| panic!("generated public key: {error:?}"));
+    assert_eq!(
+        serde_json::to_value(key).unwrap_or_else(|error| panic!("key serialization: {error:?}")),
+        encoded
+    );
+    for invalid in [
+        "00".repeat(32),
+        "ab".repeat(31),
+        encoded.to_uppercase(),
+        "gg".repeat(32),
+    ] {
+        assert!(invalid.parse::<SigningPublicKey>().is_err());
+    }
 }

@@ -1,5 +1,5 @@
 //! Filesystem, connection and migration assembly, separate from workspace policy.
-use super::db::Database;
+use super::{WorkspaceWriter, db::Database};
 use snafu::{ResultExt as _, Snafu, ensure};
 use std::path::{Component, Path, PathBuf};
 
@@ -30,7 +30,7 @@ fn validate(path: &Path) -> Result<()> {
     Ok(())
 }
 // The caller owns the blocking boundary for the entire preparation transaction.
-pub(super) fn create(path: PathBuf) -> Result<(PathBuf, Database, std::sync::Arc<std::fs::File>)> {
+pub(super) fn create(path: PathBuf) -> Result<(PathBuf, Database, WorkspaceWriter)> {
     validate(&path)?;
     match std::fs::create_dir(&path) {
         Ok(()) => {}
@@ -46,14 +46,14 @@ pub(super) fn create(path: PathBuf) -> Result<(PathBuf, Database, std::sync::Arc
     let root = std::fs::canonicalize(path).context(IoSnafu {
         operation: "resolve workspace directory",
     })?;
-    let lock = std::sync::Arc::new(lock_writer(&root)?);
+    let lock = lock_writer(&root)?;
     let path = root.join("workspace.sqlite3");
     std::fs::File::create_new(&path).context(IoSnafu {
         operation: "reserve workspace database",
     })?;
     let database = Database::connect(&path)
         .context(DatabaseSnafu)?
-        .with_owner(std::sync::Arc::clone(&lock));
+        .with_owner(lock.clone());
     database.install().context(DatabaseSnafu)?;
     Ok((root, database, lock))
 }
@@ -78,15 +78,13 @@ pub(super) async fn open_reader(path: PathBuf) -> Result<(PathBuf, Database)> {
     .await
     .context(WorkerSnafu)?
 }
-pub(super) async fn open_writer(
-    path: PathBuf,
-) -> Result<(PathBuf, Database, std::sync::Arc<std::fs::File>)> {
+pub(super) async fn open_writer(path: PathBuf) -> Result<(PathBuf, Database, WorkspaceWriter)> {
     tokio::task::spawn_blocking(move || {
         let (root, path) = existing_database(path)?;
-        let owner = std::sync::Arc::new(lock_writer(&root)?);
+        let owner = lock_writer(&root)?;
         let database = Database::connect(&path)
             .context(DatabaseSnafu)?
-            .with_owner(std::sync::Arc::clone(&owner));
+            .with_owner(owner.clone());
         Ok((root, database, owner))
     })
     .await
@@ -97,7 +95,7 @@ pub(super) async fn open_writer(
 pub(super) fn publish_verified(
     source: PathBuf,
     target: &Path,
-) -> Result<(PathBuf, Database, std::sync::Arc<std::fs::File>)> {
+) -> Result<(PathBuf, Database, WorkspaceWriter)> {
     let (root, _) = existing_database(source)?;
     validate(target)?;
     let parent = target.parent().ok_or_else(|| PathSnafu.build())?;
@@ -107,7 +105,7 @@ pub(super) fn publish_verified(
             operation: "resolve publication parent",
         })?
         .join(name);
-    let mut owner = std::sync::Arc::new(lock_writer(&root)?);
+    let mut owner = lock_writer(&root)?;
     if root != target {
         ensure!(
             !target.try_exists().context(IoSnafu {
@@ -122,15 +120,15 @@ pub(super) fn publish_verified(
         std::fs::rename(&root, &target).context(IoSnafu {
             operation: "publish verified workspace",
         })?;
-        owner = std::sync::Arc::new(lock_writer(&target)?);
+        owner = lock_writer(&target)?;
     }
     let database = Database::connect(&target.join("workspace.sqlite3"))
         .context(DatabaseSnafu)?
-        .with_owner(std::sync::Arc::clone(&owner));
+        .with_owner(owner.clone());
     Ok((target, database, owner))
 }
 
-fn lock_writer(root: &Path) -> Result<std::fs::File> {
+fn lock_writer(root: &Path) -> Result<WorkspaceWriter> {
     let lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -141,7 +139,9 @@ fn lock_writer(root: &Path) -> Result<std::fs::File> {
             operation: "open workspace lock",
         })?;
     match lock.try_lock() {
-        Ok(()) => Ok(lock),
+        Ok(()) => Ok(WorkspaceWriter {
+            _handle: std::sync::Arc::new(lock),
+        }),
         Err(std::fs::TryLockError::WouldBlock) => BusySnafu.fail(),
         Err(std::fs::TryLockError::Error(source)) => Err(source).context(IoSnafu {
             operation: "lock workspace",

@@ -6,9 +6,7 @@ use std::{
 };
 
 use natsume_photo_client::{
-    initialization::{
-        Config, CredentialError, Error as InitError, Initializer, SecretSlot, Secrets,
-    },
+    initialization::{Config, Error as InitError, Initializer, SecretSlot, Secrets},
     workspace::Workspace,
 };
 use serde_json::{Value, json};
@@ -55,25 +53,29 @@ struct MemorySecrets(Arc<Mutex<BTreeMap<String, Zeroizing<String>>>>);
 impl Secrets for MemorySecrets {
     fn load(
         &self,
-        origin: &str,
+        origin: &natsume_photo_client::initialization::ServerOrigin,
         slot: &SecretSlot,
     ) -> natsume_photo_client::initialization::CredentialResult<Option<Zeroizing<String>>> {
         Ok(self
             .0
             .lock()
-            .map_err(|_| CredentialError::Unavailable)?
+            .unwrap_or_else(|error| {
+                panic!("credential fixture mutex must not be poisoned: {error:?}")
+            })
             .get(&format!("{origin}/{}", slot.storage_key()))
             .cloned())
     }
     fn save(
         &self,
-        origin: &str,
+        origin: &natsume_photo_client::initialization::ServerOrigin,
         slot: &SecretSlot,
         value: &str,
     ) -> natsume_photo_client::initialization::CredentialResult<()> {
         self.0
             .lock()
-            .map_err(|_| CredentialError::Unavailable)?
+            .unwrap_or_else(|error| {
+                panic!("credential fixture mutex must not be poisoned: {error:?}")
+            })
             .insert(
                 format!("{origin}/{}", slot.storage_key()),
                 Zeroizing::new(value.into()),
@@ -593,7 +595,7 @@ async fn origin_paths_exclusive_lock_and_existing_targets_are_checked() -> Resul
         };
         assert!(matches!(
             Initializer::open(config, secrets.clone()),
-            Err(InitError::Origin)
+            Err(InitError::Origin { .. })
         ));
     }
     let config = Config {
@@ -677,7 +679,10 @@ fn changed_origin_corrupt_journal_and_existing_directory_are_not_reused() -> Res
     config.workspace = directory.path().join("existing");
     std::fs::create_dir(&config.workspace)?;
     std::fs::write(config.workspace.join("keep"), b"original")?;
-    assert!(matches!(reopen(&config, &secrets), Err(InitError::Journal)));
+    assert!(matches!(
+        reopen(&config, &secrets),
+        Err(InitError::FileConflict)
+    ));
     assert_eq!(std::fs::read(config.workspace.join("keep"))?, b"original");
     Ok(())
 }
@@ -759,7 +764,11 @@ async fn changed_signing_public_key_prevents_completion_replay() -> Result {
         .find(|path| path.is_file())
         .ok_or(TestError::Fixture)?;
     let mut identity: Value = serde_json::from_slice(&std::fs::read(&prepared)?)?;
-    identity["signing_public_key"] = json!("00".repeat(32));
+    identity["signing_public_key"] = json!(hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+            .verifying_key()
+            .to_bytes()
+    ));
     std::fs::write(prepared, serde_json::to_vec(&identity)?)?;
     let before = server.requests()?.len();
     assert!(matches!(
@@ -835,5 +844,46 @@ async fn rejected_json_value_is_absent_from_debug_and_error_chain() -> Result {
             .to_string()
             .contains(canary)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cli_diagnosis_rejects_invalid_authorization_without_writing_or_exposing_contents() -> Result
+{
+    let image = png()?;
+    let server = Https::start(vec![
+        Reply::Pair,
+        Reply::Confirm,
+        Reply::PhotoInitialization(manifest(&image)?),
+        Reply::PhotoLogo(image),
+        Reply::Complete,
+    ])
+    .await?;
+    let directory = tempfile::tempdir()?;
+    let config = config(&server, directory.path())?;
+    drop(
+        reopen(&config, &MemorySecrets::default())?
+            .run(Some("ABCD-EFGH"))
+            .await?,
+    );
+    std::fs::write(
+        config.workspace.join("authorization.json"),
+        br#"{"secret-marker-123":"private-value-456"}"#,
+    )?;
+    let before = std::fs::read(config.workspace.join("workspace.sqlite3"))?;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_natsume-photo-client"))
+        .arg("doctor")
+        .arg(&config.workspace)
+        .output()?;
+    assert!(!output.status.success());
+    assert_eq!(
+        std::fs::read(config.workspace.join("workspace.sqlite3"))?,
+        before
+    );
+    for bytes in [&output.stdout, &output.stderr] {
+        let text = String::from_utf8_lossy(bytes);
+        assert!(!text.contains("secret-marker-123"));
+        assert!(!text.contains("private-value-456"));
+    }
     Ok(())
 }

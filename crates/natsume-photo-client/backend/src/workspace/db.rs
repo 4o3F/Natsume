@@ -36,7 +36,7 @@ pub enum PersistenceError {
     #[snafu(display("workspace database query failed"))]
     Query { source: diesel::result::Error },
     #[snafu(display("workspace database executor is unavailable"))]
-    Unavailable,
+    Unavailable { source: std::sync::PoisonError<()> },
     #[snafu(display("workspace database task failed"))]
     Worker { source: tokio::task::JoinError },
 }
@@ -52,7 +52,7 @@ pub(super) struct Metadata {
 }
 pub(super) type LogoColumns = (Option<String>, Option<String>);
 #[derive(Clone)]
-pub(super) struct Database(Arc<Mutex<SqliteConnection>>, Option<Arc<std::fs::File>>);
+pub(super) struct Database(Arc<Mutex<SqliteConnection>>, Option<super::WorkspaceWriter>);
 pub(super) struct Transaction<'connection> {
     connection: &'connection mut SqliteConnection,
 }
@@ -94,12 +94,15 @@ impl Database {
             Ok(Self(Arc::new(Mutex::new(connection)), None))
         })
     }
-    pub(super) fn with_owner(mut self, owner: Arc<std::fs::File>) -> Self {
+    pub(super) fn with_owner(mut self, owner: super::WorkspaceWriter) -> Self {
         self.1 = Some(owner);
         self
     }
     pub(super) fn install(&self) -> Result<()> {
-        let mut connection = self.0.lock().map_err(|_| UnavailableSnafu.build())?;
+        let mut connection = self.0.lock().map_err(|source| {
+            drop(source.into_inner());
+            UnavailableSnafu.into_error(std::sync::PoisonError::new(()))
+        })?;
         connection.run_pending_migrations(MIGRATIONS).map_err(|source| match source.downcast::<diesel::result::Error>() {
             Ok(source) => MigrationQuerySnafu.into_error(*source),
             Err(source) => match source.downcast::<diesel_migrations::MigrationError>() {
@@ -131,7 +134,10 @@ impl Database {
         &self,
         operation: impl FnOnce(&mut Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let mut connection = self.0.lock().map_err(|_| UnavailableSnafu.build())?;
+        let mut connection = self.0.lock().map_err(|source| {
+            drop(source.into_inner());
+            UnavailableSnafu.into_error(std::sync::PoisonError::new(()))
+        })?;
         connection.transaction(|connection| operation(&mut Transaction { connection }))
     }
     pub(super) async fn metadata(&self) -> Result<Metadata> {

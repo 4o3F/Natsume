@@ -1,5 +1,4 @@
 //! Content-addressed school logos; missing photos never use a default image.
-use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use snafu::{ResultExt as _, Snafu, ensure};
 use std::{
@@ -12,8 +11,6 @@ use std::{
 pub enum ResourceError {
     #[snafu(display("school logo file operation failed"))]
     Io { source: std::io::Error },
-    #[snafu(display("school logo manifest has invalid fields or JSON"))]
-    Manifest { source: serde_json::Error },
     #[snafu(display("school logo path escapes its permitted directory"))]
     Path,
     #[snafu(display("school logo path and hash must both be present or absent"))]
@@ -35,14 +32,6 @@ pub enum ResourceError {
 }
 type Result<T> = std::result::Result<T, ResourceError>;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Inputs {
-    #[serde(default)]
-    school_logos: Vec<SchoolLogo>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct SchoolLogo {
     pub organization_id: i64,
     pub path: PathBuf,
@@ -108,18 +97,6 @@ pub(super) struct Prepared {
     files: BTreeMap<String, (PathBuf, ImageRef)>,
 }
 impl Prepared {
-    pub(super) fn load(manifest: &Path, organizations: &BTreeSet<i64>) -> Result<Self> {
-        let input: Inputs = serde_json::from_slice(&std::fs::read(manifest).context(IoSnafu)?)
-            .context(ManifestSnafu)?;
-        let source = std::fs::canonicalize(
-            manifest
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new(".")),
-        )
-        .context(IoSnafu)?;
-        Self::from_paths(&source, input.school_logos, organizations)
-    }
     pub(crate) fn from_paths(
         source: &Path,
         logos: Vec<SchoolLogo>,

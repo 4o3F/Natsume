@@ -4,7 +4,7 @@
 pub mod capture;
 pub mod capture_session;
 mod diesel_schema;
-pub mod hot_folder;
+mod hot_folder;
 pub mod initialization;
 pub mod roster;
 pub mod workspace;

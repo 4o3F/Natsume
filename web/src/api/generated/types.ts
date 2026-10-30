@@ -452,9 +452,6 @@ export type ConnectionStateResponse =
 export type ConvergenceStatusResponse =
   "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
 
-/**  A canonical `UUIDv7` with a distinct protocol role. */
-export type DatasetId = string;
-
 /**  Current durable targets and latest validated Actual for one Device. */
 export type DeviceConvergenceResponse =
   DeviceConvergenceResponse_Serialize | DeviceConvergenceResponse_Deserialize;
@@ -614,9 +611,6 @@ export type EnrollmentDenied = {
   /**  Connection-local review identity claimed by the denial. */
   review_id: ReviewId;
 };
-
-/**  A canonical `UUIDv7` with a distinct protocol role. */
-export type EnrollmentId = string;
 
 /**  Non-secret evidence awaiting an Administrator decision in this process. */
 export type EnrollmentReviewResponse = {
@@ -926,12 +920,6 @@ export type ImportTeamResponse = {
   category: string;
 };
 
-/**  A canonical `UUIDv7` with a distinct protocol role. */
-export type InitializationId = string;
-
-/**  A canonical `UUIDv7` with a distinct protocol role. */
-export type InitializationRequestId = string;
-
 export type InvitationRegistered = Record<string, never>;
 
 export type JobIdentity = {
@@ -1156,32 +1144,32 @@ export type PauseReason = "disk_budget";
 
 /**  Confirms that the issued enrollment is bound to the original signing key. */
 export type PhotoConfirmation = {
-  enrollment_id: EnrollmentId;
-  signing_public_key: string;
+  enrollment_id: string;
+  signing_public_key: SigningPublicKey;
 };
 
 /**  Contains a secret: intentionally has no Debug implementation. */
 export type PhotoEnrollmentIssued = {
-  source_id: SourceId;
-  enrollment_id: EnrollmentId;
+  source_id: string;
+  enrollment_id: string;
   token: string;
   expires_at_unix_ms: number;
 };
 
 export type PhotoInitialization = {
   format_version: FormatVersion;
-  source_id: SourceId;
-  dataset_id: DatasetId;
-  initialization_id: InitializationId;
+  source_id: string;
+  dataset_id: string;
+  initialization_id: string;
   teams: PhotoTeam[];
   school_logos: PhotoLogo[];
 };
 
 /**  Idempotent completion receipt, sent only after local integrity verification. */
 export type PhotoInitializationComplete = {
-  initialization_id: InitializationId;
+  initialization_id: string;
   manifest_sha256: Sha256Digest;
-  request_id: InitializationRequestId;
+  request_id: string;
 };
 
 export type PhotoLogo = {
@@ -1194,7 +1182,7 @@ export type PhotoLogo = {
 /**  First enrollment request. The one-time code is sensitive. */
 export type PhotoPairRequest = {
   code: string;
-  signing_public_key: string;
+  signing_public_key: SigningPublicKey;
   client_version: string;
 };
 
@@ -1208,7 +1196,7 @@ export type PhotoPairingCodeRequest = Record<string, never>;
 
 /**  Public source projection used by Operators and the enrollment confirmation. */
 export type PhotoSource = {
-  source_id: SourceId;
+  source_id: string;
   name: string;
   state: SourceState;
   enrollment_confirmed: boolean;
@@ -1553,8 +1541,8 @@ export type Severity = "info" | "warning" | "error";
 /**  A validated lowercase SHA-256 digest, distinct from identities and keys. */
 export type Sha256Digest = string;
 
-/**  A canonical `UUIDv7` with a distinct protocol role. */
-export type SourceId = string;
+/**  Canonical non-weak Ed25519 public key; distinct from a digest. */
+export type SigningPublicKey = string;
 
 /**  Source lifecycle; authority remains entirely on Server. */
 export type SourceState = "enabled" | "disabled" | "revoked";
