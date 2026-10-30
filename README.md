@@ -52,14 +52,14 @@ The seven Web views below show the current production panel with synthetic API f
   </tr>
   <tr>
     <td width="33.33%" align="center" valign="top">
-      <a href="docs/screenshots/seats.png"><img src="docs/screenshots/seats.png" alt="Seats: Review assignments and spot unbound seats." width="288"></a><br>
+      <a href="docs/screenshots/seats.png"><img src="docs/screenshots/seats.png" alt="Seats: View the seat map, binding coverage, and seats that need a device." width="288"></a><br>
       <strong>Seats</strong><br>
-      Review assignments and spot unbound seats.
+      View the seat map, binding coverage, and seats that need a device.
     </td>
     <td width="33.33%" align="center" valign="top">
-      <a href="docs/screenshots/devices.png"><img src="docs/screenshots/devices.png" alt="Devices: Filter lifecycle, connection, and bindings; unbind devices in place." width="288"></a><br>
+      <a href="docs/screenshots/devices.png"><img src="docs/screenshots/devices.png" alt="Devices: Filter devices and inspect seat bindings, convergence, and connection history." width="288"></a><br>
       <strong>Devices</strong><br>
-      Filter lifecycle, connection, and bindings; unbind devices in place.
+      Filter devices and inspect seat bindings, convergence, and connection history.
     </td>
     <td width="33.33%" align="center" valign="top">
       <a href="docs/screenshots/targets.png"><img src="docs/screenshots/targets.png" alt="Targets: Set Session and Home targets and request confirmed shutdown." width="288"></a><br>

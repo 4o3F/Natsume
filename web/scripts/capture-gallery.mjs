@@ -192,6 +192,25 @@ const invitations = [
     expired: false,
   },
 ];
+/** @type {import('../src/api/generated/types.js').DeviceSummaries} */
+const deviceSummaries = {
+  devices: devices.map((device, i) => ({
+    device_id: device.device_id,
+    last_connected_at: now - 3_600_000,
+    last_disconnected_at: i >= 3 ? now - 120_000 : null,
+    last_disconnect_reason: i >= 3 ? "client_close" : null,
+    disconnects: i >= 3 ? 1 : 0,
+  })),
+  journal: {
+    status: "ready",
+    paused: false,
+    dropped_total: 0,
+    dropped_since: null,
+    oldest_retained_id: 1,
+    oldest_retained_at: now - 86_400_000,
+    server_utc_offset_minutes: 0,
+  },
+};
 const responses = {
   "/api/v2/session": operator,
   "/api/v2/accounts": accounts,
@@ -211,12 +230,12 @@ const scenes = [
     "Preparation Center",
     "Upload complete roster",
   ],
-  ["enrollment", "Enrollment", "Enrollment Reviews", hardware(6)],
+  ["enrollment", "Enrollment", "Enrollment", "00000006-1234-5a…"],
   ["accounts", "Accounts", null, "Star Voyagers"],
-  ["seats", "Seats", "Seats", "Star Voyagers"],
-  ["devices", "Devices", "Devices", "00000001…"],
-  ["targets", "Targets", "Targets", "Manage Session and Home targets"],
-  ["users", "Users", "Users", "helpdesk"],
+  ["seats", "Seats", "Seats", "星河漫游"],
+  ["devices", "Devices", "Devices", "00000001-123…"],
+  ["targets", "Targets", "Targets", "Set the desired foreground"],
+  ["users", "Operators", "Users", "helpdesk"],
 ];
 
 const server = await preview({
@@ -268,6 +287,10 @@ try {
       return route.fulfill({
         json: devices.filter((device) => states.includes(device.state)),
       });
+    }
+    if (path === "/api/v2/journal/device-summaries") {
+      assert.equal(url.search, "?window_ms=86400000");
+      return route.fulfill({ json: deviceSummaries });
     }
     const logo = schools.find(
       (school) =>
@@ -329,9 +352,20 @@ try {
     await expect(
       page.getByText(content, { exact: false }).first(),
     ).toBeVisible();
-    await expect(page.locator("tbody tr")).toHaveCount(
-      name === "preparation" ? 3 : name === "enrollment" ? 2 : 5,
-    );
+    if (name === "seats") {
+      await expect(
+        page.getByRole("radio", { name: "Map view", exact: true }),
+      ).toBeChecked();
+      await expect(
+        page
+          .getByRole("group", { name: "Row A", exact: true })
+          .getByRole("link"),
+      ).toHaveCount(seats.length);
+    } else {
+      await expect(page.locator("tbody tr")).toHaveCount(
+        name === "preparation" ? 3 : name === "enrollment" ? 2 : 5,
+      );
+    }
     await page.waitForLoadState("networkidle");
     await page.evaluate(async () => {
       await document.fonts.ready;
@@ -352,7 +386,7 @@ try {
         page.getByRole("columnheader", { name: "Seat", exact: true }),
       ).toBeVisible();
       await expect(
-        page.getByRole("button", { name: "Unbind", exact: true }).first(),
+        page.getByRole("button", { name: "Actions for A-01", exact: true }),
       ).toBeVisible();
       for (const facet of ["Lifecycle", "Connection", "Binding"]) {
         await expect(

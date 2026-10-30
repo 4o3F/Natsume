@@ -6,7 +6,7 @@ The root [feature gallery](../../README.md#feature-gallery) shows seven current 
 
 - Keep every PNG at **2880 × 2160**: a logical **1440 × 1080** interface rendered at **2×** scale.
 - Capture the actual current UI. Do not redraw it, override its layout, resize an old screenshot, crop it, or stretch it to fit the gallery.
-- Keep the root gallery as one equal-column table. Update its captions and image links when pages or responsibilities change; Bindings is now part of Devices, not a separate gallery page.
+- Keep the root gallery as one equal-column table. Update its captions and image links when pages or responsibilities change.
 - Use synthetic accounts, teams, schools, devices, invitations, and network addresses. Never capture real contest data, passwords, invitation/reset bearer links, or an existing personal desktop.
 
 ## Web panel
@@ -20,7 +20,7 @@ node web/scripts/capture-gallery.mjs
 
 The opt-in [capture helper](../../web/scripts/capture-gallery.mjs) serves the production build on its own ephemeral loopback port, opens a fresh Chromium context, and intercepts API calls with schema-typed fixtures. It does not start or contact Server. It uses a fixed clock, light theme, English locale, UTC timezone, and the capture geometry above; unknown API calls, writes, external requests, page errors, loading states, and horizontal overflow fail the capture. Browser and preview resources are closed afterward.
 
-The helper refreshes `preparation.png`, `enrollment.png`, `accounts.png`, `seats.png`, `devices.png`, `targets.png`, and `users.png`. The fixtures intentionally include bound/unbound seats, active/offline/disabled devices, a closed enrollment window with pending reviews, and administrator/viewer accounts without exposing issued links. Device bindings, Unbind actions, lifecycle/connection/binding facets, and the compact Emergency tool are shown on Devices. System fonts and browser versions may affect pixels on another machine.
+The helper refreshes `preparation.png`, `enrollment.png`, `accounts.png`, `seats.png`, `devices.png`, `targets.png`, and `users.png`. The fixtures include bound/unbound seats, active/offline/disabled devices, connection-history summaries, a closed enrollment window with pending reviews, and administrator/viewer accounts without exposing issued links. Seats shows the default map and binding coverage. Devices shows seat bindings, convergence indicators, last-seen times, disconnect counts, row action menus, lifecycle/connection/binding filters, and the Emergency tool. The `users.png` capture opens the Operators navigation entry. System fonts and browser versions may affect pixels on another machine.
 
 ## Native Session Agent previews
 
