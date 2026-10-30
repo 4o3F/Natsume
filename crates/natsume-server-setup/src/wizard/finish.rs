@@ -164,7 +164,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 tracing::error!(error = %snafu::Report::from_error(error), "cannot remove pending request; deployment remains installed");
             }
         }
-        tracing::info!(summary = %notice, "Server installed successfully");
+        tracing::info!("Server installed successfully");
         summary
     }
 
@@ -232,7 +232,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
         if let Err(error) = self.interaction.show(&notice) {
             tracing::error!(error = %snafu::Report::from_error(error), "cannot display rollback result");
         }
-        tracing::warn!(report = %notice, "installation attempt rolled back");
+        tracing::warn!("installation attempt rolled back");
         Some(outcome)
     }
 }

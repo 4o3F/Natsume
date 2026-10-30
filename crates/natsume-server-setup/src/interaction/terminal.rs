@@ -2,7 +2,7 @@
 
 use super::{
     Answer, CaRole, Choice, Interaction, InteractionError, NoChoicesSnafu, OutputSnafu, PromptId,
-    notice::Notice,
+    notice::{Notice, Tone},
 };
 use inquire::{
     Confirm, DateSelect, Password, PasswordDisplayMode, Select, Text, error::InquireError,
@@ -10,7 +10,7 @@ use inquire::{
 };
 use secrecy::{ExposeSecret as _, SecretString};
 use snafu::{ResultExt as _, ensure};
-use std::{fs::OpenOptions, io::Write as _};
+use std::{ffi::OsString, fs::OpenOptions, io::Write as _};
 
 /// Interactive terminal implementation without retained input or secret state.
 #[derive(Debug, Default)]
@@ -37,6 +37,73 @@ fn write_terminal(text: &str) -> Result<(), InteractionError> {
         .context(OutputSnafu)
 }
 
+const RESET: &str = "\x1b[0m";
+const BOLD_YELLOW: &str = "\x1b[1;33m";
+
+/// Marker and SGR sequences that distinguish one notice tone from prompts and other notices.
+struct ToneStyle {
+    /// Leading symbol kept even without color so severity survives `NO_COLOR`.
+    marker: char,
+    /// Style of the leading symbol.
+    marker_sgr: &'static str,
+    /// Style of the notice text, or `None` for the terminal's default color.
+    body_sgr: Option<&'static str>,
+}
+
+fn tone_style(tone: Tone) -> ToneStyle {
+    let (marker, marker_sgr, body_sgr) = match tone {
+        Tone::Muted => ('·', "\x1b[2m", Some("\x1b[2m")),
+        Tone::Info => ('›', "\x1b[1;36m", None),
+        Tone::Attention => ('!', BOLD_YELLOW, Some("\x1b[33m")),
+        Tone::Error => ('✗', "\x1b[1;31m", Some("\x1b[31m")),
+        Tone::Success => ('✓', "\x1b[1;32m", Some("\x1b[32m")),
+    };
+    ToneStyle {
+        marker,
+        marker_sgr,
+        body_sgr,
+    }
+}
+
+/// Follows the `NO_COLOR` convention and skips SGR on terminals that cannot interpret it.
+fn color_enabled(no_color: Option<OsString>, term: Option<OsString>) -> bool {
+    no_color.is_none_or(|value| value.is_empty())
+        && term.is_some_and(|term| !term.is_empty() && term != "dumb")
+}
+
+fn terminal_color() -> bool {
+    color_enabled(std::env::var_os("NO_COLOR"), std::env::var_os("TERM"))
+}
+
+/// Wraps one line in an SGR sequence, resetting before the newline so styles never bleed.
+fn paint(text: &str, sgr: Option<&str>, color: bool) -> String {
+    match sgr {
+        Some(sgr) if color && !text.is_empty() => format!("{sgr}{text}{RESET}"),
+        _ => text.to_owned(),
+    }
+}
+
+/// Renders a notice as a block separated from prompts, led by its tone marker.
+fn render(notice: &Notice, color: bool) -> String {
+    let style = tone_style(notice.tone());
+    let text = notice.to_string();
+    let mut rendered = String::from("\n");
+    for (index, line) in text.trim_end_matches('\n').lines().enumerate() {
+        if index == 0 {
+            rendered.push_str(&paint(
+                &format!("{} ", style.marker),
+                Some(style.marker_sgr),
+                color,
+            ));
+        } else {
+            rendered.push_str("  ");
+        }
+        rendered.push_str(&paint(line, style.body_sgr, color));
+        rendered.push('\n');
+    }
+    rendered
+}
+
 fn calendar_date(date: time::Date) -> Result<chrono::NaiveDate, InteractionError> {
     use snafu::OptionExt as _;
     chrono::NaiveDate::from_ymd_opt(
@@ -57,7 +124,7 @@ fn selected_date(date: chrono::NaiveDate) -> Result<time::Date, InteractionError
 
 impl Interaction for TerminalInteraction {
     fn show(&mut self, notice: &Notice) -> Result<(), InteractionError> {
-        write_terminal(&format!("{notice}\n"))
+        write_terminal(&render(notice, terminal_color()))
     }
 
     fn select<T: Clone>(
@@ -194,20 +261,25 @@ impl Interaction for TerminalInteraction {
             .write(true)
             .open("/dev/tty")
             .context(OutputSnafu)?;
-        writeln!(
-            terminal,
-            "BEGIN ONE-TIME ENCRYPTED {role} PRIVATE KEY EXPORT"
-        )
-        .and_then(|()| terminal.write_all(pem.expose_secret().as_bytes()))
-        .and_then(|()| {
-            write!(
-                terminal,
-                "\nEND ONE-TIME ENCRYPTED {role} PRIVATE KEY EXPORT"
-            )
-        })
-        .and_then(|()| writeln!(terminal, " — save securely before continuing"))
-        .and_then(|()| terminal.flush())
-        .context(OutputSnafu)
+        // Only the marker lines are styled; the PEM body stays byte-exact for copying.
+        let color = terminal_color();
+        let begin = paint(
+            &format!("BEGIN ONE-TIME ENCRYPTED {role} PRIVATE KEY EXPORT"),
+            Some(BOLD_YELLOW),
+            color,
+        );
+        let end = paint(
+            &format!(
+                "END ONE-TIME ENCRYPTED {role} PRIVATE KEY EXPORT — save securely before continuing"
+            ),
+            Some(BOLD_YELLOW),
+            color,
+        );
+        writeln!(terminal, "{begin}")
+            .and_then(|()| terminal.write_all(pem.expose_secret().as_bytes()))
+            .and_then(|()| writeln!(terminal, "\n{end}"))
+            .and_then(|()| terminal.flush())
+            .context(OutputSnafu)
     }
 
     fn clear_scrollback(&mut self) -> Result<(), InteractionError> {
@@ -241,6 +313,43 @@ mod tests {
             "calendar conversion must retain its cause"
         );
         Ok(())
+    }
+
+    #[test]
+    fn notices_render_as_marked_blocks_without_color() {
+        let notice = Notice::ExistingDeployment {
+            paths: vec!["/etc/natsume-server/config.toml".into()],
+        };
+        assert_eq!(
+            render(&notice, false),
+            "\n✗ This tool supports first installation only. Follow the operations manual for an existing deployment.\n    /etc/natsume-server/config.toml\n"
+        );
+    }
+
+    #[test]
+    fn colored_notices_reset_style_on_every_line() {
+        let notice = Notice::PreflightWarnings {
+            warnings: vec![
+                crate::preflight::PreflightWarning::ClockNotSynchronized,
+                crate::preflight::PreflightWarning::TimezoneUnknown,
+            ],
+        };
+        let rendered = render(&notice, true);
+        let lines: Vec<_> = rendered.lines().skip(1).collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("\x1b[1;33m! \x1b[0m\x1b[33mWarning: "));
+        assert!(lines[1].starts_with("  \x1b[33mWarning: "));
+        assert!(lines.iter().all(|line| line.ends_with(RESET)));
+    }
+
+    #[test]
+    fn color_follows_no_color_and_terminal_capability() {
+        let set = |value: &str| Some(OsString::from(value));
+        assert!(color_enabled(None, set("xterm-256color")));
+        assert!(color_enabled(set(""), set("xterm")));
+        assert!(!color_enabled(set("1"), set("xterm")));
+        assert!(!color_enabled(None, set("dumb")));
+        assert!(!color_enabled(None, None));
     }
 
     #[test]

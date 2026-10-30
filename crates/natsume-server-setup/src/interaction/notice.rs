@@ -133,6 +133,45 @@ pub enum Notice {
     },
 }
 
+/// Visual weight of a notice, independent of how a terminal renders it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Secondary context the administrator may skim.
+    Muted,
+    /// Ordinary progress and context.
+    Info,
+    /// Conditions or next actions the administrator must not miss.
+    Attention,
+    /// Rejected input, refusal, or an aborted attempt.
+    Error,
+    /// Completed installation.
+    Success,
+}
+
+impl Notice {
+    /// Classifies the notice so terminals can make warnings and failures stand out.
+    #[must_use]
+    pub fn tone(&self) -> Tone {
+        match self {
+            Self::OptionUnavailable { .. } => Tone::Muted,
+            Self::PreflightTimezone { .. }
+            | Self::SelectedTime { .. }
+            | Self::PendingRequestFound { .. }
+            | Self::BootstrapSkipped
+            | Self::PkiDirectory { .. }
+            | Self::PlanSummary { .. } => Tone::Info,
+            Self::PreflightWarnings { .. }
+            | Self::KeyRevealIntro { .. }
+            | Self::OfflineSigningInstructions { .. }
+            | Self::BootstrapPasswordPolicy => Tone::Attention,
+            Self::ExistingDeployment { .. }
+            | Self::ValidationFailed { .. }
+            | Self::RollbackReport { .. } => Tone::Error,
+            Self::InstallationSummary { .. } => Tone::Success,
+        }
+    }
+}
+
 impl fmt::Display for Notice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
