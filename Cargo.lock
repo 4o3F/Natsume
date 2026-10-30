@@ -3755,7 +3755,7 @@ checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
 
 [[package]]
 name = "natsume-print-client"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "arboard",
  "clap",
@@ -3786,7 +3786,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-print-domjudge"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "clap",
  "hex",
@@ -3810,7 +3810,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-server"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "argon2",
  "axum",
@@ -3874,7 +3874,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-server-setup"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3909,7 +3909,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-workstation-agent"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "image",
  "natsume-workstation-ipc",
@@ -3931,7 +3931,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-workstation-daemon"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -3969,7 +3969,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-workstation-helper"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "futures-util",
  "keyutils",
@@ -3994,7 +3994,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-workstation-ipc"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "serde",
  "zbus 6.0.0",
@@ -4002,7 +4002,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-workstation-protocol"
-version = "2.11.0"
+version = "2.12.0"
 dependencies = [
  "ed25519-dalek",
  "prost",
