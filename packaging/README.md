@@ -24,7 +24,9 @@ Client installs Helper/Daemon/Agent and its package-owned runtime integration. I
 
 ## Build inputs and checks
 
-Use Linux amd64 with stable Deno at or above `.deno-version` within the same major, the repository Rust toolchain, Node/pnpm for Web, and native build dependencies. CI uses the exact Deno baseline; local newer stable releases in that major do not require downgrading. Preparation also needs curl, tar and xz; wrapper packaging needs Debian `dpkg-dev` for `dpkg-shlibdeps`. No Python or globally installed nFPM is needed for this build path.
+Use Linux amd64 with stable Deno at or above `.deno-version` within the same major, the repository Rust toolchain, Node/pnpm for Web, and native build dependencies. CI uses the exact Deno baseline; local newer stable releases in that major do not require downgrading. Preparation also needs curl, tar and xz; Server/wrapper packaging needs Debian `dpkg-dev` for `dpkg-shlibdeps`. No Python or globally installed nFPM is needed for this build path.
+
+Linux workspace and Client tests additionally require cargo-nextest **0.9.150**, installed with `cargo install cargo-nextest --version 0.9.150 --locked`. Helper tests use process isolation to avoid intermittent failures caused by fork inheriting flock descriptors; other crates retain `cargo test`, including documentation tests. `deno task test rust` and `deno task test client` first run Cargo tests excluding Helper, then run `cargo nextest run -p natsume-workstation-helper --all-features --frozen` with the same offline environment. Helper currently has no documentation tests or `tests/` directory. Missing nextest stops the task with installation guidance. CI installs the pinned runner only in Linux Shared checks before workspace tests; module delivery jobs do not repeat tests. Windows tests do not require nextest.
 
 ```sh
 deno task prepare                         # Download dependencies, tools and runtime assets
@@ -100,7 +102,9 @@ The workstation Client and Server also use `/etc/natsume/trust/control-ca.crt` a
 
 Server `bootstrap` creates or migrates the database schema, then initializes the first admin and Runtime Config in one business transaction. Service startup synchronizes the origin from the deployment configuration; edit the configuration and restart the Server to change the upstream. Package scripts do not initialize business data.
 
-The packages do not own these deployment paths as Debian conffiles. Fresh install, reinstall, reconfiguration, removal and purge do not generate, rewrite, change permissions or delete them. Maintainer scripts initialize package users and directories, report missing inputs and reject existing empty/unreadable inputs. systemd skips service startup until the configuration and two CA paths exist; the processes validate their complete configuration when starting.
+The packages do not own these deployment paths as Debian conffiles. Package installation, reinstallation, reconfiguration, removal and purge do not generate, rewrite, change permissions or delete them. Maintainer scripts initialize package users and directories, report missing inputs and reject existing empty/unreadable inputs. systemd skips service startup until the configuration and two CA paths exist; the processes validate their complete configuration when starting.
+
+The Server Deb also contains `/usr/bin/natsume-server-setup` (0755). Maintainer scripts never invoke it. Only an administrator explicitly running this interactive [first-install tool](../crates/natsume-server-setup/README.md) authorizes it to generate/import materials and write deployment inputs; later changes remain manual. This is a deployment operation separate from package installation. Server dependency discovery scans both declared Server binaries with `dpkg-shlibdeps`.
 
 Generic packages can be preinstalled without deployment inputs. Autoinstall later installs the complete Client configuration and certificates into the installed system before first boot. There are no debconf endpoint questions, endpoint environment overrides, deferral flag or configuration CLI commands. The deployer owns any later changes to configuration.
 

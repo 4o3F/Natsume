@@ -6,8 +6,15 @@ remove | deconfigure) ;;
 *) exit 0 ;;
 esac
 
+# Highlight errors only on a terminal; logs and NO_COLOR stay plain text.
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
+  fail_style='\033[1;31m' plain_style='\033[0m'
+else
+  fail_style='' plain_style=''
+fi
+
 fail() {
-  printf 'natsume-client: %s\n' "$*" >&2
+  printf '%b%s%b\n' "$fail_style" "natsume-client: error: $*" "$plain_style" >&2
   exit 1
 }
 

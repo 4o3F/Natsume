@@ -140,9 +140,12 @@ From the repository root:
 ```bash
 rustup show                         # Install/select the repository toolchain
 cargo install cargo-deny --version 0.20.2 --locked
+cargo install cargo-nextest --version 0.9.150 --locked
 deno task prepare rust web          # Download script, Cargo and pnpm dependencies
 prek install                        # Enable this checkout's pre-commit hook
 ```
+
+Linux `deno task test rust` and `deno task test client` require cargo-nextest **0.9.150**: Helper tests use process isolation to avoid intermittent failures caused by fork inheriting flock descriptors; other crates retain `cargo test`.
 
 ### 2. Run the Web panel
 

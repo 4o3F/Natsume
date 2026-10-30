@@ -26,8 +26,12 @@ pub(super) fn validate_new_login_name(login_name: &str) -> Result<(), OperatorEr
     Ok(())
 }
 
+const SPECIAL_CHARACTERS: &[u8] = b"!@#$%^&*()-_=+[]{};:,.?/~";
+
+/// Human-readable statement of the rules enforced by [`validate_new_password`].
+pub(crate) const PASSWORD_POLICY: &str = "at least 16 characters, using only ASCII letters, digits and !@#$%^&*()-_=+[]{};:,.?/~, with at least one digit and one of those symbols";
+
 pub(super) fn validate_new_password(password: &str) -> Result<(), OperatorError> {
-    const SPECIAL_CHARACTERS: &[u8] = b"!@#$%^&*()-_=+[]{};:,.?/~";
     if password.len() > 1024 {
         return Err(OperatorError::CredentialsTooLong);
     }
@@ -164,6 +168,14 @@ mod tests {
             super::validate_new_password(&("a".repeat(1023) + "1!")),
             Err(super::OperatorError::CredentialsTooLong)
         ));
+    }
+
+    #[test]
+    fn password_policy_text_lists_every_accepted_symbol() {
+        let Ok(symbols) = std::str::from_utf8(super::SPECIAL_CHARACTERS) else {
+            panic!("policy symbols must be ASCII")
+        };
+        assert!(super::PASSWORD_POLICY.contains(symbols));
     }
 
     #[test]

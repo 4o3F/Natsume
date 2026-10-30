@@ -42,5 +42,7 @@ where
 }
 
 fn read_credentials_from_tty() -> Result<OperatorCredentials, CommandError> {
-    credentials::read_from_tty(|source| CommandError::PasswordReset { source })
+    credentials::read_from_tty(credentials::CredentialPurpose::PasswordReset, |source| {
+        CommandError::PasswordReset { source }
+    })
 }

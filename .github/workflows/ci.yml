@@ -42,7 +42,7 @@ jobs:
         with:
           module: rust
           runner: ${{ matrix.os }}
-          ubuntu-packages: dbus-daemon fonts-noto-cjk libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config
+          ubuntu-packages: dbus-daemon fonts-noto-cjk libfontconfig1-dev libgl1-mesa-dev libudev-dev openssl pkg-config
       - name: Rust format
         run: cargo fmt --all --check
       - name: Build-script checks
@@ -53,6 +53,9 @@ jobs:
       - name: Build orchestration tests
         if: runner.os == 'Linux'
         run: deno task test scripts
+      - name: Install pinned Helper test runner
+        if: runner.os == 'Linux'
+        run: cargo install cargo-nextest --version 0.9.150 --locked
       - name: Rust workspace tests
         run: deno task test rust
       - name: Test portable staging on Windows

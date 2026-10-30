@@ -55,7 +55,10 @@ where
 }
 
 fn read_credentials_from_tty() -> Result<OperatorCredentials, CommandError> {
-    credentials::read_from_tty(|source| CommandError::Bootstrap { source })
+    credentials::read_from_tty(
+        credentials::CredentialPurpose::FirstAdministrator,
+        |source| CommandError::Bootstrap { source },
+    )
 }
 
 #[cfg(test)]

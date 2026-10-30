@@ -385,13 +385,18 @@ Deno.test("module checks invoke Clippy once and leave Web validation to its own 
     const calls = await Deno.readTextFile(resolve(directory, "calls.log"));
     assert(
       calls ===
-        "cargo clippy -p natsume-server --all-targets --all-features --frozen -- -D warnings\n",
+        "cargo clippy -p natsume-server -p natsume-server-setup --all-targets --all-features --frozen -- -D warnings\n",
       `Unexpected Rust commands: ${calls}`,
     );
     const webLog = resolve(directory, "web/calls.log");
     assert(!await exists(webLog), "Server repeated the Web compile check");
     const tested = await command("tools/build.ts", "test", "server");
     assert(tested.success, new TextDecoder().decode(tested.stderr));
+    assert(
+      await Deno.readTextFile(resolve(directory, "calls.log")) ===
+        `${calls}cargo test -p natsume-server -p natsume-server-setup --all-features --frozen\n`,
+      "Server tests omitted a crate or repeated a Rust command",
+    );
     assert(!await exists(webLog), "Server repeated Web unit tests");
     const web = await command("tools/build.ts", "check", "web");
     assert(web.success, new TextDecoder().decode(web.stderr));
@@ -399,6 +404,86 @@ Deno.test("module checks invoke Clippy once and leave Web validation to its own 
       await Deno.readTextFile(webLog) === "pnpm typecheck\n",
       "Web target lost its compile check",
     );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("Linux Helper tests use nextest isolation and require its installation", async () => {
+  const { directory, command, env } = await fixture();
+  try {
+    const manifestPath = resolve(directory, "packaging/manifest.json");
+    const manifest = JSON.parse(await Deno.readTextFile(manifestPath));
+    const archive = resolve(
+      directory,
+      "target/build/downloads",
+      manifest.skia.filename,
+    );
+    await Deno.mkdir(resolve(archive, ".."), { recursive: true });
+    await Deno.writeTextFile(archive, "Skia fixture");
+    manifest.skia.sha256 = await sha256(archive);
+    await Deno.writeTextFile(manifestPath, JSON.stringify(manifest));
+    await Deno.writeTextFile(
+      resolve(directory, "Cargo.lock"),
+      `name = "skia-bindings"\nversion = "${manifest.skia.version}"\n`,
+    );
+    const prepared = await command("probe.ts", "record");
+    assert(prepared.success, new TextDecoder().decode(prepared.stderr));
+    const cargo = resolve(directory, "bin/cargo");
+    await Deno.writeTextFile(
+      cargo,
+      `#!/bin/sh
+printf '%s\\n' "$*|$CARGO_NET_OFFLINE|$SKIA_BINARIES_URL" >> calls.log
+if [ "$1 $2" = 'nextest --version' ] && [ "$NATSUME_TEST_MISSING_NEXTEST" = '1' ]; then exit 101; fi
+`,
+    );
+    await Deno.chmod(cargo, 0o755);
+    const calls = resolve(directory, "calls.log");
+    const skia =
+      `file://${directory}/target/build/downloads/skia-binaries-{key}.tar.gz`;
+    const helper = "natsume-workstation-helper";
+    for (
+      const target of ["rust", "client", "server", "shared", "print-domjudge"]
+    ) {
+      await Deno.writeTextFile(calls, "");
+      const result = await command("tools/build.ts", "test", target);
+      assert(result.success, new TextDecoder().decode(result.stderr));
+      const native = target === "rust" || target === "client";
+      const packages = target === "rust"
+        ? `--workspace --exclude ${helper}`
+        : (target === "shared"
+          ? ["natsume-print-client"]
+          : packageTargets[target as keyof typeof packageTargets].crates)
+          .filter((name) => name !== helper)
+          .map((name) => `-p ${name}`).join(" ");
+      const expected = [
+        ...(native ? ["nextest --version"] : []),
+        `test ${packages} --all-features --frozen`,
+        ...(native ? [`nextest run -p ${helper} --all-features --frozen`] : []),
+      ].map((call) => `${call}|true|${native ? skia : ""}\n`).join("");
+      const actual = await Deno.readTextFile(calls);
+      assert(
+        actual === expected,
+        `${target}: unexpected Cargo calls: ${actual}`,
+      );
+    }
+    env.NATSUME_TEST_MISSING_NEXTEST = "1";
+    for (const target of ["rust", "client"]) {
+      await Deno.writeTextFile(calls, "");
+      const result = await command("tools/build.ts", "test", target);
+      const stderr = new TextDecoder().decode(result.stderr);
+      assert(!result.success, `${target}: missing nextest was accepted`);
+      assert(
+        stderr.includes(
+          "cargo install cargo-nextest --version 0.9.150 --locked",
+        ),
+        stderr,
+      );
+      assert(
+        await Deno.readTextFile(calls) === `nextest --version|true|${skia}\n`,
+        `${target}: missing nextest fell back to cargo test`,
+      );
+    }
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
@@ -432,11 +517,17 @@ cp "$config" "rendered-$name.yaml"
     const shlibdeps = resolve(directory, "bin/dpkg-shlibdeps");
     await Deno.writeTextFile(
       shlibdeps,
-      "#!/bin/sh\nprintf 'shlibs:Depends=libc6\\n'\n",
+      `#!/bin/sh
+printf '%s\\n' "$@" >> "${directory}/shlibdeps-args.log"
+printf 'shlibs:Depends=libc6\\n'
+`,
     );
     await Deno.chmod(shlibdeps, 0o755);
     for (
       const name of [
+        ...packageTargets.server.binaries.map((name) =>
+          `target/release/${name}`
+        ),
         "target/release/natsume-print-domjudge",
         "target/print-domjudge/runtime/typst",
       ]
@@ -461,8 +552,36 @@ cp "$config" "rendered-$name.yaml"
         ) as {
           version: string;
           version_schema: string;
+          depends?: string[];
+          contents: {
+            src: string;
+            dst: string;
+            file_info?: { mode: string | number };
+          }[];
         };
         assert(config.version === version, `${name}: version changed`);
+        if (name === "server") {
+          assert(
+            config.depends?.includes("libc6") === true,
+            "Server dependencies omitted",
+          );
+          const setup = config.contents.find((entry) =>
+            entry.dst === "/usr/bin/natsume-server-setup"
+          );
+          assert(
+            Number(setup?.file_info?.mode) === 0o755,
+            "Setup executable missing or not 0755",
+          );
+          const scanned = await Deno.readTextFile(
+            resolve(directory, "shlibdeps-args.log"),
+          );
+          for (const binary of ["natsume-server", "natsume-server-setup"]) {
+            assert(
+              scanned.includes(`/usr/bin/${binary}\n`),
+              `Dependency scan omitted ${binary}`,
+            );
+          }
+        }
         assert(
           config.version_schema === "none",
           `${name}: nFPM must not normalize Debian versions`,
@@ -718,6 +837,7 @@ Deno.test("CI checks both Rust platforms before its native delivery matrix and o
     const command of [
       "deno task check scripts",
       "deno task test scripts",
+      "cargo install cargo-nextest --version 0.9.150 --locked",
       "cargo install cargo-deny --version 0.20.2 --locked",
       "cargo deny check",
     ]
@@ -729,6 +849,15 @@ Deno.test("CI checks both Rust platforms before its native delivery matrix and o
       `Linux-only validation must not be duplicated on Windows: ${command}`,
     );
   }
+  const nextestInstall = checkSteps.findIndex((step) =>
+    step.run === "cargo install cargo-nextest --version 0.9.150 --locked"
+  );
+  assert(
+    nextestInstall >= 0 &&
+      nextestInstall <
+        checkSteps.findIndex((step) => step.run === "deno task test rust"),
+    "Linux must install pinned nextest before workspace tests",
+  );
   assert(
     checkSteps.some((step) =>
       step.run?.includes("tools/windows_test.ts") &&

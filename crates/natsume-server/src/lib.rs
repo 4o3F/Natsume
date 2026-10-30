@@ -9,6 +9,7 @@ pub mod commands;
 pub(crate) mod component;
 pub mod config;
 pub(crate) mod db;
+mod deployment;
 pub(crate) mod device_control;
 #[path = "../diesel/business/schema.rs"]
 pub(crate) mod diesel_schema;
@@ -26,6 +27,10 @@ pub(crate) mod tls;
 pub(crate) mod vault;
 
 pub use commands::router;
+pub use deployment::{
+    BootstrapStatus, CertificateRejection, DeploymentError, DeploymentMaterials, MaterialRole,
+    inspect_bootstrap, validate_deployment, validate_setup_materials,
+};
 
 #[cfg(test)]
 pub(crate) mod test_error;

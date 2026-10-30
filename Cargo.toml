@@ -5,6 +5,7 @@ members = [
   "crates/natsume-photo-protocol",
   "crates/natsume-photo-client/backend",
   "crates/natsume-server",
+  "crates/natsume-server-setup",
   "crates/natsume-workstation-daemon",
   "crates/natsume-workstation-helper",
   "crates/natsume-workstation-agent",
@@ -16,6 +17,7 @@ members = [
 default-members = [
   "crates/natsume-photo-client/backend",
   "crates/natsume-server",
+  "crates/natsume-server-setup",
   "crates/natsume-workstation-daemon",
   "crates/natsume-workstation-helper",
   "crates/natsume-workstation-agent",
@@ -26,7 +28,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "2.11.0"
+version = "2.12.0"
 edition = "2024"
 rust-version = "1.97.1"
 license = "AGPL-3.0-or-later"
@@ -84,6 +86,8 @@ image = { version = "0.25.10", default-features = false, features = [
   "jpeg",
   "webp"
 ] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+inquire = { version = "0.9.4", default-features = false, features = ["crossterm", "date"] }
 resvg = { version = "0.48", default-features = false, features = [
   "text",
   "system-fonts",
@@ -101,6 +105,16 @@ opentelemetry_sdk = { version = "0.33", default-features = false, features = [
 ] }
 percent-encoding = { version = "2.3", default-features = false, features = [
   "alloc"
+] }
+pkcs8 = { version = "0.11", default-features = false, features = [
+  "std",
+  "pem",
+  "encryption",
+  "getrandom"
+] }
+pkcs5 = { version = "0.8", default-features = false, features = [
+  "alloc",
+  "pbes2"
 ] }
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 prost = "=0.14.4"
@@ -121,6 +135,11 @@ rustls = { version = "0.23.46", default-features = false, features = [
 ] }
 rustls-pki-types = "1"
 secrecy = { version = "0.10", default-features = false }
+sec1 = { version = "0.8", default-features = false, features = [
+  "alloc",
+  "der",
+  "pem"
+] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
