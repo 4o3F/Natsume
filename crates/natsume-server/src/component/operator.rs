@@ -24,7 +24,7 @@ mod session;
 use self::account::AccountFacts;
 use self::session::SessionFacts;
 pub(crate) use self::{
-    credentials::OperatorCredentials,
+    credentials::{OperatorCredentials, PASSWORD_POLICY},
     management::{InvitationSummary, OperatorSummary, PasswordResetInspection},
     session::{SessionCredentialHex, SignedInSession},
 };
@@ -259,7 +259,7 @@ pub(crate) enum OperatorError {
     EmptyLoginName,
     #[snafu(display("the new operator login name must not have surrounding whitespace"))]
     InvalidNewLoginName,
-    #[snafu(display("the new operator password does not satisfy the password policy"))]
+    #[snafu(display("the new operator password must be {PASSWORD_POLICY}"))]
     InvalidNewPassword,
     #[snafu(display("the operator password confirmation does not match"))]
     PasswordMismatch,

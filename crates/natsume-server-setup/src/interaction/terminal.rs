@@ -2,7 +2,7 @@
 
 use super::{
     Answer, CaRole, Choice, Interaction, InteractionError, NoChoicesSnafu, OutputSnafu, PromptId,
-    notice::{Notice, Tone},
+    notice::{self, Notice, Tone},
 };
 use inquire::{
     Confirm, DateSelect, Password, PasswordDisplayMode, Select, Text, error::InquireError,
@@ -104,6 +104,14 @@ fn render(notice: &Notice, color: bool) -> String {
     rendered
 }
 
+/// Prefixes a prompt's purpose to the backend's key hints so navigation stays discoverable.
+fn with_keys(id: PromptId, keys: Option<&str>) -> String {
+    match keys {
+        Some(keys) => format!("{} ({keys})", notice::help(id)),
+        None => notice::help(id).to_owned(),
+    }
+}
+
 fn calendar_date(date: time::Date) -> Result<chrono::NaiveDate, InteractionError> {
     use snafu::OptionExt as _;
     chrono::NaiveDate::from_ymd_opt(
@@ -129,7 +137,7 @@ impl Interaction for TerminalInteraction {
 
     fn select<T: Clone>(
         &mut self,
-        _id: PromptId,
+        id: PromptId,
         prompt: &str,
         options: &[Choice<T>],
         default: usize,
@@ -157,6 +165,7 @@ impl Interaction for TerminalInteraction {
         match answer(
             Select::new(prompt, labels)
                 .with_starting_cursor(cursor)
+                .with_help_message(&with_keys(id, Select::<&str>::DEFAULT_HELP_MESSAGE))
                 .raw_prompt(),
         )? {
             Answer::Back => Ok(Answer::Back),
@@ -166,29 +175,28 @@ impl Interaction for TerminalInteraction {
 
     fn text(
         &mut self,
-        _id: PromptId,
+        id: PromptId,
         prompt: &str,
         default: Option<&str>,
         help: Option<&str>,
     ) -> Result<Answer<String>, InteractionError> {
-        let mut input = Text::new(prompt);
+        let mut input = Text::new(prompt).with_help_message(help.unwrap_or(notice::help(id)));
         if let Some(default) = default {
             input = input.with_default(default);
-        }
-        if let Some(help) = help {
-            input = input.with_help_message(help);
         }
         answer(input.prompt())
     }
 
     fn date(
         &mut self,
-        _id: PromptId,
+        id: PromptId,
         prompt: &str,
         default: time::Date,
         min: Option<time::Date>,
     ) -> Result<Answer<time::Date>, InteractionError> {
+        let help = with_keys(id, DateSelect::DEFAULT_HELP_MESSAGE);
         let mut input = DateSelect::new(prompt)
+            .with_help_message(&help)
             .with_default(calendar_date(default)?)
             .with_week_start(chrono::Weekday::Mon);
         if let Some(min) = min {
@@ -202,21 +210,27 @@ impl Interaction for TerminalInteraction {
 
     fn confirm(
         &mut self,
-        _id: PromptId,
+        id: PromptId,
         prompt: &str,
         default: bool,
     ) -> Result<Answer<bool>, InteractionError> {
-        answer(Confirm::new(prompt).with_default(default).prompt())
+        answer(
+            Confirm::new(prompt)
+                .with_default(default)
+                .with_help_message(notice::help(id))
+                .prompt(),
+        )
     }
 
     fn secret(
         &mut self,
-        _id: PromptId,
+        id: PromptId,
         prompt: &str,
         confirm: bool,
     ) -> Result<Answer<SecretString>, InteractionError> {
         let mut input = Password::new(prompt)
             .with_display_mode(PasswordDisplayMode::Hidden)
+            .with_help_message(notice::help(id))
             .with_validator(|text: &str| {
                 Ok(if text.is_empty() {
                     Validation::Invalid("Passphrase must not be empty.".into())

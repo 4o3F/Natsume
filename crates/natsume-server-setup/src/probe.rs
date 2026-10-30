@@ -25,6 +25,19 @@ pub enum ProbeExit {
 }
 
 impl ProbeExit {
+    /// Explains the status to an administrator reading a setup failure.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Passed => "the check passed",
+            Self::Failed => "the Server reported an error; see its message above",
+            Self::Usage => {
+                "the Server rejected the check command; the installed Server and setup may be different versions"
+            }
+            Self::NotInitialized => "the database exists but has no administrator account",
+            Self::DatabaseMissing => "the Server database does not exist",
+        }
+    }
     /// Encodes the shared protocol as a process exit status.
     #[must_use]
     pub const fn code(self) -> u8 {

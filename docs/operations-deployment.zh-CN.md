@@ -1231,7 +1231,7 @@ keys 目录应为 natsume-server:natsume-server 700，文件 600。进程启动�
 sudo -u natsume-server -- /usr/bin/natsume-server bootstrap
 ~~~
 
-按提示输入管理员登录名及两次密码。必须使用服务用户，不直接以 root 运行，不放入 Deb 安装脚本或自动化任务。bootstrap 会创建/迁移完整数据库 schema、生成缺失的 server-root.key，并在同一事务中创建首个管理员及写入配置中的 DOMjudge 上游，成功后退出。
+按提示输入管理员登录名及两次密码。提示会先说明账号用途和密码规则；登录名为空、密码不符合策略或两次输入不一致时显示原因并重新询问，Ctrl-C 终止。必须使用服务用户，不直接以 root 运行，不放入 Deb 安装脚本或自动化任务。bootstrap 会创建/迁移完整数据库 schema、生成缺失的 server-root.key，并在同一事务中创建首个管理员及写入配置中的 DOMjudge 上游，成功后退出。
 
 管理员和 Runtime Config 要么同时写入，要么同时回滚。若首次 bootstrap 中途失败，已完成的建表迁移和已生成的 vault key 可能保留；修正错误后可以重试，不要删除或重新生成已有 key。比赛工位、队伍账号和设备记录由后续导入、注册创建，初始化时不填充虚构数据。
 

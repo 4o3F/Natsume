@@ -21,7 +21,7 @@ const EXISTING_DEPLOYMENT: &str = "This tool supports first installation only. F
 const RESUME_REQUEST: &str = "Provide its signed Server certificate to resume.";
 const SAVE_KEY: &str = "Save it securely; loss cannot be recovered.";
 const SIGN_REQUEST: &str = "Sign it directly with all requested IP SANs and serverAuth, then rerun setup with the signed certificate.";
-const BOOTSTRAP_PASSWORD_POLICY: &str = "Server bootstrap will ask for the initial operator login and password directly through /dev/tty. Follow its password policy; setup does not receive these credentials.";
+const BOOTSTRAP_PASSWORD_POLICY: &str = "Next, Server bootstrap creates the first Web Panel administrator account. It asks for the login name and password itself and shows its password rules; setup never receives these credentials.";
 
 /// Context displayed by the P3a terminal and system adapters.
 #[derive(Debug, Clone)]
@@ -369,6 +369,81 @@ pub(crate) fn prompt(id: PromptId) -> &'static str {
         PromptId::PlanDeclined => "Edit parameters or abort?",
         PromptId::BootstrapRetry => "Retry Server bootstrap?",
         PromptId::ContinueAfterWarnings => "Continue after reviewing these warnings?",
+    }
+}
+
+/// Explains what a prompt's answer is used for, shown beneath the prompt.
+pub(crate) fn help(id: PromptId) -> &'static str {
+    match id {
+        PromptId::ServerIps => {
+            "Addresses Clients and administrator browsers use to reach this Server. The first one goes into the Client configuration and the health check; the Server TLS certificate must cover all of them."
+        }
+        PromptId::HttpsPort => {
+            "Port for the Web Panel and Client connections. Clients use the same port; allow it through the firewall."
+        }
+        PromptId::GatewayHostname => {
+            "Name contestant browsers open to reach DOMjudge through each workstation's local Gateway, e.g. domjudge. Clients resolve it to their own loopback and must use the same name."
+        }
+        PromptId::DomjudgeOrigin => {
+            "The real DOMjudge server that workstation Gateways forward to, e.g. https://judge.contest.example. Scheme, host and optional port only; no path or trailing slash."
+        }
+        PromptId::ContestEndDate | PromptId::ContestEndTime => {
+            "When the contest finishes, in this Server's timezone. Used to make sure Gateway certificates stay valid until at least one day afterwards."
+        }
+        PromptId::GatewayNotAfterDate | PromptId::GatewayNotAfterTime => {
+            "When the Gateway HTTPS certificates issued to workstations expire, in this Server's timezone. Contestant browsers reject the Gateway after this time."
+        }
+        PromptId::ControlCaSource => {
+            "The Control CA is the trust anchor Clients and administrator browsers use to verify this Server's HTTPS certificate."
+        }
+        PromptId::ControlCaCertificatePath | PromptId::OriginCaCertificatePath => {
+            "Absolute path to a single CA certificate, PEM or DER."
+        }
+        PromptId::ControlCaKeyPath => {
+            "Absolute path to the Control CA private key (PKCS#8, encrypted PKCS#8 or SEC1). It is used in memory to sign the Server certificate and never copied to the service."
+        }
+        PromptId::ControlCaKeyPassphrase
+        | PromptId::ServerTlsKeyPassphrase
+        | PromptId::OriginCaKeyPassphrase => "Passphrase that decrypts the private key file above.",
+        PromptId::ServerTlsSource => {
+            "The certificate this Server presents over HTTPS. It must be issued directly by the Control CA and cover every Server IP."
+        }
+        PromptId::ServerTlsCertificatePath => {
+            "Absolute path to a single PEM or DER certificate issued directly by the Control CA, with every Server IP as an IP SAN and serverAuth usage."
+        }
+        PromptId::ServerTlsKeyPath => {
+            "Absolute path to the private key matching the Server TLS certificate; it is deployed to the Server's private key directory."
+        }
+        PromptId::SignedCertificatePath => {
+            "Absolute path to the certificate the offline CA signed from the exported request."
+        }
+        PromptId::OriginCaSource => {
+            "The Local Origin CA signs each workstation Gateway's HTTPS certificate; Clients and Firefox trust it. It must use ECDSA P-256."
+        }
+        PromptId::OriginCaKeyPath => {
+            "Absolute path to the Local Origin CA's ECDSA P-256 private key; an online copy is deployed so the Server can issue Gateway certificates."
+        }
+        PromptId::NewCaPassphrase { .. } => {
+            "Encrypts the one-time export of the new CA private key. You need it to use that backup later; setup does not store it."
+        }
+        PromptId::KeyPersistence { .. } => {
+            "Yes stores the encrypted key in the root-only administrator PKI directory. No means the copy you saved from the screen is the only one."
+        }
+        PromptId::KeyRetentionConfirmation { .. } => {
+            "Setup keeps no copy of this key. Without your saved copy, this CA can never sign certificates again."
+        }
+        PromptId::PlanConfirmation => {
+            "Yes writes the files above, runs Server bootstrap and starts the service. No lets you edit parameters or abort."
+        }
+        PromptId::PlanDeclined => {
+            "Edit returns to the parameter prompts; Abort exits without writing deployment files."
+        }
+        PromptId::BootstrapRetry => {
+            "Yes runs Server bootstrap again after you fix the cause shown above. No stops and rolls back this installation."
+        }
+        PromptId::ContinueAfterWarnings => {
+            "Certificate validity depends on a correct clock and timezone. Continue only after checking them."
+        }
     }
 }
 

@@ -219,13 +219,15 @@ pub enum WizardFailure {
         source: ProcessError,
     },
     /// A read-only probe returned a rejected status.
-    #[snafu(display("service-user probe rejected deployment: {status:?}"))]
+    #[snafu(display("Server check as the natsume-server user failed: {}", status.description()))]
     Probe {
         /// Probe protocol result, without process output.
         status: crate::probe::ProbeExit,
     },
     /// Credential initialization exhausted its bounded retries.
-    #[snafu(display("bootstrap failed with exit status {code}"))]
+    #[snafu(display(
+        "Server bootstrap did not create the administrator account (exit status {code}); see the Server's message above"
+    ))]
     Bootstrap {
         /// Last nonzero Server exit code before retries stopped.
         code: i32,
