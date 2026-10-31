@@ -20,7 +20,7 @@ use natsume_photo_protocol::{InitializationRequestId, PhotoInitializationComplet
 use natsume_photo_protocol::{PhotoEnrollmentIssued, PhotoInitialization};
 use store::{Phase, Receipt, Store};
 
-pub use doctor::{diagnose, diagnose_path};
+pub use doctor::{diagnose, diagnose_path, open_authorized};
 pub use identity::ClientId;
 use identity::PreparedId;
 pub use origin::{OriginError, ServerOrigin};
@@ -214,12 +214,13 @@ impl<S: Secrets> Initializer<S> {
     }
 
     /// Pairs, downloads, saves, acknowledges and publishes the offline workspace.
-    /// Supply a code only for a new pairing; completed runs make no network requests.
+    /// Supply a code only for a new pairing. Open published workspaces with `open_authorized`.
     /// # Errors
     /// Returns typed storage, TLS, authorization, validation or workspace errors.
     pub async fn run(mut self, code: Option<&str>) -> Result<Workspace> {
         if let Phase::Completed { receipt } = &self.store.state().phase {
-            return self.store.publish(receipt, &self.secrets).await;
+            let receipt = receipt.clone();
+            return self.store.publish(&receipt, &self.secrets).await;
         }
         let key = self.signing_key().await?;
         let public_key = key.verifying_key();

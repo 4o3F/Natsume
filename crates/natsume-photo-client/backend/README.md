@@ -49,7 +49,7 @@ cargo test -p natsume-photo-client --locked
 
 `presentation.rs` 管理窗口实例、帧修订与回执；CaptureState 仍拥有组和选图策略。`publish_snapshot` 从同一份已排序快照派生展示目标，再发布新帧/应答，避免选图已完成但呈现版本仍旧。`attach_display` 返回本次窗口的 DisplayId，`detach_display` 只接受当前 ID；无候选/暂停置 Blank，停止置 Unavailable。当前图像/身份未变时保留修订与回执，A→B→A 则生成新修订。修订不能绕回；耗尽时停止并清除呈现。
 
-`acknowledge_presentation` 严格匹配窗口、修订、组、account_id、候选 ID 和规范图片哈希；重复当前回执幂等。同一窗口报告不匹配帧会撤销呈现资格、要求更高修订的新回执；旧窗口回执只拒绝。`prepare_confirmation` 返回未保存的 ConfirmationIntent，`confirm_photo` 重验后发布完整成品、事务提交关联，最后标记组 Confirmed；确认后不能换图或恢复自动，晚到图继续处理但不替换成品。`finish_group` 等已知任务排空后关闭组，补拍用同队新组。renderer 回调仍为可信适配器职责，相邻 UI 已接入真实 AfterRendering 回执与操作员口头满意勾选；实际相机和多屏混合 DPI 仍需现场验收。
+`acknowledge_presentation` 严格匹配窗口、修订、组、account_id、候选 ID 和规范图片哈希；重复当前回执幂等。同一窗口报告不匹配帧会撤销呈现资格、要求更高修订的新回执；旧窗口回执只拒绝。`prepare_confirmation` 返回未保存的 ConfirmationIntent，`confirm_photo` 重验后发布完整成品、事务提交关联，最后标记组 Confirmed；确认后不能换图或恢复自动，晚到图继续处理但不替换成品。`finish_group` 等已知任务排空后关闭组，补拍用同队新组。renderer 回调仍为可信适配器职责，相邻 UI 已接入真实 AfterRendering 回执与操作员勾选“选手已满意”；实际相机和多屏混合 DPI 仍需现场验收。
 
 `photo.rs` 保存图片格式/尺寸及独立的 ConfirmationId、ResultId、SubmissionId；捕获与工作区复用这些领域值。`workspace/final_photos.rs` 负责源/目标路径、64 KiB 流式复制、哈希/格式/尺寸验证和无覆盖发布；`workspace/db.rs` 通过 typed Diesel 与现有 Transaction 原子校验基线并写入 photo_team_results；确认幂等、身份生成与修订递增由成品业务层负责。文件失败或事务回滚不删除旧成品；提交失败的完整无引用文件留待后续对账。
 
@@ -106,3 +106,4 @@ export.rs 在授权和快照读取之前尝试取得类型化 ExportLease（.exp
 export/archive.rs 使用 STORE、固定 ZIP 时间与有界写入器；每张图片流式核对字节和 SHA-256。关包后重新逐项读取校验，核对包长、条目数和元数据预算，再发布目标。只有目标与完成记录都成功才返回 ExportedPackage；目标已发布但完成记录失败返回 PublishedButUnrecorded，携带已发布包信息及 JournalError。该返回值没有 Server 接收含义。可调用 export::export_results 或使用 export <workspace> <output.zip> CLI。
 
 导出目标限制本地磁盘绝对路径，拒绝 UNC、父级穿越、ADS 和工作区内部输出；父目录需存在。现有不同内容绝不覆盖。下载授权令牌无需存在，导出只需要原签名密钥和已完成的本地资料。测试注入 Secrets 和文件写入故障，不增加生产测试字段。
+初始化恢复目录在正式工作区发布成功后清理，删除前关闭日志句柄，清理期间继续持有同级永久初始化锁。失败或中断保留恢复数据；清理失败记录 tracing 警告，不将已成功发布的工作区报告为初始化失败。已完成工作区通过 `initialization::open_authorized` 离线打开，不再次执行首次初始化。

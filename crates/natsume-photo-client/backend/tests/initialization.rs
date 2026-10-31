@@ -282,6 +282,11 @@ fn reopen(
     )
 }
 
+fn assert_recovery_cleaned(parent: &Path) {
+    assert!(!parent.join(".workspace.photo-init").exists());
+    assert!(parent.join(".workspace.photo-init.lock").is_file());
+}
+
 #[tokio::test]
 async fn https_enrollment_downloads_shared_logo_and_then_opens_offline() -> Result {
     let image = png()?;
@@ -338,7 +343,14 @@ async fn https_enrollment_downloads_shared_logo_and_then_opens_offline() -> Resu
     std::fs::remove_file(config.ca_certificate.as_ref().ok_or(TestError::Fixture)?)?;
     drop(server);
     drop(workspace);
-    let offline = reopen(&config, &secrets)?.run(None).await?;
+    let offline =
+        natsume_photo_client::initialization::open_authorized(&config.workspace, &secrets).await?;
+    assert!(
+        natsume_photo_client::initialization::open_authorized(&config.workspace, &secrets)
+            .await
+            .is_err(),
+        "a second writer must still be rejected"
+    );
     assert_eq!(offline.roster().await?.teams().len(), 2);
     let database_before = std::fs::read(config.workspace.join("workspace.sqlite3"))?;
     natsume_photo_client::initialization::diagnose(&offline, &secrets).await?;
@@ -355,13 +367,24 @@ async fn https_enrollment_downloads_shared_logo_and_then_opens_offline() -> Resu
             .len(),
         2
     );
-    let journal = std::fs::read_to_string(
-        directory
-            .path()
-            .join(".workspace.photo-init/initialization.jsonl"),
-    )?;
-    assert!(!journal.contains(key.as_str()));
-    assert!(!journal.contains("nph1."));
+    assert_recovery_cleaned(directory.path());
+    assert!(matches!(
+        reopen(&config, &secrets),
+        Err(InitError::FileConflict)
+    ));
+    assert!(!directory.path().join(".workspace.photo-init").exists());
+    let authorization = std::fs::read_to_string(config.workspace.join("authorization.json"))?;
+    assert!(!authorization.contains(key.as_str()));
+    assert!(!authorization.contains("nph1."));
+    drop(offline);
+    assert!(matches!(
+        natsume_photo_client::initialization::open_authorized(
+            &config.workspace,
+            &MemorySecrets::default()
+        )
+        .await,
+        Err(InitError::OfflineAuthorization { .. })
+    ));
     Ok(())
 }
 
@@ -395,7 +418,17 @@ async fn lost_completion_replays_the_same_receipt_without_redownloading() -> Res
         .append(true)
         .open(journal)?
         .write_all(b"{torn")?;
+    // Server completion must not discard recovery state before final publication.
+    std::fs::create_dir(&config.workspace)?;
+    assert!(matches!(
+        reopen(&config, &secrets)?.run(None).await,
+        Err(InitError::Workspace { .. })
+    ));
+    assert!(directory.path().join(".workspace.photo-init").exists());
+    std::fs::remove_dir(&config.workspace)?;
+    std::fs::remove_file(config.ca_certificate.as_ref().ok_or(TestError::Fixture)?)?;
     drop(reopen(&config, &secrets)?.run(None).await?);
+    assert_recovery_cleaned(directory.path());
     let seen = server.requests()?;
     assert_eq!(seen.len(), 6);
     assert_eq!(seen[4].body, seen[5].body);

@@ -130,10 +130,11 @@ pub(super) fn run(
         runtime.block_on(async {
             let mut app = Application::default();
             let mut tick = tokio::time::interval(Duration::from_millis(250));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 let command = tokio::select! {
                     command = commands.recv() => command,
-                    _ = tick.tick() => {
+                    _ = tick.tick(), if app.session.is_some() => {
                         if let Err(error) = app.refresh().await {
                             app.failure(&error);
                         }
@@ -149,9 +150,14 @@ pub(super) fn run(
                     break;
                 }
                 app.view.problem.clear();
+                let started = std::time::Instant::now();
                 if let Err(error) = app.execute(command).await {
                     app.failure(&error);
                 }
+                tracing::debug!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "Photo command completed"
+                );
                 if let Err(error) = app.refresh().await {
                     app.failure(&error);
                 }
@@ -212,10 +218,10 @@ impl Application {
         match command {
             Command::Open(root) => {
                 snafu::ensure!(self.session.is_none(), ActiveSessionSnafu);
-                let workspace = Workspace::open(&root).await.context(WorkspaceSnafu)?;
-                natsume_photo_client::initialization::diagnose(&workspace, &VaultSecrets)
-                    .await
-                    .context(InitializationSnafu)?;
+                let workspace =
+                    natsume_photo_client::initialization::open_authorized(&root, &VaultSecrets)
+                        .await
+                        .context(InitializationSnafu)?;
                 self.use_workspace(workspace).await?;
             }
             Command::Initialize { config, code } => {
@@ -231,7 +237,7 @@ impl Application {
                     .await
                     .context(CaptureSnafu)?,
                 );
-                "会话已开始，请选择队伍并口头核对".clone_into(&mut self.view.status);
+                "会话已开始，请选择队伍并核对".clone_into(&mut self.view.status);
             }
             Command::Select(account) => {
                 self.select(account).await?;
@@ -254,12 +260,7 @@ impl Application {
                     .context(CaptureSnafu)?;
                 self.view.display_generation = None;
             }
-            Command::Rendered(receipt) => {
-                self.session()?
-                    .acknowledge_presentation(receipt)
-                    .await
-                    .context(CaptureSnafu)?;
-            }
+            Command::Rendered(receipt) => self.rendered(receipt).await?,
             Command::Cleanup => {
                 let report = self
                     .session()?
@@ -292,6 +293,31 @@ impl Application {
             Command::Shutdown => return NotReadySnafu.fail(),
         }
         Ok(())
+    }
+
+    async fn rendered(&self, receipt: PresentationReceipt) -> Result<()> {
+        let session = self.session()?;
+        let snapshot = session.snapshot().context(CaptureSnafu)?;
+        let (PresentationStatus::Pending(current) | PresentationStatus::Presented(current)) =
+            &snapshot.presentation
+        else {
+            return Ok(());
+        };
+        if receipt.display_id != current.display_id()
+            || receipt.revision != current.revision()
+            || receipt.group_id != current.group_id()
+            || receipt.account_id != current.account_id()
+            || receipt.photo_id != current.photo_id()
+            || receipt.image_sha256 != current.image().sha256()
+        {
+            // Queued callbacks for a superseded frame must never reach the backend.
+            tracing::debug!("discarded superseded Photo render receipt");
+            return Ok(());
+        }
+        session
+            .acknowledge_presentation(receipt)
+            .await
+            .context(CaptureSnafu)
     }
 
     async fn initialize(&mut self, config: Config, code: Zeroizing<String>) -> Result<()> {
@@ -459,31 +485,6 @@ impl Application {
             return Ok(());
         };
         let snapshot = session.snapshot().context(CaptureSnafu)?;
-        let ids: Vec<_> = snapshot
-            .candidates()
-            .map(natsume_photo_client::capture_session::PhotoCandidate::photo_id)
-            .collect();
-        self.thumbnails.retain(|id, _| ids.contains(id));
-        for candidate in snapshot.candidates() {
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                self.thumbnails.entry(candidate.photo_id())
-            {
-                let image = candidate.thumbnail().clone();
-                let pixels = tokio::task::spawn_blocking(move || images::candidate(&image))
-                    .await
-                    .context(WorkerSnafu)?
-                    .context(ImageSnafu)?;
-                e.insert(Thumbnail {
-                    id: candidate.photo_id(),
-                    pixels,
-                    note: photo_time_label(candidate.captured_at()),
-                });
-            }
-        }
-        self.view.thumbnails = ids
-            .iter()
-            .filter_map(|id| self.thumbnails.get(id).cloned())
-            .collect();
         match &snapshot.presentation {
             PresentationStatus::Pending(request) | PresentationStatus::Presented(request) => {
                 if self
@@ -509,6 +510,32 @@ impl Application {
                 self.view.frame = None;
             }
         }
+        let ids: Vec<_> = snapshot
+            .candidates()
+            .map(natsume_photo_client::capture_session::PhotoCandidate::photo_id)
+            .collect();
+        self.thumbnails.retain(|id, _| ids.contains(id));
+        for candidate in snapshot.candidates() {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                self.thumbnails.entry(candidate.photo_id())
+            {
+                let image = candidate.thumbnail().clone();
+                let pixels = tokio::task::spawn_blocking(move || images::candidate(&image))
+                    .await
+                    .context(WorkerSnafu)?
+                    .context(ImageSnafu)?;
+                e.insert(Thumbnail {
+                    id: candidate.photo_id(),
+                    pixels,
+                    note: photo_time_label(candidate.captured_at()),
+                });
+                break;
+            }
+        }
+        self.view.thumbnails = ids
+            .iter()
+            .filter_map(|id| self.thumbnails.get(id).cloned())
+            .collect();
         let latest = session.snapshot().context(CaptureSnafu)?;
         // Camera ingestion continues during decode. Discard a completed load if its
         // revision is no longer the current target, before any UI can install it.

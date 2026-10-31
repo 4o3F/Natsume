@@ -97,6 +97,25 @@ impl Controller {
                     });
                     *self.display_monitor.borrow_mut() = Some(chosen.clone());
                 }
+            } else if let Some(monitor) = monitors.first() {
+                // Centered defaults completely overlap on one screen. Keep the
+                // contestant window visible when the operator takes focus;
+                // Windows may stop painting a fully occluded window.
+                ui.window().with_winit_window(|window| {
+                    window.set_outer_position(monitor.position());
+                });
+                display.window().with_winit_window(|window| {
+                    let origin = monitor.position();
+                    let available = monitor
+                        .size()
+                        .width
+                        .saturating_sub(window.outer_size().width);
+                    let offset = i32::try_from(available).unwrap_or(i32::MAX);
+                    window.set_outer_position(winit::dpi::PhysicalPosition::new(
+                        origin.x.saturating_add(offset),
+                        origin.y,
+                    ));
+                });
             }
         }
         *self.display.borrow_mut() = Some(DisplayWindow {

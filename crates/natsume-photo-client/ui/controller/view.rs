@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CandidateSelection, Command, Controller, ModelRc, PhotoRow, PhotoWindow, PresentationStatus,
+    Rc, Snapshot, TeamRow, VecModel, display_id,
+};
+use slint::ComponentHandle as _;
 
 impl Controller {
     pub(super) fn apply(self: &Rc<Self>, snapshot: Snapshot) {
@@ -63,8 +67,8 @@ impl Controller {
                 })),
         );
         ui.set_selected_id(snapshot.selected.clone().unwrap_or_default().into());
-        Self::apply_team(&ui, &snapshot);
-        self.apply_photos(&ui, &snapshot);
+        self.apply_team(&ui, &snapshot);
+        let teams_changed = self.apply_models(&ui, &snapshot);
         apply_diagnostics(&ui, capture);
         self.apply_frame(&ui, &snapshot);
         let orphaned_display = if self
@@ -81,7 +85,9 @@ impl Controller {
         if let Some(id) = orphaned_display {
             self.send(Command::Detach(id), false);
         }
-        self.filter(&ui.get_search());
+        if teams_changed {
+            self.filter(&ui.get_search());
+        }
         if new_session {
             ui.set_page(3);
             if let Err(error) = self.open_display() {
@@ -90,7 +96,44 @@ impl Controller {
         }
     }
 
-    fn apply_team(ui: &PhotoWindow, snapshot: &Snapshot) {
+    fn apply_models(&self, ui: &PhotoWindow, snapshot: &Snapshot) -> bool {
+        let previous = self.snapshot.borrow();
+        let teams_changed = !std::sync::Arc::ptr_eq(&previous.teams, &snapshot.teams)
+            || !std::sync::Arc::ptr_eq(&previous.finals, &snapshot.finals);
+        let photos_changed = previous.thumbnails.len() != snapshot.thumbnails.len()
+            || previous
+                .thumbnails
+                .iter()
+                .zip(&snapshot.thumbnails)
+                .any(|(a, b)| a.id != b.id)
+            || previous
+                .capture
+                .as_ref()
+                .into_iter()
+                .flat_map(|c| &c.photos)
+                .map(|p| (p.id, p.group_id))
+                .ne(snapshot
+                    .capture
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|c| &c.photos)
+                    .map(|p| (p.id, p.group_id)))
+            || previous
+                .capture
+                .as_ref()
+                .and_then(|c| c.selection.photo_id())
+                != snapshot
+                    .capture
+                    .as_ref()
+                    .and_then(|c| c.selection.photo_id());
+        drop(previous);
+        if photos_changed {
+            self.apply_photos(ui, snapshot);
+        }
+        teams_changed
+    }
+
+    fn apply_team(&self, ui: &PhotoWindow, snapshot: &Snapshot) {
         let team = snapshot
             .teams
             .iter()
@@ -100,6 +143,16 @@ impl Controller {
         ui.set_school_en(team.map_or("", |team| team.school_name_en.as_str()).into());
         ui.set_team(team.map_or("", |team| team.team_name_zh.as_str()).into());
         ui.set_team_en(team.map_or("", |team| team.team_name_en.as_str()).into());
+        if self
+            .snapshot
+            .borrow()
+            .logo
+            .as_ref()
+            .map(std::sync::Arc::as_ptr)
+            == snapshot.logo.as_ref().map(std::sync::Arc::as_ptr)
+        {
+            return;
+        }
         if let Some(logo) = &snapshot.logo {
             ui.set_logo(logo.image());
         } else {
@@ -166,6 +219,10 @@ impl Controller {
             && snapshot.display_generation == Some(display.generation)
             && !display.lost.get()
         {
+            let display_changed = display.component.get_photo() != ui.get_preview()
+                || display.component.get_has_team() == ui.get_selected_id().is_empty()
+                || display.component.get_account() != ui.get_account()
+                || display.component.get_confirmed() != ui.get_confirmed();
             display
                 .component
                 .set_has_team(!ui.get_selected_id().is_empty());
@@ -177,11 +234,13 @@ impl Controller {
             display.component.set_logo(ui.get_logo());
             display.component.set_has_photo(frame.is_some());
             display.component.set_confirmed(ui.get_confirmed());
-            if changed {
+            if changed || display.component.get_photo() != ui.get_preview() {
                 display.component.set_photo(ui.get_preview());
                 // This slot is installed AFTER the complete public projection. Only the actual
                 // AfterRendering callback consumes it. Empty/loading windows never acknowledge.
                 *display.pending.borrow_mut() = frame.map(|frame| frame.request.clone());
+            }
+            if changed || display_changed {
                 display.component.window().request_redraw();
             }
         }

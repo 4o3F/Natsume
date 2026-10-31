@@ -163,11 +163,17 @@ impl Controller {
         if busy && ui.get_busy() {
             return;
         }
+        let status = match &command {
+            Command::Open(_) => "正在校验本地工作区和离线授权，无需连接服务器…",
+            Command::Initialize { .. } => "正在授权并下载离线资料，请稍候…",
+            Command::Export(_) => "正在校验成品并生成 ZIP，请稍候…",
+            _ => "正在处理，请稍候…",
+        };
         match self.commands.try_send(command) {
             Ok(()) => {
                 if busy {
                     ui.set_busy(true);
-                    ui.set_status("正在处理，请稍候…".into());
+                    ui.set_status(status.into());
                 }
             }
             Err(_) => {

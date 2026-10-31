@@ -105,16 +105,13 @@ impl Store {
         let parent =
             std::fs::canonicalize(target.parent().ok_or_else(|| super::PathSnafu.build())?)
                 .context(IoSnafu)?;
-        let name = target.file_name().ok_or_else(|| super::PathSnafu.build())?;
-        let target = parent.join(name);
-        let mut staging_name = std::ffi::OsString::from(".");
-        staging_name.push(name);
-        staging_name.push(".photo-init");
-        let root = parent.join(staging_name);
+        let target = parent.join(target.file_name().ok_or_else(|| super::PathSnafu.build())?);
+        let root = recovery_path(&target)?;
         // Lock before creating the recovery directory or its first record.
         // Keep this inode permanently; unlinking a lock file splits ownership.
         let lock_path = root.with_extension("photo-init.lock");
         let lock = lock_initialization(&lock_path)?;
+        ensure!(!target.exists() || root.exists(), super::FileConflictSnafu);
         match std::fs::create_dir(&root) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -245,18 +242,46 @@ impl Store {
         Ok(workspace)
     }
     pub async fn publish(
-        &self,
+        self,
         receipt: &Receipt,
         secrets: &impl super::Secrets,
     ) -> Result<Workspace> {
         let verified = self.verify(receipt, secrets).await?;
-        self.lock
-            .run({
-                let target = self.state.target.clone();
-                move || Workspace::publish_verified(verified, &target).context(WorkspaceSnafu)
+        let Self {
+            root,
+            state,
+            journal,
+            lock,
+        } = self;
+        lock.run(move || {
+                let workspace = Workspace::publish_verified(verified, &state.target)
+                    .context(WorkspaceSnafu)?;
+                // Windows cannot remove an open journal. Keep the separate
+                // initialization lock held until publication and cleanup finish.
+                drop(journal);
+                if let Err(error) = remove_recovery_directory(&root, &state.target) {
+                    tracing::warn!(%error, "Photo workspace is ready; initialization cache cleanup failed");
+                }
+                Ok(workspace)
             })
             .await
     }
+}
+
+fn recovery_path(target: &Path) -> Result<PathBuf> {
+    let parent = target.parent().ok_or_else(|| super::PathSnafu.build())?;
+    let mut name = std::ffi::OsString::from(".");
+    name.push(target.file_name().ok_or_else(|| super::PathSnafu.build())?);
+    name.push(".photo-init");
+    Ok(parent.join(name))
+}
+
+fn remove_recovery_directory(root: &Path, target: &Path) -> Result<()> {
+    ensure!(
+        root == recovery_path(target)? && std::fs::canonicalize(root).context(IoSnafu)? == root,
+        super::PathSnafu
+    );
+    std::fs::remove_dir_all(root).context(IoSnafu)
 }
 
 fn lock_initialization(path: &Path) -> Result<File> {

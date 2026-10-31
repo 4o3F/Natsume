@@ -250,6 +250,53 @@ async fn stale_group_command_cannot_abandon_the_retake_group() -> TestResult {
 }
 
 #[tokio::test]
+async fn late_render_receipt_does_not_acknowledge_or_interrupt_the_new_photo() -> TestResult {
+    let (_temporary, mut app, hot) = fixture().await?;
+    let old = ready(&mut app, &hot).await?;
+    image::RgbImage::from_pixel(80, 60, image::Rgb([15, 80, 240]))
+        .save(hot.join("second.png"))
+        .context(ImageSnafu)?;
+    app.session()
+        .context(ApplicationSnafu)?
+        .wait_until(Duration::from_secs(15), |state| {
+            state.pending_tasks == 0 && state.candidates().count() == 2
+        })
+        .await
+        .context(CaptureSnafu)?
+        .context(FixtureSnafu)?;
+    app.refresh().await.context(ApplicationSnafu)?;
+    let current = app
+        .view
+        .frame
+        .as_ref()
+        .context(FixtureSnafu)?
+        .request
+        .clone();
+    assert_ne!(old.photo_id(), current.photo_id());
+    app.execute(Command::Rendered(crate::gui::controller::receipt(&old)))
+        .await
+        .context(ApplicationSnafu)?;
+    assert!(
+        matches!(app.session().context(ApplicationSnafu)?.snapshot().context(CaptureSnafu)?.presentation,
+        PresentationStatus::Pending(ref request) if request == &current)
+    );
+    app.execute(Command::Rendered(crate::gui::controller::receipt(&current)))
+        .await
+        .context(ApplicationSnafu)?;
+    assert!(
+        matches!(app.session().context(ApplicationSnafu)?.snapshot().context(CaptureSnafu)?.presentation,
+        PresentationStatus::Presented(ref request) if request == &current)
+    );
+    app.session
+        .take()
+        .context(FixtureSnafu)?
+        .shutdown()
+        .await
+        .context(CaptureSnafu)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn changed_image_never_produces_pixels_or_a_receipt() -> TestResult {
     let (_temporary, mut app, hot) = fixture().await?;
     let request = ready(&mut app, &hot).await?;

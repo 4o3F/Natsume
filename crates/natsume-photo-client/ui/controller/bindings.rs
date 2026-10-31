@@ -193,6 +193,11 @@ fn choose_path(app: &Controller, kind: &str) {
         _ => dialog.pick_folder(),
     };
     if let Some(path) = path {
+        let path = if kind == "new-workspace" {
+            path.join("photo-workspace")
+        } else {
+            path
+        };
         let path = path.display().to_string().into();
         match kind {
             "ca" => ui.set_ca_path(path),

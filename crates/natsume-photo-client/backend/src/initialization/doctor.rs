@@ -3,6 +3,17 @@ use super::{Result, Secrets, WorkspaceSnafu};
 use crate::workspace::{Workspace, WorkspaceReader};
 use snafu::ResultExt as _;
 
+/// Opens a writable workspace and checks its local authorization offline.
+/// # Errors
+/// Reports invalid workspace data, writer conflicts or missing signing credentials.
+pub async fn open_authorized(path: &std::path::Path, secrets: &impl Secrets) -> Result<Workspace> {
+    let workspace = Workspace::open(path).await.context(WorkspaceSnafu)?;
+    super::authorization::verify(&workspace, secrets)
+        .await
+        .context(super::OfflineAuthorizationSnafu)?;
+    Ok(workspace)
+}
+
 /// Checks local data and the original signing key without network access or writes.
 /// # Errors
 /// Reports missing credentials or changed local data.

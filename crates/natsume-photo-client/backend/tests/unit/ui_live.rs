@@ -107,6 +107,7 @@ struct Journey {
     stage: Stage,
     started: Instant,
     selected: Option<uuid::Uuid>,
+    switches: u8,
     originals: Vec<(PathBuf, String)>,
 }
 
@@ -158,6 +159,9 @@ impl Journey {
                 self.next(Stage::Photos);
             }
             Stage::Photos if snapshot.thumbnails.len() == 2 && ui.get_pending() == 0 => {
+                // Keep the operator window focused throughout all subsequent switches.
+                ui.window()
+                    .with_winit_window(winit::window::Window::focus_window);
                 let photo = snapshot.thumbnails.last().context(InvariantSnafu)?.id;
                 self.selected = Some(photo);
                 ui.invoke_choose_photo(photo.to_string().into());
@@ -177,6 +181,10 @@ impl Journey {
                     Some(frame.request.photo_id()) == self.selected,
                     InvariantSnafu
                 );
+                if self.switches < 3 {
+                    self.switch_photo(&snapshot, ui)?;
+                    return Ok(false);
+                }
                 save_screenshot(ui, &self.config, "presented")?;
                 ui.set_verbal(true);
                 ui.invoke_confirm_photo();
@@ -209,6 +217,21 @@ impl Journey {
             _ => {}
         }
         Ok(false)
+    }
+
+    fn switch_photo(&mut self, snapshot: &Snapshot, ui: &PhotoWindow) -> Result {
+        let next = snapshot
+            .thumbnails
+            .iter()
+            .find(|photo| Some(photo.id) != self.selected)
+            .context(InvariantSnafu)?
+            .id;
+        self.switches += 1;
+        self.selected = Some(next);
+        // No screenshot, pointer event or focus change may trigger this repaint.
+        ui.invoke_choose_photo(next.to_string().into());
+        self.next(Stage::Choose);
+        Ok(())
     }
 
     fn write_photos(&mut self) -> Result {
@@ -270,10 +293,7 @@ fn controller(ui: &PhotoWindow, commands: mpsc::Sender<Command>) -> Rc<Controlle
 fn live_server_ui_initialization_through_signed_zip() -> Result {
     let _ = tracing_subscriber::fmt().with_target(false).try_init();
     let config = Arc::new(Config::load()?);
-    ensure!(
-        !config.root.exists() && !config.zip.exists(),
-        InvariantSnafu
-    );
+    ensure!(!config.zip.exists(), InvariantSnafu);
     fs::create_dir_all(&config.hot).context(IoSnafu)?;
     fs::create_dir_all(config.zip.parent().context(InvariantSnafu)?).context(IoSnafu)?;
     let mut builder = winit::event_loop::EventLoop::with_user_event();
@@ -291,14 +311,7 @@ fn live_server_ui_initialization_through_signed_zip() -> Result {
     let app = controller(&ui, commands);
     bind(&ui, &app);
     ui.show().context(PlatformSnafu)?;
-    ui.set_server_url(config.url.clone().into());
-    ui.set_workspace_path(config.root.display().to_string().into());
-    ui.set_custom_ca(true);
-    ui.set_ca_path(config.ca.display().to_string().into());
-    // A previously paired workspace resumes with its original vault credentials.
-    let code = zeroize::Zeroizing::new(std::env::var("PHOTO_LIVE_CODE").unwrap_or_default());
-    ui.set_pairing_code(code.as_str().into());
-    ui.invoke_initialize();
+    open_or_initialize(&ui, &config);
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
     let app_tick = app.clone();
@@ -307,6 +320,7 @@ fn live_server_ui_initialization_through_signed_zip() -> Result {
         stage: Stage::Initialize,
         started: Instant::now(),
         selected: None,
+        switches: 0,
         originals: Vec::new(),
     };
     let timer = slint::Timer::default();
@@ -353,6 +367,21 @@ fn live_server_ui_initialization_through_signed_zip() -> Result {
         return Err(error);
     }
     verify_package(&config)
+}
+
+fn open_or_initialize(ui: &PhotoWindow, config: &Config) {
+    ui.set_workspace_path(config.root.display().to_string().into());
+    if config.root.exists() {
+        // Exercise the production offline entry with server and CA fields empty.
+        ui.invoke_open_workspace();
+    } else {
+        ui.set_server_url(config.url.clone().into());
+        ui.set_custom_ca(true);
+        ui.set_ca_path(config.ca.display().to_string().into());
+        let code = zeroize::Zeroizing::new(std::env::var("PHOTO_LIVE_CODE").unwrap_or_default());
+        ui.set_pairing_code(code.as_str().into());
+        ui.invoke_initialize();
+    }
 }
 
 #[derive(Deserialize)]
