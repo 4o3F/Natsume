@@ -2,6 +2,10 @@ mod bindings;
 mod display;
 mod view;
 
+#[cfg(test)]
+#[path = "../backend/tests/unit/ui_live.rs"]
+mod live_tests;
+
 use bindings::bind;
 use display::display_id;
 pub(super) use display::receipt;

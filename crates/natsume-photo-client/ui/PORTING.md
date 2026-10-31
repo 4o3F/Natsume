@@ -82,6 +82,7 @@ tests are in `backend/tests/unit/ui_application.rs`:
 | `stale_group_command_cannot_abandon_the_retake_group` | Old queued group identity cannot affect a retake |
 | `changed_image_never_produces_pixels_or_a_receipt` | Tampered normalized input is rejected before display |
 | `native_windows_render_each_page_and_acknowledge_only_a_rendered_photo` | Real Skia windows, page screenshots, actual render notification and backend confirmation |
+| `live_server_ui_initialization_through_signed_zip` | Opt-in real HTTPS Server, Windows vault, production Slint callbacks and display adapter, photo ingestion/confirmation/cleanup, signed ZIP and read-only reopen |
 
 ```powershell
 cargo run -p natsume-photo-client --locked
@@ -103,3 +104,33 @@ formatting and build-script line-ending failures are outside this port.
 Real camera transfer, Chinese IME, long names, mixed-DPI monitors, physical
 unplug/replug and a clean Windows installation remain target-machine acceptance
 checks. A rendered fixture is not evidence that those checks passed.
+
+## Live Server acceptance
+
+The live test is ignored by default. A test administrator must create an isolated
+Photo source and obtain a one-time pairing code through the existing API. It
+uses `PHOTO_LIVE_URL`, `PHOTO_LIVE_CA`, `PHOTO_LIVE_SOURCE`,
+`PHOTO_LIVE_WORKSPACE`, `PHOTO_LIVE_HOT_FOLDER`, `PHOTO_LIVE_ZIP` and, for a new
+enrollment, `PHOTO_LIVE_CODE`. A paired, unfinished workspace can resume with
+its original Windows-vault credentials and no new code. Do not put the code,
+operator password, session cookie or signing seed into a fixture or report.
+
+```powershell
+cargo test -p natsume-photo-client --bin natsume-photo-client --locked live_server_ui_initialization_through_signed_zip -- --ignored --nocapture
+```
+
+This test invokes the same Slint callbacks used by the buttons. It does not
+inject a renderer receipt, replace Windows credentials with a fake, or implement
+an alternative capture/export path. Synthetic PNG/JPEG files simulate camera
+arrivals; it is not a physical-camera or manual mouse/keyboard acceptance test.
+After export it verifies the signature against the separately persisted local
+authorization, ZIP image bytes and the reopened workspace. The test operator
+must also compare the registered public key and initialization context with
+Server records to establish the external trust binding.
+
+On 2026-10-31 this passed against WSL Server with 418 teams, 237 school-logo
+references and 232 unique PNG resources. A fresh initialization with the
+optimized Server passed, as did recovery after a cold debug Server exceeded the
+30-second request timeout. Server was then stopped: offline diagnosis and a
+second export passed with byte-identical ZIP output. Evidence is retained in
+the ignored `target/photo-ui-live-*` artifacts and local learning notes.
