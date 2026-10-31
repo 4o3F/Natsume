@@ -773,7 +773,9 @@ async fn changed_signing_public_key_prevents_completion_replay() -> Result {
     let before = server.requests()?.len();
     assert!(matches!(
         reopen(&config, &secrets)?.run(None).await,
-        Err(InitError::Authorization)
+        Err(InitError::OfflineAuthorization {
+            source: natsume_photo_client::initialization::AuthorizationError::Mismatch
+        })
     ));
     assert_eq!(
         server.requests()?.len(),

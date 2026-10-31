@@ -56,9 +56,19 @@ pub struct Workspace<Access = Writable> {
     root: PathBuf,
     database: Database,
     access: Access,
+    final_operations: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl Workspace {
+    // Owned background export state shares the same write capability and file-operation fence.
+    pub(crate) fn share_for_export(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            database: self.database.clone(),
+            access: Writable(self.writable_owner()),
+            final_operations: self.final_operations.clone(),
+        }
+    }
     pub(crate) fn create_with_logos(
         root: PathBuf,
         teams: Vec<PhotoTeam>,
@@ -80,14 +90,11 @@ impl Workspace {
             root,
             database,
             access: Writable(writer),
+            final_operations: std::sync::Arc::default(),
         })
     }
     pub(crate) fn publish_verified(verified: WorkspaceReader, target: &Path) -> Result<Self> {
-        let Workspace {
-            root,
-            database,
-            access: _,
-        } = verified;
+        let Workspace { root, database, .. } = verified;
         // Windows directory publication requires closing SQLite before rename.
         drop(database);
         let (root, database, writer) =
@@ -96,6 +103,7 @@ impl Workspace {
             root,
             database,
             access: Writable(writer),
+            final_operations: std::sync::Arc::default(),
         })
     }
     /// Opens and validates a workspace while retaining exclusive write ownership.
@@ -109,6 +117,7 @@ impl Workspace {
             root,
             database,
             access: Writable(owner),
+            final_operations: std::sync::Arc::default(),
         };
         workspace.verify().await?;
         Ok(workspace)
@@ -117,7 +126,11 @@ impl Workspace {
         self.access.0.clone()
     }
     pub(crate) fn final_store(&self) -> FinalPhotos {
-        FinalPhotos::new(self.root.clone(), self.database.clone())
+        FinalPhotos::new(
+            self.root.clone(),
+            self.database.clone(),
+            self.final_operations.clone(),
+        )
     }
     pub(crate) async fn export_snapshot(&self) -> Result<FinalSnapshot> {
         let accounts = self
@@ -155,6 +168,7 @@ impl Workspace<ReadOnly> {
             root,
             database,
             access: ReadOnly,
+            final_operations: std::sync::Arc::default(),
         };
         workspace.verify().await?;
         Ok(workspace)
@@ -191,7 +205,11 @@ impl<Access> Workspace<Access> {
     /// # Errors
     /// Reports corrupt references, missing files, hash mismatches and persistence failures.
     pub async fn confirmed_photos(&self) -> Result<Vec<ConfirmedPhoto>> {
-        let store = FinalPhotos::new(self.root.clone(), self.database.clone());
+        let store = FinalPhotos::new(
+            self.root.clone(),
+            self.database.clone(),
+            self.final_operations.clone(),
+        );
         tokio::task::spawn_blocking(move || store.list())
             .await
             .context(WorkerSnafu)?

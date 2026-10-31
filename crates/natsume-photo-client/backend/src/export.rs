@@ -1,6 +1,6 @@
 //! Offline, bounded result export. File handles pin one snapshot independently of retakes.
 use crate::{
-    initialization::{self, Secrets, doctor},
+    initialization::{self, Secrets, authorization},
     workspace::{FinalSnapshot, Workspace},
 };
 use natsume_photo_protocol::results::{
@@ -17,11 +17,14 @@ use std::{
 
 mod archive;
 mod journal;
+pub use journal::JournalError;
 
 #[derive(Debug, Snafu)]
 pub enum ExportError {
     #[snafu(display("offline export authorization failed: {source}"))]
-    Authorization { source: initialization::Error },
+    Authorization {
+        source: initialization::AuthorizationError,
+    },
     #[snafu(display("offline export workspace validation failed: {source}"))]
     Workspace { source: crate::workspace::Error },
     #[snafu(display("offline export contract is invalid"))]
@@ -32,8 +35,15 @@ pub enum ExportError {
     Io { source: std::io::Error },
     #[snafu(display("offline export ZIP operation failed"))]
     Zip { source: zip::result::ZipError },
-    #[snafu(display("offline export journal is invalid"))]
-    Json { source: serde_json::Error },
+    #[snafu(display("offline export journal failed"))]
+    Journal { source: JournalError },
+    #[snafu(display("offline ZIP was published but its completion record failed"))]
+    PublishedButUnrecorded {
+        package: ExportedPackage,
+        source: JournalError,
+    },
+    #[snafu(display("another offline export is already active in this workspace"))]
+    Busy,
     #[snafu(display("offline export task failed"))]
     Worker { source: tokio::task::JoinError },
     #[snafu(display("offline export target must be an absolute local path outside the workspace"))]
@@ -66,45 +76,86 @@ pub async fn export_results(
     target: &Path,
     secrets: &impl Secrets,
 ) -> Result<ExportedPackage> {
+    let root = workspace.root().to_owned();
+    let ownership = workspace.writable_owner();
+    let lease = tokio::task::spawn_blocking(move || ExportLease::acquire(&root, ownership))
+        .await
+        .context(WorkerSnafu)??;
+    let workspace = workspace.share_for_export();
+    let target = target.to_owned();
+    let secrets = secrets.clone();
+    // Detaching the caller must not drop admission while any accepted I/O is still running.
+    tokio::spawn(async move {
+        prepare_export(workspace, target, secrets, lease)
+            .await
+            .inspect_err(|error| {
+                tracing::error!(error = %error, "Accepted offline export failed");
+            })
+    })
+    .await
+    .context(WorkerSnafu)?
+}
+
+struct ExportLease {
+    _file: File,
+    _ownership: crate::workspace::WorkspaceWriter,
+}
+impl ExportLease {
+    fn acquire(root: &Path, ownership: crate::workspace::WorkspaceWriter) -> Result<Self> {
+        let path = root.join(".export.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .context(IoSnafu)?;
+        ensure!(
+            file.metadata().context(IoSnafu)?.is_file()
+                && fs::canonicalize(&path).context(IoSnafu)? == path,
+            PathSnafu
+        );
+        match file.try_lock() {
+            Ok(()) => Ok(Self {
+                _file: file,
+                _ownership: ownership,
+            }),
+            Err(std::fs::TryLockError::WouldBlock) => BusySnafu.fail(),
+            Err(std::fs::TryLockError::Error(source)) => Err(IoSnafu.into_error(source)),
+        }
+    }
+}
+
+async fn prepare_export(
+    workspace: Workspace,
+    target: PathBuf,
+    secrets: impl Secrets,
+    lease: ExportLease,
+) -> Result<ExportedPackage> {
     workspace.verify_resources().await.context(WorkspaceSnafu)?;
-    let identity = doctor::verify_authorization(workspace, secrets)
+    let identity = authorization::verify(&workspace, &secrets)
         .await
         .context(AuthorizationSnafu)?;
     let snapshot = workspace.export_snapshot().await.context(WorkspaceSnafu)?;
     let root = workspace.root().to_owned();
-    let target = target.to_owned();
-    let secrets = secrets.clone();
-    let ownership = workspace.writable_owner();
     tokio::task::spawn_blocking(move || {
-        let _ownership = ownership;
-        export_blocking(&root, &target, &identity, &secrets, snapshot)
+        export_blocking(lease, &root, &target, &identity, &secrets, snapshot)
     })
     .await
     .context(WorkerSnafu)?
 }
 
 fn export_blocking(
+    lease: ExportLease,
     root: &Path,
     target: &Path,
-    identity: &doctor::Authorization,
+    identity: &authorization::Authorization,
     secrets: &impl Secrets,
     mut snapshot: FinalSnapshot,
 ) -> Result<ExportedPackage> {
+    let _lease = lease;
     let target = target_path(root, target)?;
-    let lock_path = root.join(".export.lock");
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .context(IoSnafu)?;
-    ensure!(
-        fs::canonicalize(&lock_path).context(IoSnafu)? == lock_path,
-        PathSnafu
-    );
-    lock.lock().context(IoSnafu)?;
-    let key = doctor::load_signing_key(identity, secrets).context(AuthorizationSnafu)?;
+    let key = authorization::load_signing_key(identity, secrets).context(AuthorizationSnafu)?;
     let manifest = ResultsManifest {
         format_version: FormatVersion::V1,
         kind: ManifestKind::TeamResults,
@@ -118,7 +169,9 @@ fn export_blocking(
         signing_public_key: identity.signing_public_key.clone(),
         results: snapshot.entries,
     };
-    let (signed, fingerprint) = journal::prepare(root, &manifest, &key)?;
+    manifest.validate().context(ContractSnafu)?;
+    let (signed, fingerprint) = journal::prepare(root, &manifest, &key).context(JournalSnafu)?;
+    drop(key);
     let json = signed.to_json().context(ContractSnafu)?;
     let parent = target.parent().ok_or_else(|| PathSnafu.build())?;
     let mut temporary = tempfile::Builder::new()
@@ -148,7 +201,9 @@ fn export_blocking(
         }
         Err(error) => return Err(IoSnafu.into_error(error.error)),
     }
-    journal::complete(root, &fingerprint, &result)?;
+    journal::complete(root, &fingerprint, &result).context(PublishedButUnrecordedSnafu {
+        package: result.clone(),
+    })?;
     tracing::info!(
         results = result.result_count,
         bytes = result.bytes,

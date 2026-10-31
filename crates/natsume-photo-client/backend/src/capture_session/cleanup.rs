@@ -29,6 +29,7 @@ pub(super) struct Cleanup {
     files: BTreeSet<PathBuf>,
     directories: BTreeSet<PathBuf>,
     finals: BTreeSet<PathBuf>,
+    results: std::collections::BTreeMap<String, crate::workspace::ConfirmedPhoto>,
     pub(super) failures: usize,
 }
 impl Cleanup {
@@ -49,7 +50,11 @@ impl CaptureState {
             .finish_group(group)
             .context(super::CaptureSnafu)?;
         self.retire_group_files(group);
-        self.confirmed = None;
+        if let Some(saved) = self.confirmed.take() {
+            self.cleanup
+                .results
+                .insert(saved.photo.account_id().to_owned(), saved.photo);
+        }
         self.manual_selection = None;
         Ok(self.clean_retired())
     }
@@ -80,8 +85,14 @@ impl CaptureState {
 
     pub(super) fn clean_retired(&mut self) -> CleanupReport {
         let mut report = CleanupReport::default();
-        // Validation and removal share the final-publication fence with all sessions.
-        match self.finals.remove_unused() {
+        // Verify only results whose working copies this queue may retire, outside the file mutex.
+        let result = self
+            .cleanup
+            .results
+            .values()
+            .try_for_each(|photo| self.finals.verify_cleanup_result(photo))
+            .and_then(|()| self.finals.remove_unused());
+        match result {
             Ok((removed, failures)) => {
                 report.removed_files += removed;
                 self.cleanup.finals.clear();
@@ -151,6 +162,9 @@ impl CaptureState {
         report
             .pending_paths
             .extend(self.cleanup.finals.iter().cloned());
+        if self.cleanup.files.is_empty() && self.cleanup.directories.is_empty() {
+            self.cleanup.results.clear();
+        }
         self.cleanup.failures = report.failures.len();
         if !report.failures.is_empty() {
             tracing::warn!(

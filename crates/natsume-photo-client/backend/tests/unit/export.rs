@@ -83,7 +83,7 @@ struct Fixture {
     directory: tempfile::TempDir,
     workspace: Workspace,
     secrets: MemorySecrets,
-    identity: doctor::Authorization,
+    identity: authorization::Authorization,
 }
 
 #[derive(Clone)]
@@ -92,6 +92,7 @@ struct GatedSecrets {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     entered: std::sync::mpsc::Sender<()>,
     release: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+    gate_call: usize,
 }
 impl Secrets for GatedSecrets {
     fn load(
@@ -99,7 +100,7 @@ impl Secrets for GatedSecrets {
         origin: &ServerOrigin,
         slot: &SecretSlot,
     ) -> initialization::CredentialResult<Option<Zeroizing<String>>> {
-        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == self.gate_call {
             let _ = self.entered.send(());
             self.release
                 .lock()
@@ -121,6 +122,16 @@ impl Secrets for GatedSecrets {
 
 #[tokio::test]
 async fn cancelled_waiter_does_not_release_workspace_or_cancel_an_accepted_export() -> TestResult {
+    cancellation_at_key_read(1).await
+}
+
+#[tokio::test]
+async fn cancellation_before_snapshot_keeps_admission_until_all_accepted_io_finishes() -> TestResult
+{
+    cancellation_at_key_read(0).await
+}
+
+async fn cancellation_at_key_read(gate_call: usize) -> TestResult {
     let f = fixture().await?;
     save(&f, 0, 30).await?;
     let target = output(&f);
@@ -133,6 +144,7 @@ async fn cancelled_waiter_does_not_release_workspace_or_cancel_an_accepted_expor
         calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         entered,
         release: Arc::new(Mutex::new(gate)),
+        gate_call,
     };
     let workspace = f.workspace;
     let task = tokio::spawn(async move { export_results(&workspace, &target, &secrets).await });
@@ -142,6 +154,16 @@ async fn cancelled_waiter_does_not_release_workspace_or_cancel_an_accepted_expor
         .context(ChannelSnafu)?;
     task.abort();
     assert!(matches!(task.await,Err(error) if error.is_cancelled()));
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join(".export.lock"))
+        .context(IoSnafu)?;
+    assert!(matches!(
+        lock.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(lock);
     assert!(matches!(
         Workspace::open(&root).await,
         Err(crate::workspace::Error::Storage {
@@ -185,7 +207,7 @@ async fn fixture() -> TestResult<Fixture> {
     };
     let bytes = serde_json::to_vec(&manifest).context(JsonSnafu)?;
     let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-    let identity = doctor::Authorization {
+    let identity = authorization::Authorization {
         server_url: ServerOrigin::parse("https://offline.example.test:8443")
             .context(OriginSnafu)?,
         client_id: ClientId::generate(),
@@ -246,6 +268,117 @@ async fn save(f: &Fixture, team: usize, color: u8) -> TestResult<ConfirmedPhoto>
 }
 fn output(f: &Fixture) -> PathBuf {
     f.directory.path().join("photos.zip")
+}
+
+#[derive(Clone)]
+struct UnreadableSecrets;
+
+#[tokio::test]
+async fn offline_authorization_errors_do_not_expose_secret_or_rejected_json_values() -> TestResult {
+    let f = fixture().await?;
+    save(&f, 0, 30).await?;
+    let private = "SENSITIVE-DO-NOT-LOG";
+    *f.secrets
+        .0
+        .lock()
+        .unwrap_or_else(|_| panic!("fixture mutex poisoned")) =
+        Some(Zeroizing::new(private.to_owned()));
+    let error = export_results(&f.workspace, &output(&f), &f.secrets)
+        .await
+        .err()
+        .ok_or_else(|| FixtureSnafu.build())?;
+    assert!(matches!(
+        &error,
+        ExportError::Authorization {
+            source: initialization::AuthorizationError::KeyEncoding { .. }
+        }
+    ));
+    assert!(!format!("{error:?}").contains(private));
+    fs::write(
+        f.workspace.root().join("authorization.json"),
+        format!("{{\"{private}\":0}}"),
+    )
+    .context(IoSnafu)?;
+    let error = export_results(&f.workspace, &output(&f), &f.secrets)
+        .await
+        .err()
+        .ok_or_else(|| FixtureSnafu.build())?;
+    assert!(matches!(
+        &error,
+        ExportError::Authorization {
+            source: initialization::AuthorizationError::Json { .. }
+        }
+    ));
+    assert!(!format!("{error:?}").contains(private));
+    Ok(())
+}
+impl Secrets for UnreadableSecrets {
+    fn load(
+        &self,
+        _: &ServerOrigin,
+        _: &SecretSlot,
+    ) -> initialization::CredentialResult<Option<Zeroizing<String>>> {
+        panic!("busy exports must be rejected before credential access")
+    }
+    fn save(
+        &self,
+        _: &ServerOrigin,
+        _: &SecretSlot,
+        _: &str,
+    ) -> initialization::CredentialResult<()> {
+        panic!("busy exports must not save credentials")
+    }
+}
+
+#[tokio::test]
+async fn concurrent_export_is_rejected_before_authorization_or_snapshot_io() -> TestResult {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let f = fixture().await?;
+    let photo = save(&f, 0, 30).await?;
+    let lease = ExportLease::acquire(f.workspace.root(), f.workspace.writable_owner())
+        .context(ExportSnafu)?;
+    let writing = OpenOptions::new()
+        .write(true)
+        .share_mode(1)
+        .open(f.workspace.root().join(photo.path()))
+        .context(IoSnafu)?;
+    assert!(matches!(
+        export_results(&f.workspace, &output(&f), &UnreadableSecrets).await,
+        Err(ExportError::Busy)
+    ));
+    assert!(!f.workspace.root().join("exports").exists());
+    drop(writing);
+    drop(lease);
+    export_results(&f.workspace, &output(&f), &f.secrets)
+        .await
+        .context(ExportSnafu)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn snapshot_pins_metadata_without_hashing_and_export_still_rejects_changed_bytes()
+-> TestResult {
+    let f = fixture().await?;
+    let photo = save(&f, 0, 30).await?;
+    let path = f.workspace.root().join(photo.path());
+    let mut bytes = fs::read(&path).context(IoSnafu)?;
+    *bytes.last_mut().ok_or_else(|| FixtureSnafu.build())? ^= 1;
+    fs::write(&path, bytes).context(IoSnafu)?;
+    // Unchanged length, changed bytes: metadata pinning must not read/hash the whole image.
+    let snapshot = f
+        .workspace
+        .export_snapshot()
+        .await
+        .context(WorkspaceSnafu)?;
+    assert_eq!(snapshot.images.len(), 1);
+    drop(snapshot);
+    assert!(f.workspace.confirmed_photos().await.is_err());
+    assert!(matches!(
+        export_results(&f.workspace, &output(&f), &f.secrets).await,
+        Err(ExportError::Integrity)
+    ));
+    assert!(!output(&f).exists());
+    Ok(())
 }
 
 #[tokio::test]
@@ -318,7 +451,7 @@ async fn missing_or_replaced_key_empty_results_and_invalid_targets_cannot_export
     assert!(matches!(
         export_results(&f.workspace, &output(&f), &f.secrets).await,
         Err(ExportError::Authorization {
-            source: initialization::Error::MissingSecret
+            source: initialization::AuthorizationError::MissingSecret
         })
     ));
     *f.secrets
@@ -329,7 +462,7 @@ async fn missing_or_replaced_key_empty_results_and_invalid_targets_cannot_export
     assert!(matches!(
         export_results(&f.workspace, &output(&f), &f.secrets).await,
         Err(ExportError::Authorization {
-            source: initialization::Error::Authorization
+            source: initialization::AuthorizationError::Mismatch
         })
     ));
     assert!(!output(&f).exists());
@@ -374,11 +507,15 @@ async fn target_conflict_and_completion_failure_never_claim_success_and_retry_ke
     let blocked = record.with_extension("complete.json");
     fs::create_dir(&blocked).context(IoSnafu)?;
     fs::remove_file(output(&f)).context(IoSnafu)?;
-    assert!(
-        export_results(&f.workspace, &output(&f), &f.secrets)
-            .await
-            .is_err()
-    );
+    match export_results(&f.workspace, &output(&f), &f.secrets).await {
+        Err(ExportError::PublishedButUnrecorded {
+            package,
+            source: JournalError::Path,
+        }) => {
+            assert_eq!(package.manifest_id, prepared.manifest.manifest_id);
+        }
+        other => panic!("expected published-package record failure, got {other:?}"),
+    }
     assert!(output(&f).is_file());
     fs::remove_dir(&blocked).context(IoSnafu)?;
     let result = export_results(&f.workspace, &output(&f), &f.secrets)
@@ -406,7 +543,10 @@ async fn pinned_export_keeps_old_bytes_during_retake_and_releases_cleanup_afterw
         .remove_unused()
         .context(FinalSnafu)?;
     assert_eq!(failures.len(), 1);
+    let lease = ExportLease::acquire(f.workspace.root(), f.workspace.writable_owner())
+        .context(ExportSnafu)?;
     let result = export_blocking(
+        lease,
         f.workspace.root(),
         &output(&f),
         &f.identity,

@@ -17,18 +17,90 @@ enum Error {
     Workspace {
         source: WorkspaceError,
     },
-    Persistence {
-        source: crate::workspace::PersistenceError,
-    },
     Channel {
         source: std::sync::mpsc::RecvTimeoutError,
     },
     FinalPhoto {
         source: crate::workspace::FinalPhotoError,
     },
+    Persistence {
+        source: crate::workspace::PersistenceError,
+    },
     Thread,
 }
 type Result<T = ()> = std::result::Result<T, Error>;
+
+#[tokio::test]
+async fn conditional_final_write_uses_supplied_identities_and_rejects_stale_revisions() -> Result {
+    use crate::photo::{ConfirmationId, PhotoDimensions, PhotoFormat, ResultId, SubmissionId};
+    use crate::workspace::ConfirmedPhoto;
+    let directory = tempfile::tempdir().context(IoSnafu)?;
+    let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
+    let owner = crate::workspace::fixture::create(&directory.path().join("workspace"), &roster)
+        .await
+        .context(WorkspaceSnafu)?;
+    let digest = natsume_photo_protocol::Sha256Digest::of(b"fixture").to_string();
+    let first = ConfirmedPhoto {
+        account_id: roster.teams()[0].account_id.clone(),
+        confirmation_id: ConfirmationId::generate(),
+        result_id: ResultId::generate(),
+        submission_id: SubmissionId::generate(),
+        path: format!("finals/{digest}.png").into(),
+        sha256: digest,
+        bytes: 7,
+        dimensions: PhotoDimensions {
+            width: 1,
+            height: 1,
+            format: PhotoFormat::Png,
+        },
+        revision: 1,
+    };
+    assert!(
+        owner
+            .database
+            .apply_final(&first, 0)
+            .context(PersistenceSnafu)?
+    );
+    let mut next = first.clone();
+    next.confirmation_id = ConfirmationId::generate();
+    next.result_id = ResultId::generate();
+    next.submission_id = SubmissionId::generate();
+    next.revision = 2;
+    assert!(
+        !owner
+            .database
+            .apply_final(&next, 0)
+            .context(PersistenceSnafu)?
+    );
+    assert_eq!(
+        owner
+            .database
+            .final_photos(None)
+            .context(PersistenceSnafu)?,
+        vec![first]
+    );
+    assert!(
+        owner
+            .database
+            .apply_final(&next, 1)
+            .context(PersistenceSnafu)?
+    );
+    assert_eq!(
+        owner
+            .database
+            .final_photos(None)
+            .context(PersistenceSnafu)?,
+        vec![next.clone()]
+    );
+    next.account_id = "unknown-team".into();
+    assert!(
+        !owner
+            .database
+            .apply_final(&next, 0)
+            .context(PersistenceSnafu)?
+    );
+    Ok(())
+}
 
 #[test]
 fn final_cleanup_waits_for_the_shared_publication_fence() -> Result {
@@ -44,16 +116,14 @@ fn final_cleanup_waits_for_the_shared_publication_fence() -> Result {
     )
     .context(WorkspaceSnafu)?;
     let store = owner.final_store();
-    let publication = owner
-        .database
-        .lock_final_operations()
-        .context(PersistenceSnafu)?;
+    let publication = store.lock_operations().context(FinalPhotoSnafu)?;
+    let cleanup_store = owner.final_store();
     let (entered, ready) = mpsc::channel();
     let (sent, result) = mpsc::channel();
     std::thread::scope(|scope| {
         let worker = scope.spawn(move || {
             let _ = entered.send(());
-            let _ = sent.send(store.remove_unused());
+            let _ = sent.send(cleanup_store.remove_unused());
         });
         ready
             .recv_timeout(Duration::from_secs(5))

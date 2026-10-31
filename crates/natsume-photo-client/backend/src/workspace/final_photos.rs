@@ -1,5 +1,5 @@
 //! Current confirmed results; complete file publication precedes the short database commit.
-use super::db::{Database, FinalCommit, PersistenceError};
+use super::db::{Database, PersistenceError};
 use crate::photo::{ConfirmationId, PhotoDimensions, PhotoFormat, ResultId, SubmissionId};
 use sha2::{Digest as _, Sha256};
 use snafu::{IntoError as _, ResultExt as _, Snafu, ensure};
@@ -14,6 +14,10 @@ const IMAGE_LIMIT: u64 = 50 * 1024 * 1024;
 
 #[derive(Debug, Snafu)]
 pub enum FinalPhotoError {
+    #[snafu(display("confirmed photo operations are unavailable"))]
+    Operation { source: std::sync::PoisonError<()> },
+    #[snafu(display("confirmed photo revision cannot advance"))]
+    Revision,
     #[snafu(display("confirmed photo encoded metadata is invalid"))]
     Decode { source: image::ImageError },
     #[snafu(display("confirmed photo digest is invalid"))]
@@ -114,6 +118,11 @@ pub(crate) struct FinalDraft {
 pub(crate) struct FinalPhotos {
     root: PathBuf,
     database: Database,
+    operations: std::sync::Arc<std::sync::Mutex<()>>,
+}
+struct PinnedPhotos {
+    references: Vec<ConfirmedPhoto>,
+    images: Vec<(ConfirmedPhoto, File)>,
 }
 pub(crate) struct SnapshotImage {
     pub entry: natsume_photo_protocol::results::TeamResult,
@@ -128,42 +137,50 @@ impl FinalPhotos {
         &self,
         accounts: &std::collections::BTreeMap<String, String>,
     ) -> Result<FinalSnapshot> {
-        let _operation = self
-            .database
-            .lock_final_operations()
-            .context(PersistenceSnafu)?;
+        let pinned = self.pin_references()?;
         let mut snapshot = FinalSnapshot {
             entries: Vec::new(),
             images: Vec::new(),
         };
-        let mut seen = std::collections::BTreeSet::new();
-        for photo in self.list_locked()? {
+        for photo in pinned.references {
             let account = accounts
                 .get(&photo.account_id)
                 .ok_or_else(|| IntegritySnafu.build())?;
-            let path = self.root.join(&photo.path);
             let entry = photo.into_result(account.clone())?;
-            if seen.insert(entry.image_sha256.clone()) {
-                snapshot.images.push(SnapshotImage {
-                    entry: entry.clone(),
-                    file: open_regular(&path)?,
-                });
-            }
             snapshot.entries.push(entry);
+        }
+        for (photo, file) in pinned.images {
+            let account = accounts
+                .get(&photo.account_id)
+                .ok_or_else(|| IntegritySnafu.build())?;
+            snapshot.images.push(SnapshotImage {
+                entry: photo.into_result(account.clone())?,
+                file,
+            });
         }
         snapshot
             .images
             .sort_by(|a, b| a.entry.image_sha256.cmp(&b.entry.image_sha256));
         Ok(snapshot)
     }
-    pub(super) fn new(root: PathBuf, database: Database) -> Self {
-        Self { root, database }
+    pub(super) fn new(
+        root: PathBuf,
+        database: Database,
+        operations: std::sync::Arc<std::sync::Mutex<()>>,
+    ) -> Self {
+        Self {
+            root,
+            database,
+            operations,
+        }
+    }
+    pub(super) fn lock_operations(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
+        self.operations
+            .lock()
+            .map_err(|_| OperationSnafu.into_error(std::sync::PoisonError::new(())))
     }
     pub(crate) fn save(&self, draft: &FinalDraft) -> Result<ConfirmedPhoto> {
-        let _operation = self
-            .database
-            .lock_final_operations()
-            .context(PersistenceSnafu)?;
+        let _operation = self.lock_operations()?;
         ensure!(draft.bytes > 0 && draft.bytes <= IMAGE_LIMIT, LimitSnafu);
         let _: natsume_photo_protocol::Sha256Digest = draft.sha256.parse().context(ValueSnafu)?;
         ensure!(
@@ -229,26 +246,37 @@ impl FinalPhotos {
             }
             Err(error) => return Err(IoSnafu.into_error(error.error)),
         }
-        match self
-            .database
-            .commit_final(draft, relative, baseline)
-            .context(PersistenceSnafu)?
-        {
-            FinalCommit::Saved(photo) => {
-                Self::check_reference(&photo)?;
-                Ok(photo)
-            }
-            FinalCommit::Conflict => ConflictSnafu.fail(),
-        }
+        let photo = ConfirmedPhoto {
+            account_id: draft.account_id.clone(),
+            confirmation_id: draft.confirmation_id.clone(),
+            result_id: ResultId::generate(),
+            submission_id: SubmissionId::generate(),
+            path: relative,
+            sha256: draft.sha256.clone(),
+            bytes: draft.bytes,
+            dimensions: draft.dimensions,
+            revision: baseline
+                .checked_add(1)
+                .ok_or_else(|| RevisionSnafu.build())?,
+        };
+        Self::check_reference(&photo)?;
+        ensure!(
+            self.database
+                .apply_final(&photo, baseline)
+                .context(PersistenceSnafu)?,
+            ConflictSnafu
+        );
+        Ok(photo)
     }
     pub(super) fn list(&self) -> Result<Vec<ConfirmedPhoto>> {
-        let _operation = self
-            .database
-            .lock_final_operations()
-            .context(PersistenceSnafu)?;
-        self.list_locked()
+        let pinned = self.pin_references()?;
+        for (photo, mut file) in pinned.images {
+            verify_bytes(&mut file, None, photo.bytes, &photo.sha256)?;
+            verify_dimensions(&mut file, photo.dimensions)?;
+        }
+        Ok(pinned.references)
     }
-    fn list_locked(&self) -> Result<Vec<ConfirmedPhoto>> {
+    fn references_locked(&self) -> Result<Vec<ConfirmedPhoto>> {
         let photos = self.database.final_photos(None).context(PersistenceSnafu)?;
         let known = self.database.roster_ids().context(PersistenceSnafu)?;
         let mut verified = std::collections::BTreeMap::new();
@@ -258,16 +286,53 @@ impl FinalPhotos {
             if let Some(existing) = verified.get(&photo.path) {
                 ensure!(*existing == (photo.bytes, photo.dimensions), IntegritySnafu);
             } else {
-                self.verify(photo)?;
                 verified.insert(photo.path.clone(), (photo.bytes, photo.dimensions));
             }
         }
         Ok(photos)
     }
+    fn open_final(&self, photo: &ConfirmedPhoto) -> Result<File> {
+        Self::check_reference(photo)?;
+        let path = self.root.join(&photo.path);
+        ensure!(fs::canonicalize(&path).context(IoSnafu)? == path, PathSnafu);
+        let file = open_regular(&path)?;
+        ensure!(
+            file.metadata().context(IoSnafu)?.len() == photo.bytes,
+            IntegritySnafu
+        );
+        Ok(file)
+    }
+    fn pin_references(&self) -> Result<PinnedPhotos> {
+        let _operation = self.lock_operations()?;
+        let references = self.references_locked()?;
+        let mut images = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for photo in &references {
+            if seen.insert(&photo.path) {
+                images.push((photo.clone(), self.open_final(photo)?));
+            }
+        }
+        Ok(PinnedPhotos { references, images })
+    }
+    pub(crate) fn verify_cleanup_result(&self, saved: &ConfirmedPhoto) -> Result<()> {
+        let (current, mut file) = {
+            let _operation = self.lock_operations()?;
+            let current = self
+                .database
+                .final_photos(Some(&saved.account_id))
+                .context(PersistenceSnafu)?
+                .pop()
+                .ok_or_else(|| IntegritySnafu.build())?;
+            let file = self.open_final(&current)?;
+            (current, file)
+        };
+        verify_bytes(&mut file, None, current.bytes, &current.sha256)?;
+        verify_dimensions(&mut file, current.dimensions)
+    }
     /// Re-read committed references before collecting reserved, content-addressed objects.
     fn unused_paths(&self) -> Result<Vec<PathBuf>> {
         let referenced: std::collections::BTreeSet<_> = self
-            .list_locked()?
+            .references_locked()?
             .into_iter()
             .map(|photo| self.root.join(photo.path))
             .collect();
@@ -302,10 +367,7 @@ impl FinalPhotos {
     }
     /// Shares the save/publication fence across every session of this workspace.
     pub(crate) fn remove_unused(&self) -> Result<(usize, Vec<(PathBuf, std::io::Error)>)> {
-        let _operation = self
-            .database
-            .lock_final_operations()
-            .context(PersistenceSnafu)?;
+        let _operation = self.lock_operations()?;
         let mut removed = 0;
         let mut failures = Vec::new();
         for path in self.unused_paths()? {

@@ -2,6 +2,25 @@ use super::*;
 use ed25519_dalek::SigningKey;
 use natsume_photo_protocol::MANIFEST_LIMIT;
 
+#[derive(Debug, Snafu)]
+pub enum JournalError {
+    #[snafu(display("offline export record file operation failed"))]
+    Io { source: std::io::Error },
+    #[snafu(display("offline export record JSON is invalid"))]
+    Json { source: serde_json::Error },
+    #[snafu(display("offline export record contract is invalid"))]
+    Contract {
+        source: natsume_photo_protocol::results::ResultError,
+    },
+    #[snafu(display("offline export record path is invalid"))]
+    Path,
+    #[snafu(display("offline export record integrity check failed"))]
+    Integrity,
+    #[snafu(display("offline export record exceeds its byte limit"))]
+    Limit,
+}
+type Result<T> = std::result::Result<T, JournalError>;
+
 #[derive(Serialize)]
 struct Content<'a> {
     format_version: FormatVersion,
@@ -71,8 +90,20 @@ pub(super) fn complete(
     publish(&path, &serde_json::to_vec(result).context(JsonSnafu)?)
 }
 fn read(path: &Path) -> Result<Vec<u8>> {
+    use std::os::windows::fs::OpenOptionsExt as _;
     let mut bytes = Vec::new();
-    open_regular(path)?
+    let metadata = fs::symlink_metadata(path).context(IoSnafu)?;
+    ensure!(
+        metadata.is_file()
+            && !metadata.is_symlink()
+            && fs::canonicalize(path).context(IoSnafu)? == path,
+        PathSnafu
+    );
+    OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(path)
+        .context(IoSnafu)?
         .take(MANIFEST_LIMIT as u64 + 1)
         .read_to_end(&mut bytes)
         .context(IoSnafu)?;

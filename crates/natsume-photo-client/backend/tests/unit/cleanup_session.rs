@@ -1,6 +1,58 @@
 use super::*;
 
 #[tokio::test]
+async fn finishing_a_new_team_does_not_open_or_hash_an_unrelated_teams_final() -> Result {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let fixture = fixture().await?;
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
+        .await
+        .context(HotFolderSnafu)?;
+    let first = first_final(&fixture, &folder).await?;
+    let writing = fs::OpenOptions::new()
+        .write(true)
+        .share_mode(1)
+        .open(fixture.workspace.root().join(first.path()))
+        .context(IoSnafu)?;
+    folder.select_team(TEAM_B).await.context(HotFolderSnafu)?;
+    let group = folder.start_group().await.context(HotFolderSnafu)?;
+    image::RgbImage::from_pixel(8, 6, image::Rgb([80, 90, 100]))
+        .save(fixture.hot.join("b.png"))
+        .context(ImageSnafu)?;
+    let state = wait(&folder, |s| {
+        s.pending_tasks == 0 && s.candidates().count() == 1
+    })
+    .await?;
+    let request = frame(&state)?;
+    folder
+        .acknowledge_presentation(receipt(&request))
+        .await
+        .context(HotFolderSnafu)?;
+    let confirm = folder
+        .prepare_confirmation(request)
+        .await
+        .context(HotFolderSnafu)?;
+    folder
+        .confirm_photo(confirm)
+        .await
+        .context(HotFolderSnafu)?;
+    let report = folder.finish_group(group).await.context(HotFolderSnafu)?;
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert!(report.pending_paths.is_empty());
+    drop(writing);
+    assert_eq!(
+        fixture
+            .workspace
+            .confirmed_photos()
+            .await
+            .context(WorkspaceSnafu)?
+            .len(),
+        2
+    );
+    folder.shutdown().await.context(HotFolderSnafu)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn pending_ingestion_blocks_retirement_until_the_confirmed_group_drains() -> Result {
     use std::os::windows::fs::OpenOptionsExt as _;
     let fixture = fixture().await?;

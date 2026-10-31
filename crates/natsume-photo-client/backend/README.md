@@ -51,7 +51,7 @@ cargo test -p natsume-photo-client --locked
 
 `acknowledge_presentation` 严格匹配窗口、修订、组、account_id、候选 ID 和规范图片哈希；重复当前回执幂等。同一窗口报告不匹配帧会撤销呈现资格、要求更高修订的新回执；旧窗口回执只拒绝。`prepare_confirmation` 返回未保存的 ConfirmationIntent，`confirm_photo` 重验后发布完整成品、事务提交关联，最后标记组 Confirmed；确认后不能换图或恢复自动，晚到图继续处理但不替换成品。`finish_group` 等已知任务排空后关闭组，补拍用同队新组。renderer 回调仍为可信适配器职责，无 UI 时仅在测试中模拟，实际屏幕与满意确认未验收。
 
-`photo.rs` 保存图片格式/尺寸及独立的 ConfirmationId、ResultId、SubmissionId；捕获与工作区复用这些领域值。`workspace/final_photos.rs` 负责源/目标路径、64 KiB 流式复制、哈希/格式/尺寸验证和无覆盖发布；`workspace/db.rs` 通过 typed Diesel 与现有 Transaction 在短事务中校验基线修订、写入新增 photo_team_results，重复确认保留身份，其他成品替换递增修订。文件失败或事务回滚不删除旧成品；提交失败的完整无引用文件留待后续对账。
+`photo.rs` 保存图片格式/尺寸及独立的 ConfirmationId、ResultId、SubmissionId；捕获与工作区复用这些领域值。`workspace/final_photos.rs` 负责源/目标路径、64 KiB 流式复制、哈希/格式/尺寸验证和无覆盖发布；`workspace/db.rs` 通过 typed Diesel 与现有 Transaction 原子校验基线并写入 photo_team_results；确认幂等、身份生成与修订递增由成品业务层负责。文件失败或事务回滚不删除旧成品；提交失败的完整无引用文件留待后续对账。
 
 工作区目前三张业务表；新表 migration 仅在新工作区安装，打开不迁移旧开发库。重开和 confirmed_photos() 都验证当前成品，共享图片只读取一次并核对所有引用元信息。确认后的已结束组清理已实现，离线 ZIP 已实现。标准 sRGB ICC 的头日期已固定，避免图像库写入当前时间造成规范输出哈希不稳定。
 
@@ -87,7 +87,7 @@ Server 测试在 WSL 运行。真实联调用例由 WSL Server 启动 Windows �
 
 finish_group 与 retry_cleanup 返回 CleanupReport，文件失败不撤销确认。快照公开 cleanup_pending / cleanup_failures；使用者必须检查 failures，不能把 Result::Ok 等同于所有文件已删。已删除或缺失的队列条目可幂等重试；只 remove_file / remove_dir，不递归清理未知目录内容。预览用 CandidateImage::open 保持只共享读取的句柄，释放后才可删除。
 
-FinalPhotos::remove_unused 在共享 final-operation mutex 内验证当前关系、发现无引用哈希文件并删除，与 save/list 共用同一互斥锁。该锁独立于 SQLite connection mutex，文件操作期间不持有数据库事务；所有锁顺序为 final-operation 后数据库，避免反向嵌套。finals 中共享/当前成品保持，删除失败的无引用对象下次重新对账，避免沿用过期删除清单。
+FinalPhotos::remove_unused 在共享 final-operation mutex 内校验引用元数据、发现无引用哈希文件并删除。该锁由 Workspace 所有并向 FinalPhotos 共享，数据库对象不持有文件锁。打开/诊断的整图校验在读取句柄保护下、互斥锁外进行；正常组清理只校验待退休副本涉及的队伍，不重读其他队伍的成品。文件操作期间不持有数据库事务；锁顺序为 final-operation 后数据库。finals 中共享/当前成品保持，删除失败的无引用对象下次重新对账，避免沿用过期删除清单。
 
 本步没有新增表或依赖，没有在打开工作区时自动扫旧 captures。工作副本删除队列只在当前会话内重试；未确认/放弃组、崩溃遗留拍摄目录、未知文件与临时文件留待明确维护，不恢复未完成拍摄。完整的无引用哈希成品可重新发现。
 ## 离线成果清单（ZIP 前置契约）
@@ -99,10 +99,10 @@ FinalPhotos::remove_unused 在共享 final-operation mutex 内验证当前关系
 签名为版本化领域前缀加 RFC 8785 JCS 编码，验签要求外部可信初始化上下文及已登记公钥。当前已接入 Vault 原密钥签名、固定文件读取快照、Manifest 重试记录、流式 ZIP 与 export CLI。格式和限额以 docs/architecture.md §23.6 为准，测试固定向量在协议 crate 的 tests/fixtures 中。
 ## 导出边界与文件生命周期
 
-export::export_results 先复核授权上下文与名单/资源，调用 Workspace::export_snapshot。在 final-operation mutex 内取得全部当前成品关系，并打开每张不同图片的 FILE_SHARE_READ 句柄，才释放锁。快照不保持数据库事务；文件句柄跨越 ZIP 写入和校验，阻止清理或外部写入。捕获会话可确认新的结果，导出仍只读原快照。
+export::export_results 先复核授权上下文与名单/资源，调用 Workspace::export_snapshot。在 final-operation mutex 内取得并校验当前引用元数据，打开每张不同图片的 FILE_SHARE_READ 句柄后立即释放锁；整图哈希在锁外的实际写包阶段核验。快照不保持数据库事务；文件句柄跨越 ZIP 写入和校验，阻止清理或外部写入。捕获会话可确认新的结果，导出仍只读原快照。
 
-export.rs 在持工作区写所有权的单个阻塞任务中取得 .export.lock，复核并读取原 Vault 种子；exports 记录的内容指纹不含 manifest_id，已有记录严格验签并核对内容后复用。export/journal.rs 仅保存非秘密 JSON，先同步完整临时文件，再无覆盖发布，不写候选或会话表。
+export.rs 在授权和快照读取之前尝试取得类型化 ExportLease（.export.lock 与工作区所有权），已有导出则立即返回 Busy；受理后的后台任务保持租约直到实际操作结束，外层等待取消不会释放准入。离线授权由 initialization/authorization.rs 共享给 doctor 与 export，使用独立 AuthorizationError，不依赖 HTTP 初始化错误；exports 记录的内容指纹不含 manifest_id，已有记录严格验签并核对内容后复用。export/journal.rs 仅保存非秘密 JSON，先同步完整临时文件，再无覆盖发布，不写候选或会话表。
 
-export/archive.rs 使用 STORE、固定 ZIP 时间与有界写入器；每张图片流式核对字节和 SHA-256。关包后重新逐项读取校验，核对包长、条目数和元数据预算，再发布目标。只有目标与完成记录都成功才返回 ExportedPackage。该返回值没有 Server 接收含义。可调用 export::export_results 或使用 export <workspace> <output.zip> CLI。
+export/archive.rs 使用 STORE、固定 ZIP 时间与有界写入器；每张图片流式核对字节和 SHA-256。关包后重新逐项读取校验，核对包长、条目数和元数据预算，再发布目标。只有目标与完成记录都成功才返回 ExportedPackage；目标已发布但完成记录失败返回 PublishedButUnrecorded，携带已发布包信息及 JournalError。该返回值没有 Server 接收含义。可调用 export::export_results 或使用 export <workspace> <output.zip> CLI。
 
 导出目标限制本地磁盘绝对路径，拒绝 UNC、父级穿越、ADS 和工作区内部输出；父目录需存在。现有不同内容绝不覆盖。下载授权令牌无需存在，导出只需要原签名密钥和已完成的本地资料。测试注入 Secrets 和文件写入故障，不增加生产测试字段。

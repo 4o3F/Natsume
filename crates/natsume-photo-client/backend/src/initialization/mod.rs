@@ -1,6 +1,8 @@
 //! First-time HTTPS enrollment; ordinary workspace operations remain offline.
 mod api;
-pub(crate) mod doctor;
+pub(crate) mod authorization;
+mod doctor;
+pub use authorization::AuthorizationError;
 mod identity;
 mod origin;
 mod secrets;
@@ -29,6 +31,8 @@ pub use windows::VaultSecrets;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
 pub enum Error {
+    #[snafu(display("offline authorization failed: {source}"))]
+    OfflineAuthorization { source: AuthorizationError },
     #[snafu(display("Photo initialization blocking task failed"))]
     Worker { source: tokio::task::JoinError },
     #[snafu(display("Photo initialization value is invalid"))]
@@ -367,7 +371,7 @@ impl<S: Secrets> Initializer<S> {
                 .await?,
         );
         let hash = Sha256Digest::of(bytes);
-        let identity = doctor::Authorization {
+        let identity = authorization::Authorization {
             server_url: self.origin.clone(),
             client_id: self.store.state().client_id.clone(),
             signing_public_key: hex::encode(public_key.as_bytes())

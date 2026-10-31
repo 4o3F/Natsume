@@ -231,7 +231,9 @@ impl Store {
         let workspace = WorkspaceReader::inspect(&path)
             .await
             .context(WorkspaceSnafu)?;
-        let identity = super::doctor::verify_authorization(&workspace, secrets).await?;
+        let identity = super::authorization::verify(&workspace, secrets)
+            .await
+            .context(super::OfflineAuthorizationSnafu)?;
         ensure!(
             identity.client_id == self.state.client_id
                 && identity.server_url == self.state.origin

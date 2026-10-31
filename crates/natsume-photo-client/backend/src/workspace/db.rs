@@ -12,7 +12,7 @@ use diesel_migrations::{EmbeddedMigrations, MigrationHarness as _, embed_migrati
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use snafu::{IntoError as _, ResultExt as _, Snafu};
 
-use super::final_photos::{ConfirmedPhoto, FinalDraft};
+use super::final_photos::ConfirmedPhoto;
 use super::resources::Cache;
 use crate::diesel_schema::{photo_roster, photo_team_results, photo_workspace};
 use crate::photo::{ConfirmationId, PhotoDimensions, PhotoFormat, ResultId, SubmissionId};
@@ -51,11 +51,6 @@ pub enum PersistenceError {
     Worker { source: tokio::task::JoinError },
 }
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
-pub(super) enum FinalCommit {
-    Saved(ConfirmedPhoto),
-    Conflict,
-}
-
 fn final_rows(tx: &mut Transaction<'_>, account: Option<&str>) -> Result<Vec<ConfirmedPhoto>> {
     type Row = (
         String,
@@ -146,11 +141,7 @@ pub(super) struct Metadata {
 }
 pub(super) type LogoColumns = (Option<String>, Option<String>);
 #[derive(Clone)]
-pub(super) struct Database(
-    Arc<Mutex<SqliteConnection>>,
-    Option<super::WorkspaceWriter>,
-    Arc<Mutex<()>>,
-);
+pub(super) struct Database(Arc<Mutex<SqliteConnection>>, Option<super::WorkspaceWriter>);
 pub(super) struct Transaction<'connection> {
     connection: &'connection mut SqliteConnection,
 }
@@ -165,11 +156,6 @@ enum ConnectionMode {
     Writable,
 }
 impl Database {
-    pub(super) fn lock_final_operations(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
-        self.2
-            .lock()
-            .map_err(|_| UnavailableSnafu.into_error(std::sync::PoisonError::new(())))
-    }
     pub(super) fn roster_ids(&self) -> Result<std::collections::BTreeSet<String>> {
         self.write_blocking(|tx| {
             let ids: Vec<String> = photo_roster::table
@@ -181,53 +167,22 @@ impl Database {
     pub(super) fn final_photos(&self, account: Option<&str>) -> Result<Vec<ConfirmedPhoto>> {
         self.write_blocking(|tx| final_rows(tx, account))
     }
-    pub(super) fn commit_final(
-        &self,
-        draft: &FinalDraft,
-        path: std::path::PathBuf,
-        baseline: i64,
-    ) -> Result<FinalCommit> {
+    /// Atomically persists against the expected revision and existing roster reference.
+    pub(super) fn apply_final(&self, photo: &ConfirmedPhoto, baseline: i64) -> Result<bool> {
         self.write_blocking(|tx| {
-            let current = final_rows(tx, Some(&draft.account_id))?.pop();
-            if let Some(current) = &current
-                && current.confirmation_id == draft.confirmation_id
-            {
-                return Ok(
-                    if current.sha256 == draft.sha256
-                        && current.bytes == draft.bytes
-                        && current.dimensions == draft.dimensions
-                    {
-                        FinalCommit::Saved(current.clone())
-                    } else {
-                        FinalCommit::Conflict
-                    },
-                );
-            }
-            if current.as_ref().map_or(0, |photo| photo.revision) != baseline {
-                return Ok(FinalCommit::Conflict);
-            }
+            let revision = photo_team_results::table
+                .find(&photo.account_id)
+                .select(photo_team_results::revision)
+                .first::<i64>(tx.connection())
+                .optional()?;
             let known = photo_roster::table
-                .find(&draft.account_id)
+                .find(&photo.account_id)
                 .select(photo_roster::account_id)
                 .first::<String>(tx.connection())
                 .optional()?;
-            if known.is_none() {
-                return Ok(FinalCommit::Conflict);
+            if revision.unwrap_or(0) != baseline || known.is_none() {
+                return Ok(false);
             }
-            let Some(revision) = baseline.checked_add(1) else {
-                return FinalMetadataSnafu.fail();
-            };
-            let photo = ConfirmedPhoto {
-                account_id: draft.account_id.clone(),
-                confirmation_id: draft.confirmation_id.clone(),
-                result_id: ResultId::generate(),
-                submission_id: SubmissionId::generate(),
-                path,
-                sha256: draft.sha256.clone(),
-                bytes: draft.bytes,
-                dimensions: draft.dimensions,
-                revision,
-            };
             let path = photo
                 .path
                 .to_str()
@@ -251,7 +206,7 @@ impl Database {
                     photo_team_results::image_format.eq(format),
                     photo_team_results::width.eq(width),
                     photo_team_results::height.eq(height),
-                    photo_team_results::revision.eq(revision),
+                    photo_team_results::revision.eq(photo.revision),
                 ))
                 .on_conflict(photo_team_results::account_id)
                 .do_update()
@@ -265,10 +220,10 @@ impl Database {
                     photo_team_results::image_format.eq(format),
                     photo_team_results::width.eq(width),
                     photo_team_results::height.eq(height),
-                    photo_team_results::revision.eq(revision),
+                    photo_team_results::revision.eq(photo.revision),
                 ))
                 .execute(tx.connection())?;
-            Ok(FinalCommit::Saved(photo))
+            Ok(true)
         })
     }
     // Storage invokes connection and schema installation only inside spawn_blocking.
@@ -295,11 +250,7 @@ impl Database {
             connection
                 .batch_execute("PRAGMA busy_timeout = 3000;")
                 .context(QuerySnafu)?;
-            Ok(Self(
-                Arc::new(Mutex::new(connection)),
-                None,
-                Arc::new(Mutex::new(())),
-            ))
+            Ok(Self(Arc::new(Mutex::new(connection)), None))
         })
     }
     pub(super) fn with_owner(mut self, owner: super::WorkspaceWriter) -> Self {
