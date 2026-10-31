@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Authorization {
+pub(crate) struct Authorization {
     pub server_url: super::ServerOrigin,
     pub client_id: ClientId,
     pub signing_public_key: natsume_photo_protocol::SigningPublicKey,
@@ -41,7 +41,7 @@ pub async fn diagnose_path(
 }
 
 // Resource bytes are verified by WorkspaceReader::inspect or diagnose.
-pub(super) async fn verify_authorization<Access>(
+pub(crate) async fn verify_authorization<Access>(
     workspace: &Workspace<Access>,
     secrets: &impl Secrets,
 ) -> Result<Authorization> {
@@ -53,20 +53,7 @@ pub(super) async fn verify_authorization<Access>(
             8192,
         )?)
         .map_err(super::json_error)?;
-        let secret = secrets
-            .load(
-                &identity.server_url,
-                &super::SecretSlot::new(identity.client_id.clone(), super::SecretKind::Signing),
-            )
-            .context(super::CredentialSnafu)?
-            .ok_or_else(|| MissingSecretSnafu.build())?;
-        let mut seed = Zeroizing::new([0; 32]);
-        hex::decode_to_slice(secret.as_str(), seed.as_mut()).map_err(super::key_encoding_error)?;
-        let key = ed25519_dalek::SigningKey::from_bytes(&seed);
-        ensure!(
-            hex::encode(key.verifying_key().to_bytes()) == identity.signing_public_key.as_str(),
-            AuthorizationSnafu
-        );
+        load_signing_key(&identity, &secrets)?;
         let bytes = store::read_bounded(
             &root.join("initialization.json"),
             natsume_photo_protocol::MANIFEST_LIMIT as u64,
@@ -103,4 +90,26 @@ pub(super) async fn verify_authorization<Access>(
         AuthorizationSnafu
     );
     Ok(identity)
+}
+
+// Only Rust application boundaries may borrow the original vault key; never generate a fallback.
+pub(crate) fn load_signing_key(
+    identity: &Authorization,
+    secrets: &impl Secrets,
+) -> Result<ed25519_dalek::SigningKey> {
+    let secret = secrets
+        .load(
+            &identity.server_url,
+            &super::SecretSlot::new(identity.client_id.clone(), super::SecretKind::Signing),
+        )
+        .context(super::CredentialSnafu)?
+        .ok_or_else(|| MissingSecretSnafu.build())?;
+    let mut seed = Zeroizing::new([0; 32]);
+    hex::decode_to_slice(secret.as_str(), seed.as_mut()).map_err(super::key_encoding_error)?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    ensure!(
+        hex::encode(key.verifying_key().to_bytes()) == identity.signing_public_key.as_str(),
+        AuthorizationSnafu
+    );
+    Ok(key)
 }

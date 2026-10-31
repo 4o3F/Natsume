@@ -20,11 +20,16 @@ ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 image.workspace = true
+chrono.workspace = true
+kamadak-exif.workspace = true
+moxcms.workspace = true
+png.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
 rpassword.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
 sha2.workspace = true
 snafu.workspace = true
 tempfile.workspace = true
@@ -33,6 +38,7 @@ tokio-util.workspace = true
 uuid.workspace = true
 url.workspace = true
 zeroize.workspace = true
+zip.workspace = true
 
 libsqlite3-sys = { version = "0.38.2", features = ["bundled"] }
 windows = { workspace = true, features = ["Security_Credentials", "Storage", "Storage_Search", "Storage_Streams", "Foundation", "Foundation_Collections"] }

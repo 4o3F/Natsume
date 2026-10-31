@@ -1,6 +1,6 @@
 //! First-time HTTPS enrollment; ordinary workspace operations remain offline.
 mod api;
-mod doctor;
+pub(crate) mod doctor;
 mod identity;
 mod origin;
 mod secrets;

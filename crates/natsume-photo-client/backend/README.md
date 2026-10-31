@@ -27,7 +27,7 @@ cargo test -p natsume-photo-client --locked
 | `hot_folder/native.rs` | 安全 WinRT 文件通知，不使用系统索引服务 |
 | `hot_folder/archive.rs` | 有界复制、源版本复核及不覆盖发布 |
 
-数据库只有 `photo_workspace` 与 `photo_roster` 两张业务表，另有 Diesel 迁移记录。`photo_workspace` 保存 singleton、保留的 format_version 和资料 ready 标记。`photo_roster` 保存七字段队伍资料与可空的校徽相对路径和哈希。没有默认图片字段、接口或输入；没有照片时留空。工作区直接重建，不实现旧格式兼容或拒绝逻辑。
+数据库有 `photo_workspace`、`photo_roster` 与 `photo_team_results` 三张业务表，另有 Diesel 迁移记录。`photo_workspace` 保存 singleton、保留的 format_version 和资料 ready 标记。`photo_roster` 保存七字段队伍资料与可空的校徽相对路径和哈希。`photo_team_results` 每队保存一条当前确认成品关系。没有默认图片字段、接口或输入；没有照片时留空。旧开发工作区按约定重建，不实现旧格式兼容或拒绝逻辑，也不自动删除已有目录。
 
 数据库连接、迁移和事务实际运行在 `spawn_blocking` 中；异步调用者不持有 SQLite 锁。资源解码和归档复制同样在阻塞任务中完成。业务条件在 Rust 中检查，数据库保留主键及唯一性约束。`ready` 只表示本地资料提交完成，不能单独证明来源授权完成。
 
@@ -39,7 +39,21 @@ cargo test -p natsume-photo-client --locked
 
 `snapshot()` 返回 `HotFolderSnapshot`；`wait_until().await` 等待后台发布，不主动扫描。显式 `shutdown().await` 等待运行中的文件任务及监听清理，Drop 只取消。未确认会话和组只在内存中，重启不恢复；源照片永不移动或删除，归属不确定的副本需要人工核对。
 
-当前没有候选图解码、选图确认、成品持久化或成果 ZIP。后续确认成功后才清理本组未采用的工作区副本，热文件夹原图保留。
+归档后通过 `capture_session/photo_validation.rs` 校验 JPEG/PNG 的哈希、长度、结束标记并完整解码；同一解码像素交给私有 `candidate.rs`，应用 EXIF 方向和 RGB ICC → sRGB，保留原尺寸，生成规范文件及最长边 512 的 PNG 缩略图。JPEG 质量 92，PNG 输出 8 位并保留透明度；源 EXIF/GPS/XMP 不复制，输出嵌入标准 sRGB ICC。无色彩声明按 sRGB；未支持的 Gray/CMYK ICC、HDR/CICP、自定义 PNG gamma/色度明确拒绝。输入 50 MiB、80 百万像素，解码分配/输出及规范像素缓冲各 256 MiB，ICC 4 MiB，单个输出文件 50 MiB；预算不是整个进程 RSS 保证。
+
+每轮最多处理一个已归组副本，直到文件都同步且一起发布后才结束组任务。`photo_checks` 保存 `Result<PhotoCandidate, PhotoValidationError>`，快照通过 `candidates()` 只迭代当前组的成功候选，不保存像素。内容拒绝缓存；共享冲突等临时 I/O 失败间隔至少一秒重试；永久失败结束任务并保留来源。发布失败清理私有暂存，不覆盖现有目标；源和原始归档保留。
+
+`photo_time.rs` 在规范化移除元数据前解析 EXIF 原始拍摄时间、时区与小数秒；缺失/无效时回退 `ArchivedPhoto.modified` 保存的源版本修改时间。无 EXIF 时区按 Windows 本地时区解释，歧义则回退；EXIF 时间解析限制 1 MiB。快照按时间、候选 ID 稳定倒序排列，错误在后且不能被选择。`PhotoTimeSource` 记录 EXIF/文件时间来源，不用处理完成时间排序。
+
+`CaptureSession::select_candidate(group_id, photo_id)` 将当前未暂停组的成功候选设为手动选择，`use_latest_candidate(group_id)` 恢复自动最新；新图及迟到结果不会抢占手动选择。`snapshot.selection` 使用 `CandidateSelection::Automatic { photo_id: Option<Uuid> }` / `Manual { photo_id: Uuid }`，成功开始/放弃组会清除旧选择，命令应答前发布快照。选择只在内存，成品保存使用下述独立接口；实际屏幕仍待实现，离线 ZIP 已实现，热文件夹原图保留。
+
+`presentation.rs` 管理窗口实例、帧修订与回执；CaptureState 仍拥有组和选图策略。`publish_snapshot` 从同一份已排序快照派生展示目标，再发布新帧/应答，避免选图已完成但呈现版本仍旧。`attach_display` 返回本次窗口的 DisplayId，`detach_display` 只接受当前 ID；无候选/暂停置 Blank，停止置 Unavailable。当前图像/身份未变时保留修订与回执，A→B→A 则生成新修订。修订不能绕回；耗尽时停止并清除呈现。
+
+`acknowledge_presentation` 严格匹配窗口、修订、组、account_id、候选 ID 和规范图片哈希；重复当前回执幂等。同一窗口报告不匹配帧会撤销呈现资格、要求更高修订的新回执；旧窗口回执只拒绝。`prepare_confirmation` 返回未保存的 ConfirmationIntent，`confirm_photo` 重验后发布完整成品、事务提交关联，最后标记组 Confirmed；确认后不能换图或恢复自动，晚到图继续处理但不替换成品。`finish_group` 等已知任务排空后关闭组，补拍用同队新组。renderer 回调仍为可信适配器职责，无 UI 时仅在测试中模拟，实际屏幕与满意确认未验收。
+
+`photo.rs` 保存图片格式/尺寸及独立的 ConfirmationId、ResultId、SubmissionId；捕获与工作区复用这些领域值。`workspace/final_photos.rs` 负责源/目标路径、64 KiB 流式复制、哈希/格式/尺寸验证和无覆盖发布；`workspace/db.rs` 通过 typed Diesel 与现有 Transaction 在短事务中校验基线修订、写入新增 photo_team_results，重复确认保留身份，其他成品替换递增修订。文件失败或事务回滚不删除旧成品；提交失败的完整无引用文件留待后续对账。
+
+工作区目前三张业务表；新表 migration 仅在新工作区安装，打开不迁移旧开发库。重开和 confirmed_photos() 都验证当前成品，共享图片只读取一次并核对所有引用元信息。确认后的已结束组清理已实现，离线 ZIP 已实现。标准 sRGB ICC 的头日期已固定，避免图像库写入当前时间造成规范输出哈希不稳定。
 
 ## 测试文件组织
 
@@ -66,3 +80,29 @@ Server 测试在 WSL 运行。真实联调用例由 WSL Server 启动 Windows �
 拍摄公开 API、错误、状态和快照统一从 `capture_session` 导入；`hot_folder` 是内部通知和归档实现。公开库不提供测试建库函数。需要直接构造工作区的私有单元测试放在 `tests/unit/`，通过 cfg(test) path 接入；HTTPS 初始化、CLI 和名单仍使用集成测试。测试夹具调用生产准备核心，不维护另一份 schema 或建库逻辑。
 
 `Workspace::open` / `WorkspaceReader::inspect` 检查数据完整性；`Initializer` 和 `doctor` 另行检查本地授权与当前用户凭据中的原签名密钥。打开 SQLite 本身不证明授权绑定有效。
+
+## 已确认组清理
+
+`capture_session/cleanup.rs` 负责已结束组的删除队列。finish_and_clean 先执行 Session.finish_group 的确认/任务屏障校验，成功后 retire_group_files 收集本组确切文件、移除已结束组的照片与候选记录，再执行 clean_retired。源观察和归属墓碑不清除，其他组及待核对照片继续保护共享归档。
+
+finish_group 与 retry_cleanup 返回 CleanupReport，文件失败不撤销确认。快照公开 cleanup_pending / cleanup_failures；使用者必须检查 failures，不能把 Result::Ok 等同于所有文件已删。已删除或缺失的队列条目可幂等重试；只 remove_file / remove_dir，不递归清理未知目录内容。预览用 CandidateImage::open 保持只共享读取的句柄，释放后才可删除。
+
+FinalPhotos::remove_unused 在共享 final-operation mutex 内验证当前关系、发现无引用哈希文件并删除，与 save/list 共用同一互斥锁。该锁独立于 SQLite connection mutex，文件操作期间不持有数据库事务；所有锁顺序为 final-operation 后数据库，避免反向嵌套。finals 中共享/当前成品保持，删除失败的无引用对象下次重新对账，避免沿用过期删除清单。
+
+本步没有新增表或依赖，没有在打开工作区时自动扫旧 captures。工作副本删除队列只在当前会话内重试；未确认/放弃组、崩溃遗留拍摄目录、未知文件与临时文件留待明确维护，不恢复未完成拍摄。完整的无引用哈希成品可重新发现。
+## 离线成果清单（ZIP 前置契约）
+
+`natsume-photo-protocol::results` 定义 ResultsManifest、TeamResult、SignedResults、ResultContext、成果/提交/清单身份及真实图片格式。Client 的 photo 模块复用同一个 ResultId、SubmissionId、PhotoFormat，现有数据库字符串与格式值保持原样。
+
+`Workspace::current_result_entries()` 验证当前成品，并从已初始化名单按 account_id 读取外部 account，生成按内部身份排序的共享条目。未确认候选不进入结果；该接口只返回元数据，不持有文件读取句柄，也不是未来导出所需的固定文件快照。
+
+签名为版本化领域前缀加 RFC 8785 JCS 编码，验签要求外部可信初始化上下文及已登记公钥。当前已接入 Vault 原密钥签名、固定文件读取快照、Manifest 重试记录、流式 ZIP 与 export CLI。格式和限额以 docs/architecture.md §23.6 为准，测试固定向量在协议 crate 的 tests/fixtures 中。
+## 导出边界与文件生命周期
+
+export::export_results 先复核授权上下文与名单/资源，调用 Workspace::export_snapshot。在 final-operation mutex 内取得全部当前成品关系，并打开每张不同图片的 FILE_SHARE_READ 句柄，才释放锁。快照不保持数据库事务；文件句柄跨越 ZIP 写入和校验，阻止清理或外部写入。捕获会话可确认新的结果，导出仍只读原快照。
+
+export.rs 在持工作区写所有权的单个阻塞任务中取得 .export.lock，复核并读取原 Vault 种子；exports 记录的内容指纹不含 manifest_id，已有记录严格验签并核对内容后复用。export/journal.rs 仅保存非秘密 JSON，先同步完整临时文件，再无覆盖发布，不写候选或会话表。
+
+export/archive.rs 使用 STORE、固定 ZIP 时间与有界写入器；每张图片流式核对字节和 SHA-256。关包后重新逐项读取校验，核对包长、条目数和元数据预算，再发布目标。只有目标与完成记录都成功才返回 ExportedPackage。该返回值没有 Server 接收含义。可调用 export::export_results 或使用 export <workspace> <output.zip> CLI。
+
+导出目标限制本地磁盘绝对路径，拒绝 UNC、父级穿越、ADS 和工作区内部输出；父目录需存在。现有不同内容绝不覆盖。下载授权令牌无需存在，导出只需要原签名密钥和已完成的本地资料。测试注入 Secrets 和文件写入故障，不增加生产测试字段。

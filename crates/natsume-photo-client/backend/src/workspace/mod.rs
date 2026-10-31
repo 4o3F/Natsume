@@ -10,14 +10,20 @@ use std::{
 };
 
 mod db;
+mod final_photos;
 pub(crate) mod resources;
 mod storage;
 pub use db::PersistenceError;
+pub use final_photos::{ConfirmedPhoto, FinalPhotoError};
+pub(crate) use final_photos::{FinalDraft, FinalPhotos};
+pub(crate) use final_photos::{FinalSnapshot, SnapshotImage};
 pub use resources::ResourceError;
 pub use storage::StorageError;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("confirmed photo validation failed: {source}"))]
+    FinalPhoto { source: FinalPhotoError },
     #[snafu(display("workspace storage failed: {source}"))]
     Storage { source: StorageError },
     #[snafu(display("workspace persistence failed: {source}"))]
@@ -110,6 +116,23 @@ impl Workspace {
     pub(crate) fn writable_owner(&self) -> WorkspaceWriter {
         self.access.0.clone()
     }
+    pub(crate) fn final_store(&self) -> FinalPhotos {
+        FinalPhotos::new(self.root.clone(), self.database.clone())
+    }
+    pub(crate) async fn export_snapshot(&self) -> Result<FinalSnapshot> {
+        let accounts = self
+            .roster()
+            .await?
+            .teams()
+            .iter()
+            .map(|team| (team.account_id.clone(), team.account.clone()))
+            .collect();
+        let store = self.final_store();
+        tokio::task::spawn_blocking(move || store.snapshot(&accounts))
+            .await
+            .context(WorkerSnafu)?
+            .context(FinalPhotoSnafu)
+    }
 }
 /// Read-only view of a fully validated workspace.
 /// Read access cannot authorize capture:
@@ -138,12 +161,50 @@ impl Workspace<ReadOnly> {
     }
 }
 impl<Access> Workspace<Access> {
+    /// Maps verified current results to the shared contract using the immutable roster.
+    /// This reads metadata only; it does not pin files or create an export snapshot.
+    /// # Errors
+    /// Reports invalid current files, persistence failures or missing roster identities.
+    pub async fn current_result_entries(
+        &self,
+    ) -> Result<Vec<natsume_photo_protocol::results::TeamResult>> {
+        let roster = self.roster().await?;
+        let accounts: std::collections::BTreeMap<_, _> = roster
+            .teams()
+            .iter()
+            .map(|team| (team.account_id.as_str(), team.account.as_str()))
+            .collect();
+        self.confirmed_photos()
+            .await?
+            .into_iter()
+            .map(|photo| {
+                let account = accounts
+                    .get(photo.account_id())
+                    .ok_or_else(|| UnknownTeamSnafu.build())?;
+                photo
+                    .into_result((*account).to_owned())
+                    .context(FinalPhotoSnafu)
+            })
+            .collect()
+    }
+    /// Reads and verifies current confirmed files without restoring unfinished captures.
+    /// # Errors
+    /// Reports corrupt references, missing files, hash mismatches and persistence failures.
+    pub async fn confirmed_photos(&self) -> Result<Vec<ConfirmedPhoto>> {
+        let store = FinalPhotos::new(self.root.clone(), self.database.clone());
+        tokio::task::spawn_blocking(move || store.list())
+            .await
+            .context(WorkerSnafu)?
+            .context(FinalPhotoSnafu)
+    }
     async fn verify(&self) -> Result<()> {
         let metadata = self.database.metadata().await.context(PersistenceSnafu)?;
         ensure!(matches!(metadata.ready, 0 | 1), InvalidReadinessSnafu);
         ensure!(metadata.ready == 1, IncompleteSnafu);
         self.roster().await?;
-        self.verify_resources().await
+        self.verify_resources().await?;
+        self.confirmed_photos().await?;
+        Ok(())
     }
     pub(crate) async fn verify_resources(&self) -> Result<()> {
         let rows = self.database.logos().await.context(PersistenceSnafu)?;

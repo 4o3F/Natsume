@@ -1,4 +1,4 @@
-//! Platform-independent Photo initialization contract and validation.
+//! Platform-independent Photo initialization and offline result contracts.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,7 @@ pub const TEAM_LIMIT: usize = 2000;
 /// Maximum encoded pair/confirm response size; excludes snapshots and images.
 pub const ENROLLMENT_RESPONSE_LIMIT: usize = 8192;
 
+pub mod results;
 mod value;
 pub use value::{
     DatasetId, EnrollmentId, Identity, InitializationId, InitializationRequestId, Sha256Digest,

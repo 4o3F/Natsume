@@ -38,9 +38,15 @@ mod application {
         },
         /// Validate local workspace data and authorization without contacting Server.
         Doctor { path: PathBuf },
+        /// Export current confirmed photos to one signed ZIP without contacting Server.
+        Export { path: PathBuf, output: PathBuf },
     }
     #[derive(Debug, Snafu)]
     enum Error {
+        #[snafu(display("offline Photo export failed: {source}"))]
+        Export {
+            source: natsume_photo_client::export::ExportError,
+        },
         #[snafu(display("Photo command blocking task failed"))]
         Worker { source: tokio::task::JoinError },
         #[snafu(display("invalid command arguments; use --help"))]
@@ -60,6 +66,14 @@ mod application {
     }
     async fn execute(command: Command) -> Result<(), Error> {
         match command {
+            Command::Export { path, output } => {
+                let workspace = natsume_photo_client::workspace::Workspace::open(&path)
+                    .await
+                    .context(WorkspaceSnafu)?;
+                natsume_photo_client::export::export_results(&workspace, &output, &VaultSecrets)
+                    .await
+                    .context(ExportSnafu)?;
+            }
             Command::Initialize {
                 path,
                 server,

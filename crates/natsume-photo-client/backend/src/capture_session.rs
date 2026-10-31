@@ -3,7 +3,7 @@ pub use crate::hot_folder::archive::ArchiveError;
 use crate::hot_folder::{archive, native::NativeMonitor};
 use crate::{
     capture::{self, GroupId, Session},
-    workspace::Workspace,
+    workspace::{ConfirmedPhoto, FinalDraft, FinalPhotoError, FinalPhotos, Workspace},
 };
 use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
 use std::time::Duration;
@@ -19,6 +19,10 @@ const INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
+    #[snafu(display("confirmed photo could not be saved: {source}"))]
+    FinalPhoto { source: FinalPhotoError },
+    #[snafu(display("this group already has a saved final; finish it before taking another"))]
+    Finalized,
     #[snafu(display("hot-folder directory operation failed"))]
     Io { source: std::io::Error },
     #[snafu(display("native directory monitoring failed"))]
@@ -37,6 +41,10 @@ pub enum Error {
     MonitorUnavailable,
     #[snafu(display("photo cannot be assigned to this active group"))]
     NotReviewable,
+    #[snafu(display("candidate is not ready in the active, unpaused capture group"))]
+    CandidateUnavailable,
+    #[snafu(display("presentation operation rejected: {source}"))]
+    Presentation { source: PresentationError },
     #[snafu(display("ingestion state invariant was violated"))]
     Invariant,
     #[snafu(display("ingestion worker has stopped"))]
@@ -64,6 +72,8 @@ pub struct ArchivedPhoto {
     pub path: PathBuf,
     pub sha256: String,
     pub bytes: u64,
+    /// Source-version modification time, never the archive copy's timestamp.
+    pub modified: std::time::SystemTime,
     /// None requires explicit photographer review.
     pub group_id: Option<GroupId>,
 }
@@ -83,12 +93,70 @@ pub struct HotFolderSnapshot {
     pub paused: bool,
     pub state: IngestionState,
     pub photos: Vec<ArchivedPhoto>,
+    /// Candidate preparation results for the active group, including failures.
+    pub photo_checks: Vec<PhotoCheck>,
+    /// Current choice; selecting a candidate does not confirm or save a team result.
+    pub selection: CandidateSelection,
+    /// Renderer lifecycle and acknowledgement; never proof of a saved final.
+    pub presentation: PresentationStatus,
+    /// Current group's saved result, set only after complete file and database publication.
+    pub confirmed: Option<ConfirmedPhoto>,
+    /// Retired entries awaiting explicit cleanup retry, separate from saved-result state.
+    pub cleanup_pending: usize,
+    pub cleanup_failures: usize,
     pub missing_sources: Vec<MissingSource>,
     pub notifications: u64,
 }
 
+/// An automatic choice can be empty; a manual choice always identifies a ready candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateSelection {
+    Automatic { photo_id: Option<Uuid> },
+    Manual { photo_id: Uuid },
+}
+impl CandidateSelection {
+    /// Returns the chosen candidate, if any, without implying presentation or confirmation.
+    #[must_use]
+    pub fn photo_id(self) -> Option<Uuid> {
+        match self {
+            Self::Automatic { photo_id } => photo_id,
+            Self::Manual { photo_id } => Some(photo_id),
+        }
+    }
+}
+
+impl HotFolderSnapshot {
+    /// Iterates over prepared candidates belonging only to the active group.
+    pub fn candidates(&self) -> impl Iterator<Item = &PhotoCandidate> {
+        self.photo_checks
+            .iter()
+            .filter_map(|check| check.result().ok())
+    }
+}
+
+mod cleanup;
 mod ingestion;
+use cleanup::Cleanup;
+pub use cleanup::{CleanupError, CleanupReport};
 use ingestion::Ingestion;
+mod photo_validation;
+pub use crate::photo::{PhotoDimensions, PhotoFormat};
+pub use photo_validation::{PhotoCheck, PhotoValidationError};
+mod candidate;
+pub use candidate::{CandidateError, CandidateImage, PhotoCandidate};
+mod photo_time;
+pub use photo_time::{PhotoTime, PhotoTimeSource};
+mod presentation;
+pub use presentation::{
+    ConfirmationIntent, DisplayId, PresentationError, PresentationReceipt, PresentationRequest,
+    PresentationRevision, PresentationStatus,
+};
+use presentation::{Presentation, PresentationTarget};
+
+struct ManualSelection {
+    group: GroupId,
+    photo: Uuid,
+}
 
 struct CaptureTask {
     group: GroupId,
@@ -99,18 +167,42 @@ struct CaptureState {
     session: Session,
     ingestion: Ingestion,
     tasks: BTreeMap<PathBuf, CaptureTask>,
+    photo_checks: BTreeMap<Uuid, PhotoCheck>,
+    validation_tasks: BTreeMap<Uuid, CaptureTask>,
+    manual_selection: Option<ManualSelection>,
+    presentation: Presentation,
+    finals: FinalPhotos,
+    confirmed: Option<ConfirmedCapture>,
+    cleanup: Cleanup,
+}
+struct ConfirmedCapture {
+    request: PresentationRequest,
+    photo: ConfirmedPhoto,
 }
 enum Action {
     Select(String),
     Start,
     Abandon(GroupId),
     Assign(Uuid, GroupId),
+    SelectCandidate(GroupId, Uuid),
+    UseLatest(GroupId),
+    AttachDisplay,
+    DetachDisplay(DisplayId),
+    AcknowledgePresentation(PresentationReceipt),
+    PrepareConfirmation(PresentationRequest),
+    Confirm(ConfirmationIntent),
+    Finish(GroupId),
+    Cleanup,
     AcknowledgeMissing(PathBuf),
     Scan,
 }
 enum Response {
     Done,
     Group(GroupId),
+    Display(DisplayId),
+    Intent(ConfirmationIntent),
+    Saved(ConfirmedPhoto),
+    Cleaned(CleanupReport),
 }
 struct Command {
     action: Action,
@@ -134,6 +226,7 @@ impl CaptureSession {
         let session = Session::new(workspace.roster().await.context(WorkspaceSnafu)?);
         let hot_folder = hot_folder.to_owned();
         let root = workspace.root().to_owned();
+        let finals = workspace.final_store();
         let inner = tokio::task::spawn_blocking(move || {
             ensure!(
                 hot_folder.is_absolute()
@@ -152,6 +245,13 @@ impl CaptureSession {
                 session,
                 ingestion: Ingestion::new(hot_folder, archive),
                 tasks: BTreeMap::new(),
+                photo_checks: BTreeMap::new(),
+                validation_tasks: BTreeMap::new(),
+                manual_selection: None,
+                presentation: Presentation::new(),
+                finals,
+                confirmed: None,
+                cleanup: Cleanup::default(),
             })
         })
         .await
@@ -253,7 +353,11 @@ impl CaptureSession {
     pub async fn start_group(&self) -> Result<GroupId> {
         match self.request(Action::Start).await? {
             Response::Group(id) => Ok(id),
-            Response::Done => InvariantSnafu.fail(),
+            Response::Done
+            | Response::Display(_)
+            | Response::Intent(_)
+            | Response::Saved(_)
+            | Response::Cleaned(_) => InvariantSnafu.fail(),
         }
     }
     /// Explicitly abandons an unconfirmed group without deleting its source images.
@@ -267,6 +371,86 @@ impl CaptureSession {
     /// Rejects paused groups and invalid or already-owned archives.
     pub async fn assign_reviewed(&self, photo: Uuid, group: GroupId) -> Result<()> {
         self.request(Action::Assign(photo, group)).await.map(|_| ())
+    }
+    /// Keeps a ready candidate selected until automatic mode is explicitly restored.
+    /// # Errors
+    /// Rejects stale groups, unknown/unready candidates, paused state and a stopped worker.
+    pub async fn select_candidate(&self, group: GroupId, photo: Uuid) -> Result<()> {
+        self.request(Action::SelectCandidate(group, photo))
+            .await
+            .map(|_| ())
+    }
+    /// Resumes automatic selection by capture time in this exact active group.
+    /// # Errors
+    /// Rejects stale/paused groups and a stopped worker.
+    pub async fn use_latest_candidate(&self, group: GroupId) -> Result<()> {
+        self.request(Action::UseLatest(group)).await.map(|_| ())
+    }
+    /// Attaches one renderer instance; this alone does not acknowledge a frame.
+    /// # Errors
+    /// Rejects an already attached display or a stopped worker.
+    pub async fn attach_display(&self) -> Result<DisplayId> {
+        match self.request(Action::AttachDisplay).await? {
+            Response::Display(id) => Ok(id),
+            _ => InvariantSnafu.fail(),
+        }
+    }
+    /// Invalidates every frame and receipt from this exact display instance.
+    /// # Errors
+    /// Rejects stale display callbacks and a stopped worker.
+    pub async fn detach_display(&self, display: DisplayId) -> Result<()> {
+        self.request(Action::DetachDisplay(display))
+            .await
+            .map(|_| ())
+    }
+    /// Accepts a renderer claim only for the current display/team/image/revision.
+    /// # Errors
+    /// Rejects mismatched or obsolete receipts and a stopped worker.
+    pub async fn acknowledge_presentation(&self, receipt: PresentationReceipt) -> Result<()> {
+        self.request(Action::AcknowledgePresentation(receipt))
+            .await
+            .map(|_| ())
+    }
+    /// Checks the operator's exact expected frame after renderer acknowledgement.
+    /// This neither reserves the selection nor saves/marks a confirmed final.
+    /// # Errors
+    /// Rejects unacknowledged, changed or paused frames and a stopped worker.
+    pub async fn prepare_confirmation(
+        &self,
+        expected: PresentationRequest,
+    ) -> Result<ConfirmationIntent> {
+        match self.request(Action::PrepareConfirmation(expected)).await? {
+            Response::Intent(intent) => Ok(intent),
+            _ => InvariantSnafu.fail(),
+        }
+    }
+    /// Revalidates operator intent, publishes the final file, then commits the team association.
+    /// # Errors
+    /// Rejects changed/unpresented frames, paused state, file integrity and database failures.
+    pub async fn confirm_photo(&self, intent: ConfirmationIntent) -> Result<ConfirmedPhoto> {
+        match self.request(Action::Confirm(intent)).await? {
+            Response::Saved(photo) => Ok(photo),
+            _ => InvariantSnafu.fail(),
+        }
+    }
+    /// Finishes a saved group after known work drains, then reports cleanup separately.
+    /// Cleanup failures leave the group finished and the committed result intact.
+    /// # Errors
+    /// Rejects pending work, pauses, stale groups and groups without a saved final.
+    pub async fn finish_group(&self, group: GroupId) -> Result<CleanupReport> {
+        match self.request(Action::Finish(group)).await? {
+            Response::Cleaned(report) => Ok(report),
+            _ => InvariantSnafu.fail(),
+        }
+    }
+    /// Retries retired-file cleanup without changing confirmed team results.
+    /// # Errors
+    /// Reports a stopped worker; file/reference failures are returned in the report.
+    pub async fn retry_cleanup(&self) -> Result<CleanupReport> {
+        match self.request(Action::Cleanup).await? {
+            Response::Cleaned(report) => Ok(report),
+            _ => InvariantSnafu.fail(),
+        }
     }
     /// Dismisses an active loss warning. A returning source still needs review.
     /// # Errors
@@ -383,6 +567,7 @@ async fn run_worker(
                 let mut stopped = publish.borrow().clone();
                 stopped.state = IngestionState::Stopped;
                 stopped.paused = true;
+                stopped.presentation = PresentationStatus::Unavailable;
                 publish.send_replace(stopped);
                 return Err(WorkerSnafu.into_error(source));
             }
@@ -421,12 +606,23 @@ async fn run_worker(
                 let mut stopped = publish.borrow().clone();
                 stopped.state = IngestionState::Stopped;
                 stopped.paused = true;
+                stopped.presentation = PresentationStatus::Unavailable;
                 publish.send_replace(stopped);
                 return Err(WorkerSnafu.into_error(source));
             }
         };
         inner = returned;
-        publish.send_replace(inner.snapshot(notifications));
+        let snapshot = match inner.publish_snapshot(notifications) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                inner.ingestion.stop();
+                inner.session.pause();
+                inner.presentation.stop();
+                publish.send_replace(inner.snapshot(notifications));
+                return Err(error);
+            }
+        };
+        publish.send_replace(snapshot);
         if let Some((reply, result)) = reply {
             let _ = reply.send(result);
         }
@@ -434,10 +630,39 @@ async fn run_worker(
     drop(monitor);
     inner.ingestion.stop();
     inner.session.pause();
+    inner.presentation.stop();
     publish.send_replace(inner.snapshot(notifications));
     Ok(())
 }
 impl CaptureState {
+    fn publish_snapshot(&mut self, notifications: u64) -> Result<HotFolderSnapshot> {
+        let mut snapshot = self.snapshot(notifications);
+        let target = if snapshot.paused {
+            None
+        } else {
+            snapshot
+                .selection
+                .photo_id()
+                .and_then(|id| {
+                    snapshot
+                        .candidates()
+                        .find(|candidate| candidate.photo_id() == id)
+                })
+                .and_then(|candidate| {
+                    Some(PresentationTarget {
+                        group: snapshot.group_id?,
+                        account: snapshot.account_id.clone()?,
+                        photo: candidate.photo_id(),
+                        image: candidate.image().clone(),
+                    })
+                })
+        };
+        self.presentation
+            .refresh(target)
+            .context(PresentationSnafu)?;
+        snapshot.presentation = self.presentation.status();
+        Ok(snapshot)
+    }
     fn monitor_lost(&mut self) {
         self.ingestion.monitor_lost();
         self.session.pause();
@@ -466,6 +691,43 @@ impl CaptureState {
                 entry.insert(CaptureTask { group, id: task });
             }
         }
+        for photo in self.ingestion.photos() {
+            if let Some(group) = photo.group_id
+                && !self.photo_checks.contains_key(&photo.id)
+                && let std::collections::btree_map::Entry::Vacant(entry) =
+                    self.validation_tasks.entry(photo.id)
+            {
+                let id = self.session.task_started(group).context(CaptureSnafu)?;
+                entry.insert(CaptureTask { group, id });
+            }
+        }
+        Ok(())
+    }
+    fn validate_one(&mut self) -> Result<()> {
+        let next = self.ingestion.photos().iter().find(|photo| {
+            self.validation_tasks.contains_key(&photo.id)
+                && self
+                    .photo_checks
+                    .get(&photo.id)
+                    .is_none_or(PhotoCheck::retry_due)
+        });
+        let Some(photo) = next else { return Ok(()) };
+        let check = PhotoCheck::inspect(photo, self.ingestion.archive());
+        if check.result().is_err() {
+            // Decoder diagnostics may contain image metadata; retain the typed
+            // source for callers without writing untrusted image contents to logs.
+            tracing::warn!(photo_id = %photo.id, retryable = check.retryable(), "Archived photo validation failed");
+        }
+        if !check.retryable() {
+            let task = self
+                .validation_tasks
+                .remove(&photo.id)
+                .context(InvariantSnafu)?;
+            self.session
+                .task_finished(task.group, task.id)
+                .context(CaptureSnafu)?;
+        }
+        self.photo_checks.insert(photo.id, check);
         Ok(())
     }
     #[cfg(test)]
@@ -474,13 +736,16 @@ impl CaptureState {
             .ingestion
             .scan(self.session.group().map(capture::Group::id));
         self.sync_tasks()?;
+        self.validate_one()?;
         result
     }
     fn reconcile(&mut self) {
         let result = self
             .ingestion
             .reconcile(self.session.group().map(capture::Group::id));
-        let result = result.and(self.sync_tasks());
+        let result = result
+            .and(self.sync_tasks())
+            .and_then(|()| self.validate_one());
         match result {
             Ok(()) => self.session.resume(),
             Err(error) => {
@@ -491,6 +756,38 @@ impl CaptureState {
     }
 
     fn snapshot(&self, notifications: u64) -> HotFolderSnapshot {
+        let group = self.session.group().map(capture::Group::id);
+        let mut photo_checks: Vec<_> = self
+            .ingestion
+            .photos()
+            .iter()
+            .filter(|photo| group.is_some() && photo.group_id == group)
+            .filter_map(|photo| self.photo_checks.get(&photo.id).cloned())
+            .collect();
+        photo_checks.sort_by(|left, right| match (left.result(), right.result()) {
+            (Ok(left), Ok(right)) => right
+                .captured_at()
+                .instant()
+                .cmp(&left.captured_at().instant())
+                .then_with(|| right.photo_id().cmp(&left.photo_id())),
+            (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+            (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+            (Err(_), Err(_)) => left.photo_id().cmp(&right.photo_id()),
+        });
+        let selection = if let Some(manual) = &self.manual_selection
+            && Some(manual.group) == group
+        {
+            CandidateSelection::Manual {
+                photo_id: manual.photo,
+            }
+        } else {
+            CandidateSelection::Automatic {
+                photo_id: photo_checks
+                    .iter()
+                    .find_map(|check| check.result().ok())
+                    .map(PhotoCandidate::photo_id),
+            }
+        };
         HotFolderSnapshot {
             session_id: self.session.id(),
             group_id: self.session.group().map(capture::Group::id),
@@ -502,6 +799,12 @@ impl CaptureState {
             paused: self.session.is_paused(),
             state: self.ingestion.state(),
             photos: self.ingestion.photos().to_vec(),
+            photo_checks,
+            selection,
+            presentation: self.presentation.status(),
+            confirmed: self.confirmed.as_ref().map(|saved| saved.photo.clone()),
+            cleanup_pending: self.cleanup.pending(),
+            cleanup_failures: self.cleanup.failures,
             missing_sources: self.ingestion.missing_sources().to_vec(),
             notifications,
         }
@@ -514,16 +817,16 @@ impl CaptureState {
             Action::Start => {
                 ensure!(monitor_available, MonitorUnavailableSnafu);
                 self.reconcile();
-                return self
-                    .session
-                    .start_group()
-                    .map(Response::Group)
-                    .context(CaptureSnafu);
+                let id = self.session.start_group().context(CaptureSnafu)?;
+                self.manual_selection = None;
+                self.confirmed = None;
+                return Ok(Response::Group(id));
             }
             Action::Abandon(id) => {
                 ensure!(monitor_available, MonitorUnavailableSnafu);
                 self.reconcile();
                 self.session.abandon_group(id).context(CaptureSnafu)?;
+                self.manual_selection = None;
             }
             Action::Assign(photo, group) => {
                 ensure!(
@@ -533,12 +836,113 @@ impl CaptureState {
                 );
                 self.ingestion.assign_reviewed(photo, group)?;
             }
+            Action::SelectCandidate(group, photo) => {
+                ensure!(self.confirmed.is_none(), FinalizedSnafu);
+                ensure!(
+                    !self.session.is_paused()
+                        && self
+                            .session
+                            .group()
+                            .is_some_and(|active| active.id() == group)
+                        && self.ingestion.photos().iter().any(
+                            |archived| archived.id == photo && archived.group_id == Some(group)
+                        )
+                        && self
+                            .photo_checks
+                            .get(&photo)
+                            .is_some_and(|check| check.result().is_ok()),
+                    CandidateUnavailableSnafu
+                );
+                self.manual_selection = Some(ManualSelection { group, photo });
+            }
+            Action::UseLatest(group) => {
+                ensure!(self.confirmed.is_none(), FinalizedSnafu);
+                ensure!(
+                    !self.session.is_paused()
+                        && self
+                            .session
+                            .group()
+                            .is_some_and(|active| active.id() == group),
+                    CandidateUnavailableSnafu
+                );
+                self.manual_selection = None;
+            }
+            Action::AttachDisplay => {
+                return self
+                    .presentation
+                    .attach()
+                    .map(Response::Display)
+                    .context(PresentationSnafu);
+            }
+            Action::DetachDisplay(display) => self
+                .presentation
+                .detach(display)
+                .context(PresentationSnafu)?,
+            Action::AcknowledgePresentation(receipt) => self
+                .presentation
+                .acknowledge(&receipt)
+                .context(PresentationSnafu)?,
+            Action::PrepareConfirmation(expected) => {
+                if self.session.is_paused() {
+                    return presentation::NotPresentedSnafu
+                        .fail()
+                        .context(PresentationSnafu);
+                }
+                return self
+                    .presentation
+                    .prepare_confirmation(&expected)
+                    .map(Response::Intent)
+                    .context(PresentationSnafu);
+            }
+            Action::Confirm(intent) => return self.confirm_photo(&intent).map(Response::Saved),
+            Action::Finish(group) => {
+                return self
+                    .finish_and_clean(group, monitor_available)
+                    .map(Response::Cleaned);
+            }
+            Action::Cleanup => return Ok(Response::Cleaned(self.clean_retired())),
             Action::Scan => self.reconcile(),
             Action::AcknowledgeMissing(path) => {
                 self.ingestion.acknowledge_missing(&path)?;
             }
         }
         Ok(Response::Done)
+    }
+    fn confirm_photo(&mut self, intent: &ConfirmationIntent) -> Result<ConfirmedPhoto> {
+        if let Some(saved) = &self.confirmed {
+            ensure!(&saved.request == intent.request(), FinalizedSnafu);
+            return Ok(saved.photo.clone());
+        }
+        if self.session.is_paused() {
+            return presentation::NotPresentedSnafu
+                .fail()
+                .context(PresentationSnafu);
+        }
+        self.presentation
+            .prepare_confirmation(intent.request())
+            .context(PresentationSnafu)?;
+        let request = intent.request();
+        let draft = FinalDraft {
+            account_id: request.account_id().to_owned(),
+            confirmation_id: intent.confirmation_id().clone(),
+            source: request.image().path().to_owned(),
+            sha256: request.image().sha256().to_owned(),
+            bytes: request.image().bytes(),
+            dimensions: request.image().dimensions(),
+        };
+        let photo = self.finals.save(&draft).context(FinalPhotoSnafu)?;
+        self.session
+            .confirm_saved(request.group_id())
+            .context(CaptureSnafu)?;
+        self.manual_selection = Some(ManualSelection {
+            group: request.group_id(),
+            photo: request.photo_id(),
+        });
+        self.confirmed = Some(ConfirmedCapture {
+            request: request.clone(),
+            photo: photo.clone(),
+        });
+        Ok(photo)
     }
 }
 

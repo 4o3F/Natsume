@@ -3249,6 +3249,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kamadak-exif"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1130d80c7374efad55a117d715a3af9368f0fa7a2c54573afc15a188cd984837"
+dependencies = [
+ "mutate_once",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3711,6 +3720,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
+name = "mutate_once"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13d2233c9842d08cfe13f9eac96e207ca6a2ea10b80259ebe8ad0268be27d2af"
+
+[[package]]
 name = "naga"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3758,6 +3773,7 @@ checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
 name = "natsume-photo-client"
 version = "2.12.0"
 dependencies = [
+ "chrono",
  "clap",
  "diesel",
  "diesel_migrations",
@@ -3765,15 +3781,19 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "image",
+ "kamadak-exif",
  "libsqlite3-sys",
+ "moxcms",
  "natsume-photo-protocol",
  "percent-encoding",
+ "png",
  "rcgen",
  "reqwest",
  "rpassword",
  "rustls",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2",
  "snafu 0.9.2",
  "tempfile",
@@ -3786,6 +3806,7 @@ dependencies = [
  "uuid",
  "windows",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -3796,6 +3817,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2",
  "snafu 0.9.2",
  "specta",
@@ -5813,6 +5835,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
+
+[[package]]
 name = "salsa20"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5998,6 +6026,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_json_canonicalizer"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87f7bb64f8c7e9f783fdfe883b5fe93a90bee1597c63705baa91842c5f698620"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

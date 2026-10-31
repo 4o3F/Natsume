@@ -66,6 +66,10 @@ impl Ingestion {
     pub(super) fn photos(&self) -> &[ArchivedPhoto] {
         &self.photos
     }
+    pub(super) fn retire_group(&mut self, group: GroupId) {
+        // Keep source observations/tombstones: unchanged A originals must not reappear for B.
+        self.photos.retain(|photo| photo.group_id != Some(group));
+    }
     pub(super) fn missing_sources(&self) -> &[MissingSource] {
         &self.missing_sources
     }
@@ -280,6 +284,7 @@ impl Ingestion {
             path: destination,
             sha256: version.sha256,
             bytes: version.bytes,
+            modified: version.modified,
             group_id: pending.owner,
         });
         Ok(())

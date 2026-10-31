@@ -1,6 +1,6 @@
 //! In-memory capture rules. This module does not admit a real hot-folder session.
-//! `CaptureSession` coordinates monitoring before group transitions. Presentation
-//! admission remains a future boundary; there is no CLI shooting entry point.
+//! `CaptureSession` coordinates monitoring and presentation acknowledgements.
+//! Actual rendering and persisted confirmation remain separate boundaries.
 
 use std::collections::BTreeSet;
 
@@ -21,7 +21,7 @@ pub struct TaskId(Uuid);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupState {
     Capturing,
-    /// Reserved for the successful presentation-and-save boundary in W05.
+    /// Set only after the coordinator completes presentation validation and persistence.
     /// Public callers cannot set this state.
     Confirmed,
 }
@@ -204,7 +204,7 @@ impl Session {
     }
 
     /// Closes a successfully confirmed group, retaining the team selection.
-    /// W02 provides no operation that confirms a photo; W05 owns that boundary.
+    /// Only the coordinator's successful persisted confirmation may mark this state.
     ///
     /// # Errors
     /// Rejects pauses, missing/stale groups, pending work, or unconfirmed groups.
@@ -215,6 +215,13 @@ impl Session {
             UnconfirmedSnafu
         );
         self.group = None;
+        Ok(())
+    }
+    /// Called only by the coordinator after the final file and database commit succeed.
+    pub(crate) fn confirm_saved(&mut self, group_id: GroupId) -> Result<()> {
+        let group = self.matching_group(group_id)?;
+        ensure!(group.state == GroupState::Capturing, AlreadyConfirmedSnafu);
+        group.state = GroupState::Confirmed;
         Ok(())
     }
 

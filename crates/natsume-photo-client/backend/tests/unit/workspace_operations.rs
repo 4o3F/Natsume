@@ -2,17 +2,78 @@ use crate::{
     roster::Roster,
     workspace::{Error as WorkspaceError, Workspace},
 };
-use snafu::{ResultExt as _, Snafu};
+use snafu::{ResultExt as _, Snafu, ensure};
 
 const FIXTURE: &[u8] = include_bytes!("../fixtures/roster.json");
 
 #[derive(Debug, Snafu)]
 enum Error {
-    Io { source: std::io::Error },
-    Roster { source: crate::roster::Error },
-    Workspace { source: WorkspaceError },
+    Io {
+        source: std::io::Error,
+    },
+    Roster {
+        source: crate::roster::Error,
+    },
+    Workspace {
+        source: WorkspaceError,
+    },
+    Persistence {
+        source: crate::workspace::PersistenceError,
+    },
+    Channel {
+        source: std::sync::mpsc::RecvTimeoutError,
+    },
+    FinalPhoto {
+        source: crate::workspace::FinalPhotoError,
+    },
+    Thread,
 }
 type Result<T = ()> = std::result::Result<T, Error>;
+
+#[test]
+fn final_cleanup_waits_for_the_shared_publication_fence() -> Result {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+    let directory = tempfile::tempdir().context(IoSnafu)?;
+    let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
+    let owner = Workspace::create_with_logos(
+        directory.path().join("workspace"),
+        roster.teams().to_vec(),
+        directory.path(),
+        Vec::new(),
+    )
+    .context(WorkspaceSnafu)?;
+    let store = owner.final_store();
+    let publication = owner
+        .database
+        .lock_final_operations()
+        .context(PersistenceSnafu)?;
+    let (entered, ready) = mpsc::channel();
+    let (sent, result) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(move || {
+            let _ = entered.send(());
+            let _ = sent.send(store.remove_unused());
+        });
+        ready
+            .recv_timeout(Duration::from_secs(5))
+            .context(ChannelSnafu)?;
+        assert!(matches!(
+            result.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        drop(publication);
+        let (removed, failures) = result
+            .recv_timeout(Duration::from_secs(5))
+            .context(ChannelSnafu)?
+            .context(FinalPhotoSnafu)?;
+        assert_eq!(removed, 0);
+        assert!(failures.is_empty());
+        ensure!(worker.join().is_ok(), ThreadSnafu);
+        Ok(())
+    })?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn only_one_writable_owner_is_allowed_but_readonly_diagnosis_can_open() -> Result {

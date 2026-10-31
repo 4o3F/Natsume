@@ -13,6 +13,7 @@ enum TestError {
     Capture { source: capture::Error },
     HotFolder { source: Error },
     Archive { source: archive::ArchiveError },
+    Workspace { source: crate::workspace::Error },
     Fixture,
 }
 type TestResult<T = ()> = std::result::Result<T, TestError>;
@@ -24,6 +25,13 @@ fn fixture() -> TestResult<(tempfile::TempDir, Inner)> {
     fs::create_dir(&hot_folder).context(IoSnafu)?;
     fs::create_dir(&archive).context(IoSnafu)?;
     let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
+    let workspace = Workspace::create_with_logos(
+        directory.path().join("store-fixture"),
+        roster.teams().to_vec(),
+        directory.path(),
+        Vec::new(),
+    )
+    .context(WorkspaceSnafu)?;
     Ok((
         directory,
         Inner {
@@ -42,6 +50,13 @@ fn fixture() -> TestResult<(tempfile::TempDir, Inner)> {
                 uncertain: false,
             },
             tasks: BTreeMap::new(),
+            photo_checks: BTreeMap::new(),
+            validation_tasks: BTreeMap::new(),
+            manual_selection: None,
+            presentation: Presentation::new(),
+            finals: workspace.final_store(),
+            confirmed: None,
+            cleanup: crate::capture_session::Cleanup::default(),
         },
     ))
 }
@@ -66,6 +81,87 @@ fn settle(inner: &mut Inner) -> TestResult {
         pending.stable_since = Instant::now().checked_sub(INTERVAL).context(FixtureSnafu)?;
     }
     inner.scan().context(HotFolderSnafu)
+}
+
+#[test]
+fn validation_is_bounded_cached_and_missing_archives_release_group_tasks() -> TestResult {
+    let (_directory, mut inner) = fixture()?;
+    let group = start(&mut inner, 0)?;
+    fs::write(
+        inner.ingestion.hot_folder.join("one.jpg"),
+        b"first invalid image",
+    )
+    .context(IoSnafu)?;
+    fs::write(
+        inner.ingestion.hot_folder.join("two.jpg"),
+        b"second invalid image",
+    )
+    .context(IoSnafu)?;
+    settle(&mut inner)?;
+    assert_eq!(inner.ingestion.photos.len(), 2);
+    assert_eq!(
+        inner.photo_checks.len(),
+        1,
+        "at most one full decode per worker turn"
+    );
+    assert!(matches!(
+        inner.session.abandon_group(group),
+        Err(capture::Error::PendingTasks { count: 1 })
+    ));
+    let first = inner
+        .photo_checks
+        .values()
+        .next()
+        .context(FixtureSnafu)?
+        .clone();
+    assert!(
+        matches!(
+            inner.apply(Action::SelectCandidate(group, first.photo_id()), true),
+            Err(Error::CandidateUnavailable)
+        ),
+        "rejected content is never selectable"
+    );
+    let missing = inner
+        .ingestion
+        .photos
+        .iter()
+        .find(|photo| !inner.photo_checks.contains_key(&photo.id))
+        .context(FixtureSnafu)?
+        .clone();
+    assert!(
+        matches!(
+            inner.apply(Action::SelectCandidate(group, missing.id), true),
+            Err(Error::CandidateUnavailable)
+        ),
+        "an archived but unprocessed photo is not selectable"
+    );
+    fs::remove_file(&missing.path).context(IoSnafu)?;
+    inner.reconcile();
+    assert_eq!(inner.photo_checks.len(), 2);
+    let missing_check = inner.photo_checks.get(&missing.id).context(FixtureSnafu)?;
+    assert!(matches!(
+        missing_check.result(),
+        Err(PhotoValidationError::Io { .. })
+    ));
+    assert!(!missing_check.retryable());
+    assert_eq!(
+        inner.session.group().context(FixtureSnafu)?.pending_tasks(),
+        0
+    );
+    inner.reconcile();
+    let cached = inner
+        .photo_checks
+        .get(&first.photo_id())
+        .context(FixtureSnafu)?;
+    assert!(
+        std::ptr::eq(
+            first.result().err().context(FixtureSnafu)?,
+            cached.result().err().context(FixtureSnafu)?
+        ),
+        "unchanged rejected content must not be decoded every reconciliation"
+    );
+    inner.session.abandon_group(group).context(CaptureSnafu)?;
+    Ok(())
 }
 
 #[test]
