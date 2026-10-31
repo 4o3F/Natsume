@@ -1,6 +1,6 @@
 # Windows 摄影客户端
 
-`natsume-photo-client` 面向 Windows 摄影工作台，Rust 包位于 [`backend/`](backend/)。当前实现无 UI 的离线后端：本地名单与资源工作区、队伍优先拍摄组、热文件夹自动收图及源文件复制归档。产品目标以[架构第 23 节](../../docs/architecture.md#23-单赛事运营平台扩展)为准；Windows 便携包的构建入口见[打包说明](../../packaging/README.md#windows-portable-packages)。
+`natsume-photo-client` 面向 Windows 摄影工作台，Rust 包位于 [`backend/`](backend/)，Slint 界面和窗口适配位于 [`ui/`](ui/)。不带子命令运行时打开摄影工作台；后端提供本地工作区、队伍拍摄组、自动收图、确认成品及离线 ZIP 导出。产品目标以[架构第 23 节](../../docs/architecture.md#23-单赛事运营平台扩展)为准；Windows 便携包的构建入口见[打包说明](../../packaging/README.md#windows-portable-packages)。
 
 ## 当前能力
 
@@ -18,11 +18,11 @@
 | 确认成品 | 重验确认意图与规范文件，完整发布后事务提交每队唯一关联；重复确认幂等，补拍失败保留旧成品 |
 | 成果契约 | 共享 team_results 清单、JCS + Ed25519 签名及可信上下文验签；原授权密钥签名、固定读取快照、重试清单身份与流式单 ZIP 导出 |
 
-当前没有拍摄 UI 或交互式收图 CLI。实际窗口呈现回调尚未实现；离线签名 ZIP 已支持。`snapshot.candidates()` 可读取当前组按拍摄时间排序的候选，`snapshot.selection` 表达自动或手动选择；选中候选不代表已展示或确认成品。
+原生 UI 已接入初始化、会话准备、队伍检索、候选选择、独立选手展示、口头确认、重拍、完成清理、待归组、本地成品查看和 ZIP 导出。Skia/WGPU 的 `AfterRendering` 回调发送准确帧回执，文件加载成功不代替展示。`snapshot.candidates()` 可读取当前组按拍摄时间排序的候选，`snapshot.selection` 表达自动或手动选择；选中候选不代表已展示或确认成品。
 
 正式首次初始化已支持从 Server 下载精简名单和校徽，校验后保存到本地工作区。JSON 读取只用于内部准备和测试夹具，正式 CLI 不提供本地 JSON 初始化入口。没有照片时展示留空，不配置默认图片。
 
-仅首次初始化联网；日常启动读取本地工作区，拍摄、重拍、确认和导出按离线流程实现，不每次重新下载。Server 来源授权与下载契约见 [Server README](../natsume-server/README.md#photo-initialization)。Client 已接入配对、Windows 凭据库、HTTPS 下载、完成回执及重试恢复；成果 ZIP 导出已实现；Server ZIP 接收和摄影 UI 仍待实现。
+仅首次初始化联网；日常启动读取本地工作区，拍摄、重拍、确认和导出按离线流程实现，不每次重新下载。Server 来源授权与下载契约见 [Server README](../natsume-server/README.md#photo-initialization)。Client 已接入配对、Windows 凭据库、HTTPS 下载、完成回执及重试恢复；成果 ZIP 导出已实现；摄影 UI 已接入，Server ZIP 接收仍待实现。
 
 ## 启动与操作
 
@@ -35,12 +35,23 @@ if ($LASTEXITCODE -ne 0) { throw 'Build failed; do not continue.' }
 cargo run -p natsume-photo-client --locked -- --help
 ```
 
-当前 CLI 提供两个子命令：
+不带参数启动 Slint 工作台：
+
+```powershell
+cargo run -p natsume-photo-client --locked
+```
+
+界面使用原稿的米白、墨黑、信号红及直角排版，使用 Noto Sans SC 和 Cascadia Mono 系统字体；未安装时由系统回退。首次选择目标工作区并使用 HTTPS 与配对码初始化，以后选择原工作区并点击“打开已有工作区”离线进入。会话准备要求空的外部热文件夹；双屏选择不同的操作屏和展示屏，单屏需确认“选择单屏启动”。选手窗口无队伍时为空；有队伍无照片时只展示队伍资料，不显示等待页。
+
+按“已核对，开始本队拍摄”后接收新照片，点击缩略图会切换并保持展示；可以恢复自动最新。选手窗口真实绘制当前图、操作员勾选口头满意后，才可确认。完成本队后清理本地候选，热文件夹原图保留。重拍和放弃需要二次确认。关闭主窗口会等待已开始的文件与导出任务收尾。当前 UI 在导出期间禁止其他人工操作，后台收图仍继续。模板迁移与差异见 [PORTING.md](ui/PORTING.md)。
+
+保留三个 CLI 子命令：
 
 | 命令 | 操作 |
 |---|---|
 | `initialize <path> --server <HTTPS origin> [--ca-certificate <PEM path>]` | 正式首次初始化，或恢复同一目标的未完成初始化；Windows 凭据库保存秘密 |
 | `doctor <path>` | 只读离线校验工作区、名单、校徽、授权上下文及签名密钥，不创建或迁移数据库 |
+| `export <path> <output.zip>` | 离线导出当前成品及签名清单到一个 ZIP |
 
 正式初始化示例：管理员先通过 Photo 管理 API 创建来源并生成一次性配对码（当前未提供 Web 管理页面），然后在 Windows PowerShell 中运行：
 
@@ -172,7 +183,7 @@ cargo test -p natsume-photo-client --lib capture_session::integration_tests --lo
 
 同一工作区只允许一个可写所有者，拍摄会话会延长写锁生命周期。doctor 使用只读数据库连接；`.writer.lock` 和目标同级 `.NAME.photo-init.lock` 是持久锁文件，不要在进程运行时删除。锁文件保留不表示进程仍在运行，系统在句柄关闭或进程退出后释放锁。
 
-热文件夹周期扫描先检查元数据，不每轮读取全部相机原图；全局每三十秒至多额外复核一个未变文件，覆盖保留时间戳的改写，复核发现延迟随文件数增长。消失后的来源重现仍需明确归属，告警确认不会让它自动归给新队伍。Session 由 `CaptureSession` 管理，监控/归档处理不拥有队伍选择策略；成品确认由呈现协议与独立保存命令控制，实际窗口回调尚待 UI 接入。
+热文件夹周期扫描先检查元数据，不每轮读取全部相机原图；全局每三十秒至多额外复核一个未变文件，覆盖保留时间戳的改写，复核发现延迟随文件数增长。消失后的来源重现仍需明确归属，告警确认不会让它自动归给新队伍。Session 由 `CaptureSession` 管理，监控/归档处理不拥有队伍选择策略；成品确认由呈现协议与独立保存命令控制，窗口适配器现通过真实绘制回调回报，双屏混合 DPI、拔插和真实相机仍需在目标现场验收。
 
 拍摄 API、错误和状态统一位于 `capture_session`，底层 `hot_folder` 为私有实现。工作区完整性检查与授权诊断是两个边界；`open` / `inspect` 检查本地数据，首次初始化恢复和 `doctor` 还核对服务器来源及本机签名密钥。测试直接建库的辅助函数只在 `tests/unit/` 编译，不是生产 API。
 

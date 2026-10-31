@@ -1,6 +1,6 @@
 # Natsume Photo Client 后端
 
-Windows 专用 Rust 后端，当前没有 UI。首次通过 HTTPS 授权并下载名单和学校校徽，之后本地操作离线。SQLite 随 Windows 构建，不需要安装数据库服务。启动、恢复及产品边界见[上级 README](../README.md)。
+Windows 专用 Rust 后端。Slint UI 位于相邻的 [`../ui/`](../ui/)，通过公开后端 API 调用功能，不在界面中访问数据库。首次通过 HTTPS 授权并下载名单和学校校徽，之后本地操作离线。SQLite 随 Windows 构建，不需要安装数据库服务。启动、恢复及产品边界见[上级 README](../README.md)。
 
 ```powershell
 cargo run -p natsume-photo-client -- initialize C:\PhotoData\Contest --server https://natsume.example:8443
@@ -49,7 +49,7 @@ cargo test -p natsume-photo-client --locked
 
 `presentation.rs` 管理窗口实例、帧修订与回执；CaptureState 仍拥有组和选图策略。`publish_snapshot` 从同一份已排序快照派生展示目标，再发布新帧/应答，避免选图已完成但呈现版本仍旧。`attach_display` 返回本次窗口的 DisplayId，`detach_display` 只接受当前 ID；无候选/暂停置 Blank，停止置 Unavailable。当前图像/身份未变时保留修订与回执，A→B→A 则生成新修订。修订不能绕回；耗尽时停止并清除呈现。
 
-`acknowledge_presentation` 严格匹配窗口、修订、组、account_id、候选 ID 和规范图片哈希；重复当前回执幂等。同一窗口报告不匹配帧会撤销呈现资格、要求更高修订的新回执；旧窗口回执只拒绝。`prepare_confirmation` 返回未保存的 ConfirmationIntent，`confirm_photo` 重验后发布完整成品、事务提交关联，最后标记组 Confirmed；确认后不能换图或恢复自动，晚到图继续处理但不替换成品。`finish_group` 等已知任务排空后关闭组，补拍用同队新组。renderer 回调仍为可信适配器职责，无 UI 时仅在测试中模拟，实际屏幕与满意确认未验收。
+`acknowledge_presentation` 严格匹配窗口、修订、组、account_id、候选 ID 和规范图片哈希；重复当前回执幂等。同一窗口报告不匹配帧会撤销呈现资格、要求更高修订的新回执；旧窗口回执只拒绝。`prepare_confirmation` 返回未保存的 ConfirmationIntent，`confirm_photo` 重验后发布完整成品、事务提交关联，最后标记组 Confirmed；确认后不能换图或恢复自动，晚到图继续处理但不替换成品。`finish_group` 等已知任务排空后关闭组，补拍用同队新组。renderer 回调仍为可信适配器职责，相邻 UI 已接入真实 AfterRendering 回执与操作员口头满意勾选；实际相机和多屏混合 DPI 仍需现场验收。
 
 `photo.rs` 保存图片格式/尺寸及独立的 ConfirmationId、ResultId、SubmissionId；捕获与工作区复用这些领域值。`workspace/final_photos.rs` 负责源/目标路径、64 KiB 流式复制、哈希/格式/尺寸验证和无覆盖发布；`workspace/db.rs` 通过 typed Diesel 与现有 Transaction 原子校验基线并写入 photo_team_results；确认幂等、身份生成与修订递增由成品业务层负责。文件失败或事务回滚不删除旧成品；提交失败的完整无引用文件留待后续对账。
 

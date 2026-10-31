@@ -1,5 +1,9 @@
 use std::process::ExitCode;
 
+#[cfg(windows)]
+#[path = "../../ui/mod.rs"]
+mod gui;
+
 fn main() -> ExitCode {
     tracing_subscriber::fmt().with_target(false).init();
     #[cfg(windows)]
@@ -21,10 +25,13 @@ mod application {
     use std::{path::PathBuf, process::ExitCode};
 
     #[derive(clap::Parser)]
-    #[command(version, about = "Natsume Photo Client offline photography backend")]
+    #[command(
+        version,
+        about = "Natsume Photo Client offline photography workstation"
+    )]
     struct Arguments {
         #[command(subcommand)]
-        command: Command,
+        command: Option<Command>,
     }
     #[derive(clap::Subcommand)]
     enum Command {
@@ -43,6 +50,8 @@ mod application {
     }
     #[derive(Debug, Snafu)]
     enum Error {
+        #[snafu(display("Photo window could not run: {source}"))]
+        Gui { source: super::gui::Error },
         #[snafu(display("offline Photo export failed: {source}"))]
         Export {
             source: natsume_photo_client::export::ExportError,
@@ -145,9 +154,13 @@ mod application {
     pub(super) fn run() -> ExitCode {
         let result = (|| {
             let arguments = Arguments::try_parse().context(ArgumentsSnafu)?;
-            tokio::runtime::Runtime::new()
-                .context(RuntimeSnafu)?
-                .block_on(execute(arguments.command))
+            if let Some(command) = arguments.command {
+                tokio::runtime::Runtime::new()
+                    .context(RuntimeSnafu)?
+                    .block_on(execute(command))
+            } else {
+                super::gui::run().context(GuiSnafu)
+            }
         })();
         match result {
             Ok(()) => ExitCode::SUCCESS,

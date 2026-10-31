@@ -1,0 +1,114 @@
+export global Palette {
+    out property <color> paper: #f4f3ef;
+    out property <color> ink: #111111;
+    out property <color> muted: #5a5a5a;
+    out property <color> rule: #d6d4ce;
+    out property <color> signal: #e2231a;
+    out property <color> ok: #0b7a3e;
+    out property <color> warn: #c77700;
+    out property <color> error: #b00020;
+}
+
+export component Label inherits Text {
+    color: Palette.ink;
+    font-size: 14px;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+export component Eyebrow inherits Label {
+    color: Palette.muted;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    height: 16px;
+}
+
+export component Title inherits Label {
+    font-size: 40px;
+    font-weight: 700;
+    height: 52px;
+}
+
+export component Rule inherits Rectangle {
+    background: Palette.rule;
+    height: 1px;
+}
+
+export component Action inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <string> reason;
+    in property <bool> signal;
+    in property <bool> outline;
+    callback clicked;
+    height: 40px;
+    min-width: 90px;
+    border-width: 2px;
+    border-color: root.reason != "" ? Palette.rule : root.signal ? Palette.signal : Palette.ink;
+    background: root.reason != "" ? #e1dfda : root.outline && !touch.has-hover ? transparent : root.signal ? (touch.has-hover ? #c71d15 : Palette.signal) : Palette.ink;
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 16px; spacing: 16px;
+        Label { text: root.text; font-weight: 700; color: root.reason != "" ? Palette.muted : root.outline && !touch.has-hover ? Palette.ink : Palette.paper; }
+        if root.hint != "": Label { text: root.hint; font-family: "Cascadia Mono"; font-size: 12px; color: root.reason != "" ? Palette.muted : root.outline && !touch.has-hover ? Palette.muted : #aaaaaa; horizontal-stretch: 0; }
+    }
+    touch := TouchArea { enabled: root.reason == ""; clicked => { root.clicked(); } }
+}
+
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> secret;
+    in property <bool> enabled: true;
+    callback edited(string);
+    border-width: 2px;
+    border-color: input.has-focus ? Palette.signal : Palette.ink;
+    background: white;
+    height: 40px;
+    input := TextInput {
+        x: 12px; width: parent.width - 24px; height: parent.height;
+        text <=> root.text;
+        enabled: root.enabled;
+        input-type: root.secret ? InputType.password : InputType.text;
+        color: Palette.ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        edited => { root.edited(self.text); }
+    }
+    if root.text == "": Label { x: 12px; width: parent.width - 24px; height: parent.height; text: root.placeholder; color: #999999; }
+}
+
+export component FormRow inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    height: 96px;
+    HorizontalLayout {
+        padding-top: 24px; padding-bottom: 24px; spacing: 24px;
+        VerticalLayout {
+            width: 32%; spacing: 4px;
+            Label { text: root.label; font-size: 16px; font-weight: 700; height: 24px; }
+            Label { text: root.hint; color: Palette.muted; font-size: 12px; wrap: word-wrap; height: 40px; }
+            Rectangle { vertical-stretch: 1; }
+        }
+        VerticalLayout { spacing: 12px; @children }
+    }
+    Rule { x: 0px; y: parent.height - 1px; width: parent.width; }
+}
+
+export struct TeamRow {
+    id: string,
+    account: string,
+    school: string,
+    school-en: string,
+    name: string,
+    name-en: string,
+    final: bool,
+}
+
+export struct PhotoRow {
+    id: string,
+    title: string,
+    note: string,
+    thumbnail: image,
+    selected: bool,
+}

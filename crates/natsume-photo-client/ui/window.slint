@@ -1,0 +1,499 @@
+import { ScrollView, CheckBox, ComboBox } from "std-widgets.slint";
+import { Palette, Label, Eyebrow, Title, Rule, Action, Field, FormRow, TeamRow, PhotoRow } from "style.slint";
+
+export component PhotoWindow inherits Window {
+    title: "Natsume Photo 摄影工作台";
+    preferred-width: 1440px; preferred-height: 960px; min-width: 1280px; min-height: 800px;
+    background: Palette.paper;
+    default-font-family: "Noto Sans SC";
+    default-font-size: 14px;
+
+    in-out property <int> page: 0;
+    in-out property <int> setup-step: 0;
+    in-out property <string> workspace-path;
+    in-out property <string> server-url;
+    in-out property <string> ca-path;
+    in-out property <string> pairing-code;
+    in-out property <bool> custom-ca;
+    in-out property <string> hot-folder;
+    in-out property <string> export-path;
+    in-out property <string> search;
+    in-out property <bool> verbal;
+    in-out property <bool> single-confirm;
+    in-out property <int> operator-monitor;
+    in-out property <int> display-monitor: 1;
+    in-out property <int> dialog-action;
+    in property <[string]> monitors;
+    in property <bool> ready;
+    in property <bool> busy;
+    in property <bool> session-active;
+    in property <bool> group-active;
+    in property <bool> display-online;
+    in property <bool> presented;
+    in property <bool> confirmed;
+    in property <bool> automatic: true;
+    in property <int> pending;
+    in property <int> final-count;
+    in property <int> team-count;
+    in property <string> selected-id;
+    in property <string> account;
+    in property <string> school;
+    in property <string> school-en;
+    in property <string> team;
+    in property <string> team-en;
+    in property <image> preview;
+    in property <image> logo;
+    in property <image> final-preview;
+    in property <string> final-details;
+    in property <string> photo-label: "—";
+    in property <string> status: "选择工作区，或完成首次初始化";
+    in property <string> problem;
+    in property <string> export-status;
+    in property <[TeamRow]> teams;
+    in property <[PhotoRow]> candidates;
+    in property <[PhotoRow]> unassigned;
+    in property <[string]> diagnostics;
+    callback choose-path(string);
+    callback open-workspace;
+    callback initialize;
+    callback start-session;
+    callback select-team(string);
+    callback start-group;
+    callback choose-photo(string);
+    callback auto-select;
+    callback confirm-photo;
+    callback finish-group;
+    callback retake;
+    callback abandon;
+    callback assign-photo(string);
+    callback retry-cleanup;
+    callback acknowledge-missing;
+    callback export-results;
+    callback preview-final(string);
+    callback reopen-display;
+    callback search-edited(string);
+
+    VerticalLayout {
+        spacing: 0;
+        Rectangle {
+            height: 56px; background: Palette.ink;
+            HorizontalLayout {
+                padding-left: 32px; padding-right: 32px; spacing: 0;
+                Label { text: "NATSUME PHOTO"; color: Palette.paper; font-size: 16px; font-weight: 800; width: root.ready ? 200px : 157px; }
+                if !root.ready: Label { text: "首次初始化"; color: #999999; }
+                if root.ready: HorizontalLayout {
+                    spacing: 0;
+                    for tab[i] in ["拍摄", "待归组", "本地成品", "导出", "异常"]: Rectangle {
+                        width: 100px; background: nav-touch.has-hover ? #292929 : transparent;
+                        Label { text: tab; color: root.page == i + 3 ? Palette.paper : #999999; font-weight: 700; horizontal-alignment: center; width: parent.width; height: parent.height; }
+                        if root.page == i + 3: Rectangle { x: 20px; y: parent.height - 4px; height: 4px; width: parent.width - 40px; background: Palette.signal; }
+                        nav-touch := TouchArea { clicked => { root.search = ""; root.search-edited(""); root.page = i == 0 && !root.session-active ? 2 : i + 3; } }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Label { text: root.display-online ? "● 选手窗口在线" : "○ 选手窗口未连接"; color: root.display-online ? #eeeeee : #999999; font-size: 12px; width: 170px; }
+                    Rectangle { width: 1px; height: 24px; background: #555555; }
+                    Rectangle { width: 16px; }
+                    Label { text: "离线工作中"; color: #aaaaaa; font-size: 12px; width: 100px; }
+                }
+            }
+        }
+        if root.ready: Rectangle {
+            height: 40px; border-width: 0px;
+            HorizontalLayout {
+                padding-left: 32px; padding-right: 32px; spacing: 16px;
+                Eyebrow { text: "当前处理"; }
+                Label { text: root.account == "" ? "—" : root.account + "  " + root.school + " / " + root.team; font-weight: 700; horizontal-stretch: 1; }
+                Label { text: root.presented ? "选手正在看  " + root.photo-label : "选手正在看  —"; font-size: 13px; width: 200px; }
+                Label { text: "文件任务  " + root.pending; font-family: "Cascadia Mono"; width: 120px; }
+                Label { text: root.busy ? "处理中…" : "● 离线"; color: Palette.ok; width: 80px; }
+            }
+            Rectangle { y: parent.height - 2px; height: 2px; width: parent.width; background: Palette.ink; }
+        }
+        if root.problem != "": Rectangle {
+            height: 56px; background: #f7e9e9;
+            Label { x: 32px; width: parent.width - 64px; height: parent.height; text: root.problem; color: Palette.error; wrap: word-wrap; font-weight: 700; }
+            Rectangle { y: parent.height - 2px; height: 2px; width: parent.width; background: Palette.error; }
+        }
+
+        if !root.ready: HorizontalLayout {
+            padding-left: 32px; padding-right: 32px; spacing: 24px;
+            Rectangle {
+                width: 24%;
+                VerticalLayout {
+                    padding-top: 40px; padding-right: 24px; spacing: 0;
+                    Eyebrow { text: "SETUP"; }
+                    Rectangle { height: 24px; }
+                    for title[i] in ["连接与工作区", "登记拍照站", "准备离线资料"]: Rectangle {
+                        height: 137px;
+                        Rectangle { x: 0px; y: 0px; width: root.setup-step == i ? 6px : 1px; height: parent.height; background: root.setup-step == i ? Palette.signal : Palette.rule; }
+                        Rule { x: 0px; y: 0px; width: parent.width; }
+                        VerticalLayout {
+                            padding-left: 24px; padding-top: 20px; padding-bottom: 20px; spacing: 8px;
+                            Label { text: "0" + (i + 1); font-family: "Cascadia Mono"; font-size: 40px; font-weight: 700; color: root.setup-step == i ? Palette.signal : Palette.muted; }
+                            Label { text: title; font-size: 16px; font-weight: 700; }
+                            Eyebrow { text: i == 0 ? "Connection & workspace" : i == 1 ? "Register station" : "Prepare offline data"; letter-spacing: 0px; }
+                        }
+                    }
+                    Rectangle { height: 32px; }
+                    Rectangle { height: 2px; background: Palette.ink; }
+                    Label { text: "初始化完成后，拍摄全程离线工作。\n已有工作区可直接离线打开。"; wrap: word-wrap; color: Palette.muted; font-size: 12px; height: 70px; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                Rectangle { x: parent.width - 1px; width: 1px; height: parent.height; background: Palette.rule; }
+            }
+            VerticalLayout {
+                padding-top: 40px; padding-bottom: 48px; spacing: 0px;
+                Rectangle {
+                    height: 134px;
+                    Eyebrow { x: 0px; y: 0px; width: parent.width; text: "STEP 0" + (root.setup-step + 1) + " / 03"; }
+                    Title { x: 0px; y: 24px; width: parent.width; text: root.setup-step == 0 ? "连接与工作区" : root.setup-step == 1 ? "登记拍照站" : "准备离线资料"; }
+                    Label { x: 0px; y: 80px; width: parent.width; text: root.setup-step == 0 ? "填写现场服务器地址并验证 TLS 证书，选择本机工作区目录。证书验证不可跳过。" : root.setup-step == 1 ? "输入管理员提供的一次性配对码，授权此拍照站并下载队伍与校徽。" : "正在下载并校验离线资料，请等待完成。"; wrap: word-wrap; color: Palette.muted; height: 36px; }
+                    Rectangle { x: 0px; y: parent.height - 2px; width: parent.width; height: 2px; background: Palette.ink; }
+                }
+                if root.setup-step == 0: VerticalLayout {
+                    spacing: 0px;
+                    FormRow { label: "服务器地址"; hint: "仅支持 HTTPS。初始化完成后不再需要联网。"; Field { text <=> root.server-url; placeholder: "https://"; enabled: !root.busy; } }
+                    FormRow {
+                        label: "证书信任"; hint: "现场服务器若使用自签 CA，请导入现场提供的 CA 证书。";
+                        height: root.custom-ca ? 188px : 128px;
+                        HorizontalLayout {
+                            spacing: 0px;
+                            for option[i] in ["系统信任", "导入 CA 证书"]: Rectangle {
+                                height: 80px; border-width: 2px; border-color: root.custom-ca == (i == 1) ? Palette.ink : Palette.rule; background: root.custom-ca == (i == 1) ? white : transparent;
+                                HorizontalLayout { padding: 16px; spacing: 12px; Label { text: root.custom-ca == (i == 1) ? "◉" : "○"; color: root.custom-ca == (i == 1) ? Palette.signal : Palette.muted; width: 14px; vertical-alignment: top; } VerticalLayout { Label { text: option; font-weight: 700; height: 22px; } Label { text: i == 0 ? "使用 Windows 证书存储" : "使用现场提供的根证书"; font-size: 12px; color: Palette.muted; height: 20px; } Rectangle { vertical-stretch: 1; } } }
+                                TouchArea { enabled: !root.busy; clicked => { root.custom-ca = i == 1; } }
+                            }
+                        }
+                        if root.custom-ca: HorizontalLayout { spacing: 8px; Field { text <=> root.ca-path; enabled: !root.busy; } Action { text: "选择证书…"; outline: true; width: 128px; clicked => { root.choose-path("ca"); } } }
+                    }
+                    FormRow { label: "工作区目录"; hint: "成品、素材与离线资料都保存在此目录。"; HorizontalLayout { spacing: 8px; Field { text <=> root.workspace-path; enabled: !root.busy; placeholder: "选择本机工作区"; } Action { text: "选择…"; outline: true; width: 78px; clicked => { root.choose-path("workspace"); } } } }
+                    HorizontalLayout {
+                        padding-top: 24px; spacing: 12px;
+                        Rectangle { width: 32%; }
+                        Action { text: "打开已有工作区"; outline: true; reason: root.busy || root.workspace-path == "" ? "请选择工作区" : ""; clicked => { root.open-workspace(); } }
+                        Action { text: "下一步：登记拍照站"; reason: root.busy || root.workspace-path == "" || root.server-url == "" || (root.custom-ca && root.ca-path == "") ? "请先填写连接信息" : ""; clicked => { root.setup-step = 1; } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+                if root.setup-step == 1: VerticalLayout {
+                    spacing: 16px;
+                    Eyebrow { text: "一次性配对码"; }
+                    Field { text <=> root.pairing-code; secret: true; enabled: !root.busy; placeholder: "输入管理员提供的配对码"; }
+                    Label { text: "继续同一工作区的初始化时，可留空并使用原凭据恢复。"; font-size: 12px; color: Palette.muted; height: 24px; }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Action { text: "登记并准备离线资料"; signal: true; reason: root.busy ? "正在初始化" : ""; clicked => { root.initialize(); } }
+                        Action { text: "返回"; outline: true; reason: root.busy ? "正在初始化" : ""; clicked => { root.setup-step = 0; } }
+                    }
+                }
+                Label { text: root.status; wrap: word-wrap; color: Palette.muted; height: 70px; }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+
+        if root.ready && root.page == 1: VerticalLayout {
+            padding: 32px; padding-top: 40px; spacing: 24px;
+            Eyebrow { text: "LAUNCH OVERVIEW"; }
+            Title { text: "启动概览"; }
+            Rectangle { height: 2px; background: Palette.ink; }
+            HorizontalLayout {
+                spacing: 24px;
+                for item in [{label: "本地队伍数", value: root.team-count}, {label: "当前成品数", value: root.final-count}, {label: "未完成文件任务", value: root.pending}]: VerticalLayout {
+                    spacing: 12px;
+                    Eyebrow { text: item.label; }
+                    Label { text: "" + item.value; font-family: "Cascadia Mono"; font-size: 64px; font-weight: 700; height: 80px; }
+                }
+            }
+            Rule { }
+            Label { text: "准备开始"; font-size: 20px; font-weight: 700; height: 32px; }
+            Label { text: "本地资料已校验。选择热文件夹和显示器后，即可开始离线拍摄。"; color: Palette.muted; height: 24px; }
+            HorizontalLayout {
+                spacing: 12px;
+                Action { text: "开始新会话"; signal: true; clicked => { root.page = 2; } }
+                Action { text: "查看本地成品"; outline: true; clicked => { root.page = 5; } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Eyebrow { text: "工作区路径"; }
+            Label { text: root.workspace-path; font-family: "Cascadia Mono"; height: 28px; }
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        if root.ready && root.page == 2: VerticalLayout {
+            padding: 32px; padding-top: 40px; spacing: 24px;
+            Eyebrow { text: "SESSION SETUP"; }
+            Title { text: "会话准备"; }
+            if root.session-active: Action { text: "返回工作台（会话进行中）"; outline: true; clicked => { root.page = 3; } }
+            Rectangle { height: 2px; background: Palette.ink; }
+            HorizontalLayout {
+                spacing: 32px;
+                VerticalLayout {
+                    spacing: 16px;
+                    Label { text: "01    显示模式"; font-size: 20px; font-weight: 700; height: 36px; }
+                    Label { text: root.monitors.length > 1 ? "双屏模式" : "单屏模式"; font-size: 28px; font-weight: 700; height: 48px; }
+                    Label { text: root.monitors.length > 1 ? "操作窗口与选手窗口使用不同显示器，选手窗口默认全屏。" : "未检测到第二台显示器。确认单屏启动后，两个窗口均不全屏。"; color: Palette.muted; wrap: word-wrap; height: 48px; }
+                    Eyebrow { text: "操作显示器"; }
+                    ComboBox { model: root.monitors; current-index <=> root.operator-monitor; enabled: !root.session-active; }
+                    if root.monitors.length > 1: Eyebrow { text: "选手显示器"; }
+                    if root.monitors.length > 1: ComboBox { model: root.monitors; current-index <=> root.display-monitor; enabled: !root.session-active; }
+                    if root.monitors.length <= 1: Label { text: "未检测到第二台显示器，启动前需要确认单屏模式。"; color: Palette.warn; wrap: word-wrap; height: 48px; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                Rectangle { width: 1px; background: Palette.rule; }
+                VerticalLayout {
+                    spacing: 16px;
+                    Label { text: "02    热文件夹"; font-size: 20px; font-weight: 700; height: 36px; }
+                    Field { text <=> root.hot-folder; placeholder: "相机或联机软件写入照片的文件夹"; enabled: !root.session-active; }
+                    Action { text: "选择热文件夹…"; outline: true; reason: root.session-active ? "会话中不可更换热文件夹" : ""; clicked => { root.choose-path("hot"); } }
+                    Label { text: "启动时目录必须为空，并位于工作区之外。原照片始终保留；无法确定归属的照片须人工核对。"; color: Palette.muted; wrap: word-wrap; height: 70px; }
+                    Action { text: "检查并开始会话"; signal: true; reason: root.busy ? "正在检查热文件夹" : root.session-active ? "会话已启动" : root.hot-folder == "" ? "请选择热文件夹" : root.monitors.length > 1 && root.operator-monitor == root.display-monitor ? "两个窗口不能使用同一显示器" : ""; clicked => { if root.monitors.length <= 1 { root.dialog-action = 3; } else { root.start-session(); } } }
+                    Label { text: root.status; wrap: word-wrap; color: Palette.muted; height: 80px; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        if root.ready && root.page == 3: HorizontalLayout {
+            padding-left: 32px; padding-right: 32px; spacing: 24px;
+            VerticalLayout {
+                width: 24%; padding-top: 24px; padding-right: 24px; spacing: 8px;
+                Eyebrow { text: "队伍检索"; }
+                Field { text <=> root.search; placeholder: "队伍 ID / 学校 / 队名"; enabled: !root.group-active; edited(value) => { root.search-edited(value); } }
+                Label { text: root.group-active ? "拍摄中 · 队伍已锁定" : "" + root.teams.length + " 支队伍"; font-size: 12px; color: Palette.muted; height: 24px; }
+                Rectangle { height: 2px; background: Palette.ink; }
+                ScrollView {
+                    content-width: self.width;
+                    VerticalLayout {
+                        spacing: 0px;
+                        for t in root.teams: Rectangle {
+                            height: 108px; background: root.selected-id == t.id || team-touch.has-hover ? white : transparent;
+                            if root.selected-id == t.id: Rectangle { x: 0px; y: 0px; width: 4px; height: parent.height; background: Palette.signal; }
+                            HorizontalLayout {
+                                padding-left: 12px; padding-right: 8px; padding-top: 10px; padding-bottom: 10px; spacing: 8px;
+                                Label { text: t.account; font-family: "Cascadia Mono"; font-size: 13px; font-weight: 700; width: 60px; vertical-alignment: top; }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Label { text: t.school; font-size: 13px; font-weight: 700; }
+                                    Label { text: t.school-en; font-size: 11px; color: Palette.muted; }
+                                    Label { text: t.name; font-size: 13px; font-weight: 700; }
+                                    Label { text: t.final ? "● 已有成品" : t.name-en; color: t.final ? Palette.ok : Palette.muted; font-size: 11px; }
+                                }
+                            }
+                            Rule { y: parent.height - 1px; width: parent.width; }
+                            team-touch := TouchArea { enabled: !root.group-active && !root.busy; clicked => { root.select-team(t.id); } }
+                        }
+                    }
+                }
+                Rectangle { height: 2px; background: Palette.ink; }
+                if root.selected-id != "": HorizontalLayout {
+                    height: 72px; spacing: 12px;
+                    Image { source: root.logo; width: 72px; height: 72px; image-fit: contain; }
+                    VerticalLayout { spacing: 4px; Label { text: root.account; font-family: "Cascadia Mono"; font-size: 20px; font-weight: 700; } Label { text: root.team; font-weight: 700; } Label { text: root.team-en; color: Palette.muted; font-size: 12px; } }
+                }
+                if root.selected-id != "": Label { text: root.group-active ? "本队拍摄中" : "请口头核对选手窗口上的队伍信息"; wrap: word-wrap; height: 44px; font-size: 13px; font-weight: 700; }
+                if root.selected-id != "" && !root.group-active: Action { text: "已核对，开始本队拍摄"; signal: true; reason: root.busy ? "处理中" : !root.session-active ? "请先准备会话" : root.group-active ? "拍摄中" : root.selected-id == "" ? "请选择队伍" : !root.display-online ? "请打开选手窗口" : ""; clicked => { root.start-group(); } }
+                if root.selected-id == "": Label { text: "选择队伍后，选手窗口会显示其资料，供选手口头核对。"; wrap: word-wrap; color: Palette.muted; height: 58px; font-size: 13px; }
+                Rectangle { height: 16px; }
+            }
+            Rectangle { width: 1px; background: Palette.rule; }
+            VerticalLayout {
+                padding-top: 24px; spacing: 12px;
+                if !root.group-active: VerticalLayout {
+                    spacing: 0px;
+                    Eyebrow { text: "当前照片"; }
+                    Title { text: "未开始拍摄组"; }
+                    Rectangle { height: 32px; }
+                    Rectangle { height: 2px; background: Palette.ink; }
+                    for s[i] in ["搜索队伍", "口头核对", "开始本队拍摄"]: VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout {
+                            padding-top: 16px; padding-bottom: 16px; spacing: 12px;
+                            Label { text: "0" + (i + 1); width: 52px; font-family: "Cascadia Mono"; font-size: 32px; font-weight: 700; color: Palette.muted; }
+                            VerticalLayout { Label { text: s; font-weight: 700; height: 28px; } Label { text: i == 0 ? "在左侧输入 ID、学校或队名" : i == 1 ? "请选手核对展示窗口上的队伍信息" : "开始后，相机新到照片才属于当前拍摄组"; font-size: 13px; color: Palette.muted; wrap: word-wrap; height: 40px; } }
+                        }
+                        Rule { }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                if root.group-active: VerticalLayout {
+                    spacing: 12px;
+                    Rectangle {
+                        height: 76px; background: Palette.ink;
+                        HorizontalLayout {
+                            spacing: 16px; padding-right: 16px;
+                            Rectangle { width: 108px; background: Palette.signal; Label { text: root.account; font-family: "Cascadia Mono"; font-size: 20px; font-weight: 700; color: white; horizontal-alignment: center; width: parent.width; height: parent.height; } }
+                            VerticalLayout { padding-top: 12px; padding-bottom: 12px; Label { text: root.school; color: white; font-weight: 700; font-size: 16px; } Label { text: root.team + "  " + root.team-en; color: #bbbbbb; } }
+                        }
+                    }
+                    HorizontalLayout { height: 24px; spacing: 20px; Label { text: root.automatic ? "● 自动展示最新" : "○ 自动展示最新"; font-size: 13px; } Label { text: root.automatic ? "○ 手动保持" : "● 手动保持"; font-size: 13px; } Rectangle { horizontal-stretch: 1; } }
+                    Rectangle {
+                        min-height: 220px; background: #eae9e5; vertical-stretch: 1;
+                        Image { source: root.preview; width: parent.width; height: parent.height; image-fit: contain; }
+                        if root.candidates.length == 0: VerticalLayout { padding: 24px; Rectangle { vertical-stretch: 1; } Title { text: "等待相机传入照片"; font-size: 32px; } Label { text: root.hot-folder; color: Palette.muted; font-family: "Cascadia Mono"; height: 24px; } }
+                        if root.candidates.length > 0: Rectangle { x: 12px; y: 12px; width: 68px; height: 28px; background: Palette.paper; Label { text: root.photo-label; width: parent.width; height: parent.height; horizontal-alignment: center; font-family: "Cascadia Mono"; font-weight: 700; } }
+                        if root.candidates.length > 0: Rectangle { x: parent.width - self.width - 12px; y: 12px; width: 158px; height: 28px; background: root.presented ? Palette.signal : Palette.ink; Label { text: root.presented ? "● 选手窗口正在显示" : "尚未确认展示"; color: white; width: parent.width; height: parent.height; horizontal-alignment: center; font-size: 12px; } }
+                    }
+                    Action { text: "恢复自动展示最新"; outline: true; reason: root.confirmed ? "本组成品已确认" : root.busy ? "处理中" : ""; clicked => { root.auto-select(); } }
+                    Rectangle { height: 2px; background: Palette.ink; }
+                    Eyebrow { text: "本组候选  /  " + root.candidates.length; }
+                    ScrollView {
+                        height: 174px;
+                        content-height: self.height;
+                        HorizontalLayout {
+                            spacing: 16px;
+                            for p in root.candidates: VerticalLayout {
+                                width: 160px; spacing: 4px;
+                                Rectangle { width: 160px; height: 120px; border-width: p.selected ? 3px : 1px; border-color: p.selected ? Palette.signal : Palette.rule; Image { x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; source: p.thumbnail; image-fit: cover; } TouchArea { enabled: !root.confirmed && !root.busy; clicked => { root.choose-photo(p.id); } } }
+                                Label { text: p.title; font-family: "Cascadia Mono"; font-size: 12px; font-weight: 700; height: 20px; }
+                                Label { text: p.note; color: Palette.muted; font-size: 11px; height: 16px; }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { width: 1px; background: Palette.rule; }
+            VerticalLayout {
+                width: 24%; padding-top: 24px; spacing: 12px;
+                Eyebrow { text: root.group-active ? "正在确认" : "确认区"; }
+                if !root.group-active: Label { text: "开始本队拍摄后，在这里核对展示状态并确认成品。"; color: Palette.muted; wrap: word-wrap; font-size: 13px; height: 60px; }
+                if root.group-active: VerticalLayout { spacing: 12px;
+                Label { text: root.account; font-family: "Cascadia Mono"; font-size: 20px; font-weight: 700; height: 28px; }
+                Label { text: root.team; font-size: 20px; font-weight: 700; height: 28px; }
+                Label { text: root.team-en; color: Palette.muted; font-size: 12px; height: 24px; }
+                Rectangle { height: 2px; background: Palette.ink; }
+                if root.confirmed: Rectangle { height: 100px; background: Palette.ok; VerticalLayout { padding: 16px; Label { text: "✓ 已确认"; color: white; font-size: 16px; font-weight: 700; } Label { text: root.photo-label; color: white; font-family: "Cascadia Mono"; font-size: 40px; font-weight: 700; } } }
+                if !root.confirmed: VerticalLayout {
+                    spacing: 12px;
+                    HorizontalLayout { height: 48px; Eyebrow { text: "照片"; } Label { text: root.photo-label; font-family: "Cascadia Mono"; font-size: 40px; font-weight: 700; horizontal-alignment: right; } }
+                    for c in [{ok: root.candidates.length > 0, text: "照片已处理完成"}, {ok: root.display-online, text: "选手窗口在线"}, {ok: root.presented, text: "已在选手窗口展示"}]: VerticalLayout {
+                        spacing: 0px; Rule { }
+                        Label { text: (c.ok ? "✓  " : "–  ") + c.text; color: c.ok ? Palette.ok : Palette.muted; font-size: 13px; height: 32px; font-weight: c.ok ? 700 : 400; }
+                    }
+                    Rectangle { height: 52px; border-width: 2px; border-color: root.verbal ? Palette.ok : Palette.rule; background: root.verbal ? #e8f0e9 : white; CheckBox { x: 12px; width: parent.width - 24px; height: parent.height; text: "选手已口头满意"; checked <=> root.verbal; enabled: root.presented && root.group-active && !root.busy; } }
+                    Action { text: "确认这张照片为本队成品"; signal: true; reason: root.busy ? "正在处理" : !root.presented ? "请先在选手窗口展示照片" : !root.verbal ? "请先取得选手口头确认" : ""; clicked => { root.confirm-photo(); } }
+                    Label { text: !root.presented ? "请先在选手窗口展示照片" : !root.verbal ? "请先取得选手口头确认" : "完成本队后清理本地候选，保留成品"; font-size: 12px; color: Palette.muted; wrap: word-wrap; height: 36px; }
+                }
+                Rectangle { height: 2px; background: Palette.ink; }
+                Action { text: "选手不满意，重拍"; outline: true; reason: !root.group-active ? "请先开始拍摄组" : root.pending > 0 || root.busy ? "等待文件任务完成" : ""; clicked => { root.dialog-action = 2; } }
+                Action { text: "完成本队"; reason: !root.confirmed ? "请先确认成品" : root.pending > 0 || root.busy ? "等待文件任务完成" : ""; clicked => { root.finish-group(); } }
+                Label { text: "已知任务完成不代表相机没有尚未传来的图片。之后到达的图片将进入待归组。"; font-size: 11px; color: Palette.muted; wrap: word-wrap; height: 58px; }
+                Action { text: "放弃本组"; outline: true; reason: !root.group-active || root.confirmed || root.pending > 0 || root.busy ? "当前不可放弃" : ""; clicked => { root.dialog-action = 1; } }
+                }
+                if !root.display-online: Action { text: "重新打开选手窗口"; outline: true; reason: !root.session-active || root.busy ? "请先准备会话" : ""; clicked => { root.reopen-display(); } }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+
+        if root.ready && root.page == 4: VerticalLayout {
+            padding: 32px; padding-top: 40px; spacing: 24px;
+            Eyebrow { text: "UNASSIGNED"; }
+            Title { text: "待归组"; }
+            Rectangle { height: 2px; background: Palette.ink; }
+            Label { text: "时间不证明归属。核对原照片后，才能将其明确分配给当前拍摄组。"; color: Palette.muted; height: 24px; }
+            ScrollView { content-width: self.width; VerticalLayout { spacing: 0px; for p in root.unassigned: VerticalLayout { spacing: 12px; HorizontalLayout { Label { text: p.title; font-family: "Cascadia Mono"; } Label { text: p.note; color: Palette.muted; } Action { text: "已核对，归入当前组"; outline: true; reason: !root.group-active || root.confirmed || root.busy ? "需有未确认的活动拍摄组" : ""; clicked => { root.assign-photo(p.id); } } } Rule { } } } }
+        }
+
+        if root.ready && root.page == 5: VerticalLayout {
+            padding: 32px; padding-top: 40px; spacing: 24px;
+            Eyebrow { text: "LOCAL FINALS"; }
+            HorizontalLayout { Title { text: "本地成品"; } Label { text: root.final-count + " / " + root.team-count; font-family: "Cascadia Mono"; font-size: 40px; font-weight: 700; horizontal-alignment: right; } }
+            Rectangle { height: 2px; background: Palette.ink; }
+            HorizontalLayout {
+                spacing: 24px;
+                ScrollView { content-width: self.width; horizontal-stretch: 2; VerticalLayout { spacing: 0px; for t in root.teams: VerticalLayout { spacing: 0px; HorizontalLayout { padding-top: 16px; padding-bottom: 16px; spacing: 16px; Label { text: t.account; font-family: "Cascadia Mono"; width: 100px; font-weight: 700; } VerticalLayout { Label { text: t.school; font-weight: 700; } Label { text: t.name; color: Palette.muted; font-size: 12px; } } Label { text: t.final ? "● 已有成品" : "尚无成品"; color: t.final ? Palette.ok : Palette.muted; width: 90px; } Action { text: "查看"; outline: true; reason: !t.final ? "尚无成品" : root.busy ? "处理中" : ""; clicked => { root.preview-final(t.id); } } Action { text: "补拍"; outline: true; reason: root.group-active || !root.session-active || root.busy ? "请先准备会话并结束当前组" : ""; clicked => { root.select-team(t.id); root.page = 3; } } } Rule { } } } }
+                Rectangle { width: 1px; background: Palette.rule; }
+                VerticalLayout { horizontal-stretch: 1; spacing: 16px; Eyebrow { text: "当前成品"; } Image { source: root.final-preview; image-fit: contain; vertical-stretch: 1; } Label { text: root.final-details == "" ? "选择已有成品的队伍查看照片" : root.final-details; wrap: char-wrap; color: Palette.muted; font-family: "Cascadia Mono"; font-size: 12px; height: 120px; } }
+            }
+        }
+
+        if root.ready && root.page == 6: HorizontalLayout {
+            padding: 32px; padding-top: 40px; spacing: 32px;
+            VerticalLayout {
+                width: 32%; spacing: 16px;
+                Eyebrow { text: "EXPORT"; }
+                Title { text: "导出"; }
+                Label { text: "把当前全部成品与签名清单打包为一个 ZIP。导出使用冻结快照，不会修改成品。"; wrap: word-wrap; color: Palette.muted; height: 80px; }
+                Rectangle { height: 2px; background: Palette.ink; }
+                Eyebrow { text: "目标文件"; }
+                Field { text <=> root.export-path; placeholder: "工作区之外的绝对 ZIP 路径"; }
+                Action { text: "选择…"; outline: true; clicked => { root.choose-path("export"); } }
+                HorizontalLayout { Label { text: "将导出的成品"; color: Palette.muted; } Label { text: "" + root.final-count; font-family: "Cascadia Mono"; font-size: 28px; font-weight: 700; horizontal-alignment: right; } }
+                Action { text: "开始导出"; signal: true; reason: root.busy ? "正在处理任务" : root.final-count == 0 ? "尚无成品可导出" : root.export-path == "" ? "请选择目标 ZIP 文件" : ""; clicked => { root.export-results(); } }
+                Rectangle { vertical-stretch: 1; }
+            }
+            Rectangle { width: 1px; background: Palette.rule; }
+            VerticalLayout { spacing: 20px; Eyebrow { text: "LOCAL PACKAGE"; } Label { text: "导出状态"; font-size: 20px; font-weight: 700; height: 32px; } Label { text: root.export-status == "" ? "尚未开始导出" : root.export-status; wrap: word-wrap; color: Palette.muted; height: 150px; } Label { text: "生成本地包不代表服务器已接收。请将 ZIP 交付给负责上传的工作人员。"; color: Palette.muted; wrap: word-wrap; height: 64px; } Rectangle { vertical-stretch: 1; } }
+        }
+
+        if root.ready && root.page == 7: VerticalLayout {
+            padding: 32px; padding-top: 40px; spacing: 20px;
+            Eyebrow { text: "ATTENTION"; }
+            Title { text: "异常与核对"; }
+            Rectangle { height: 2px; background: Palette.ink; }
+            ScrollView { content-width: self.width; VerticalLayout { spacing: 12px; for message in root.diagnostics: Label { text: message; color: Palette.error; wrap: word-wrap; height: 52px; } } }
+            HorizontalLayout { spacing: 16px; Action { text: "重试本地清理"; outline: true; reason: !root.session-active || root.busy ? "会话未就绪" : ""; clicked => { root.retry-cleanup(); } } Action { text: "已核对丢失源文件"; outline: true; reason: !root.session-active || root.busy ? "会话未就绪" : ""; clicked => { root.acknowledge-missing(); } } Rectangle { horizontal-stretch: 1; } }
+        }
+        Rectangle { height: 32px; border-width: 0px; Rule { width: parent.width; } Label { x: 32px; height: parent.height; width: parent.width - 64px; text: root.status; font-size: 12px; color: Palette.muted; } }
+    }
+    if root.dialog-action != 0: Rectangle {
+        x: 0px; y: 0px; width: root.width; height: root.height; background: #11111180;
+        TouchArea { clicked => { root.dialog-action = 0; } }
+        Rectangle {
+            width: 560px; height: 246px; background: Palette.paper;
+            TouchArea { }
+            Rectangle { x: 0px; y: 0px; width: parent.width; height: 8px; background: Palette.ink; }
+            VerticalLayout {
+                padding-top: 32px; spacing: 8px;
+                Label { text: root.dialog-action == 3 ? "选择单屏启动" : root.dialog-action == 1 ? "放弃本组？" : "选手不满意，开始重拍？"; font-size: 28px; font-weight: 700; height: 36px; x: 32px; width: parent.width - 64px; }
+                Label { text: root.dialog-action == 3 ? "未检测到第二台显示器。确认后将打开操作窗口和选手窗口，两个窗口默认均不全屏。" : root.dialog-action == 1 ? "当前未确认的候选不会保存为成品，热文件夹原照片保留。" : "本组结束后开始新的拍摄组。已有成品会保留，直到新的照片确认成功。"; wrap: word-wrap; color: Palette.muted; height: 72px; x: 32px; width: parent.width - 64px; }
+                Rectangle { height: 2px; background: Palette.ink; }
+                HorizontalLayout { padding-left: 32px; padding-right: 32px; padding-top: 8px; padding-bottom: 16px; spacing: 12px; Action { text: "确认"; signal: true; clicked => { if root.dialog-action == 3 { root.single-confirm = true; root.start-session(); } else if root.dialog-action == 1 { root.abandon(); } else { root.retake(); } root.dialog-action = 0; } } Action { text: "取消"; outline: true; clicked => { root.dialog-action = 0; } } Rectangle { horizontal-stretch: 1; } }
+            }
+        }
+    }
+}
+
+export component ContestantWindow inherits Window {
+    title: "Natsume Photo · 选手展示";
+    preferred-width: 960px; preferred-height: 540px; min-width: 640px; min-height: 360px;
+    background: #0e0e0e;
+    default-font-family: "Noto Sans SC";
+    in property <bool> has-team;
+    in property <bool> has-photo;
+    in property <bool> confirmed;
+    in property <image> photo;
+    in property <image> logo;
+    in property <string> account;
+    in property <string> school;
+    in property <string> school-en;
+    in property <string> team;
+    in property <string> team-en;
+    property <float> stage-scale: min(root.width / 1920px, root.height / 1080px);
+    if root.has-team: Rectangle {
+        width: 1920px * root.stage-scale; height: 1080px * root.stage-scale;
+      VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: 280px * root.stage-scale;
+            HorizontalLayout {
+                padding-left: 64px * root.stage-scale; padding-right: 64px * root.stage-scale; padding-top: 48px * root.stage-scale; padding-bottom: 40px * root.stage-scale; spacing: 48px * root.stage-scale;
+                Image { source: root.logo; width: 160px * root.stage-scale; height: 160px * root.stage-scale; image-fit: contain; }
+                VerticalLayout {
+                    spacing: 8px * root.stage-scale;
+                    Label { text: root.school; color: Palette.paper; font-size: 56px * root.stage-scale; font-weight: 700; height: 68px * root.stage-scale; }
+                    Label { text: root.school-en; color: #999999; font-size: 28px * root.stage-scale; height: 36px * root.stage-scale; }
+                    Rectangle { height: 8px * root.stage-scale; }
+                    HorizontalLayout { spacing: 24px * root.stage-scale; Label { text: root.team; color: Palette.paper; font-size: 44px * root.stage-scale; font-weight: 700; height: 54px * root.stage-scale; } Label { text: root.team-en; color: #999999; font-size: 28px * root.stage-scale; } }
+                }
+                VerticalLayout { width: 260px * root.stage-scale; Eyebrow { text: "TEAM ID"; color: #999999; horizontal-alignment: right; font-size: 20px * root.stage-scale; height: 28px * root.stage-scale; } Label { text: root.account; color: Palette.paper; font-family: "Cascadia Mono"; font-size: 64px * root.stage-scale; font-weight: 700; horizontal-alignment: right; } }
+            }
+            Rectangle { y: parent.height - 1px; height: 1px; width: parent.width; background: #383838; }
+        }
+        Rectangle { vertical-stretch: 1; Image { x: 64px * root.stage-scale; y: 32px * root.stage-scale; width: parent.width - 128px * root.stage-scale; height: parent.height - 64px * root.stage-scale; source: root.photo; image-fit: contain; } }
+        if root.has-photo: Rectangle {
+            height: 96px * root.stage-scale; background: root.confirmed ? Palette.ok : Palette.signal;
+            HorizontalLayout { padding-left: 64px * root.stage-scale; padding-right: 64px * root.stage-scale; spacing: 24px * root.stage-scale; Rectangle { width: 24px * root.stage-scale; height: 24px * root.stage-scale; background: white; } Label { text: root.confirmed ? "已确认" : "请确认照片"; color: white; font-size: 40px * root.stage-scale; font-weight: 700; horizontal-stretch: 0; } Label { text: root.confirmed ? "Confirmed" : "Please review this photo"; color: #ffffffb3; font-size: 24px * root.stage-scale; } }
+        }
+      }
+    }
+}

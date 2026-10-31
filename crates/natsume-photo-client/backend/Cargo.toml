@@ -1,6 +1,6 @@
 [package]
 name = "natsume-photo-client"
-description = "Natsume Photo offline client backend"
+description = "Natsume Photo offline photography client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+rfd = { version = "0.17.2", default-features = false }
+slint = { workspace = true, features = ["backend-winit", "renderer-skia", "unstable-winit-030", "unstable-wgpu-30"] }
 natsume-photo-protocol = { path = "../../natsume-photo-protocol" }
 clap.workspace = true
 diesel.workspace = true
