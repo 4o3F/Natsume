@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use tokio_util::task::AbortOnDropHandle;
 use tracing::instrument::WithSubscriber as _;
 
 use crate::{
@@ -117,7 +118,7 @@ where
 
     let http_stop = tokio_util::sync::CancellationToken::new();
     let stopped = http_stop.clone();
-    let mut serving = tokio::spawn(
+    let mut serving = spawn_serving(
         axum::serve(
             listener,
             router.into_make_service_with_connect_info::<PeerAddress>(),
@@ -151,17 +152,36 @@ where
         Some(result) => result,
         None => serving.await,
     };
-    let result = match serving_result {
+    let serving_result = match serving_result {
         Ok(result) => result.map_err(|source| CommandError::Http { source }),
         Err(source) => Err(CommandError::ServingTask {
             source: source.into(),
         }),
-    }
-    .and(background_result);
+    };
+    let result = combine_shutdown_results(serving_result, background_result);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
     }
     result
+}
+
+fn spawn_serving(
+    serving: impl Future<Output = std::io::Result<()>> + Send + 'static,
+) -> AbortOnDropHandle<std::io::Result<()>> {
+    AbortOnDropHandle::new(tokio::spawn(serving))
+}
+
+fn combine_shutdown_results(
+    serving: Result<(), CommandError>,
+    background: Result<(), CommandError>,
+) -> Result<(), CommandError> {
+    match (serving, background) {
+        (Err(serving), Err(background)) => {
+            tracing::error!(error = %snafu::Report::from_error(background), "server background task shutdown failed");
+            Err(serving)
+        }
+        (serving, background) => serving.and(background),
+    }
 }
 
 fn shutdown_signal() -> Result<impl Future<Output = ()>, CommandError> {
@@ -180,9 +200,152 @@ fn shutdown_signal() -> Result<impl Future<Output = ()>, CommandError> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{commands::bootstrap::tests::Fixture, component::runtime::RuntimeConfigComponent};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
-    use super::{CommandError, configure_runtime};
+    use tokio::sync::oneshot;
+    use tracing::{
+        Subscriber,
+        field::{Field, Visit},
+        instrument::WithSubscriber as _,
+    };
+    use tracing_subscriber::{
+        Layer, Registry,
+        layer::{Context, SubscriberExt as _},
+    };
+
+    use crate::{
+        background::BackgroundError, commands::bootstrap::tests::Fixture,
+        component::runtime::RuntimeConfigComponent, task::TaskFailure,
+    };
+
+    use super::{CommandError, combine_shutdown_results, configure_runtime, spawn_serving};
+
+    #[derive(Clone, Default)]
+    struct ShutdownProbe(Arc<Mutex<Vec<ShutdownEvent>>>);
+
+    #[derive(Debug, Default)]
+    struct ShutdownEvent {
+        message: String,
+        error: String,
+    }
+
+    impl<S: Subscriber> Layer<S> for ShutdownProbe {
+        fn on_event(&self, event: &tracing::Event<'_>, _context: Context<'_, S>) {
+            if event.metadata().level() == &tracing::Level::ERROR {
+                let mut fields = ShutdownEvent::default();
+                event.record(&mut fields);
+                self.0
+                    .lock()
+                    .unwrap_or_else(|error| panic!("shutdown probe lock poisoned: {error}"))
+                    .push(fields);
+            }
+        }
+    }
+
+    impl Visit for ShutdownEvent {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            match field.name() {
+                "message" => self.message = format!("{value:?}"),
+                "error" => self.error = format!("{value:?}"),
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_results_preserve_http_error_and_log_background_error() {
+        let _guard = crate::logging::tests::SubscriberTestGuard::acquire();
+        let probe = ShutdownProbe::default();
+        let http_error = || CommandError::Http {
+            source: std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "injected HTTP serving failure",
+            ),
+        };
+        let background_error = || CommandError::Background {
+            source: BackgroundError::Task {
+                source: TaskFailure::Cancelled,
+            },
+        };
+        async {
+            assert!(combine_shutdown_results(Ok(()), Ok(())).is_ok());
+            assert!(matches!(
+                combine_shutdown_results(Err(http_error()), Ok(())),
+                Err(CommandError::Http { source })
+                    if source.kind() == std::io::ErrorKind::ConnectionAborted
+                        && source.to_string() == "injected HTTP serving failure"
+            ));
+            assert!(matches!(
+                combine_shutdown_results(Ok(()), Err(background_error())),
+                Err(CommandError::Background {
+                    source: BackgroundError::Task {
+                        source: TaskFailure::Cancelled,
+                    },
+                })
+            ));
+            assert!(
+                probe
+                    .0
+                    .lock()
+                    .unwrap_or_else(|error| panic!("shutdown probe lock poisoned: {error}"))
+                    .is_empty()
+            );
+
+            assert!(matches!(
+                combine_shutdown_results(Err(http_error()), Err(background_error())),
+                Err(CommandError::Http { source })
+                    if source.kind() == std::io::ErrorKind::ConnectionAborted
+                        && source.to_string() == "injected HTTP serving failure"
+            ));
+        }
+        .with_subscriber(Registry::default().with(probe.clone()))
+        .await;
+
+        let events = probe
+            .0
+            .lock()
+            .unwrap_or_else(|error| panic!("shutdown probe lock poisoned: {error}"));
+        assert_eq!(
+            events.len(),
+            1,
+            "the background failure was not logged once"
+        );
+        assert_eq!(events[0].message, "server background task shutdown failed");
+        assert_eq!(
+            events[0].error,
+            snafu::Report::from_error(background_error()).to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_serving_owner_aborts_the_task() {
+        let (held, released) = oneshot::channel::<()>();
+        let (started, ready) = oneshot::channel();
+        let serving = spawn_serving(async move {
+            let _held = held;
+            started
+                .send(())
+                .unwrap_or_else(|()| panic!("serving readiness receiver dropped"));
+            std::future::pending::<std::io::Result<()>>().await
+        });
+        tokio::time::timeout(Duration::from_secs(5), ready)
+            .await
+            .unwrap_or_else(|error| panic!("serving task did not start: {error}"))
+            .unwrap_or_else(|error| panic!("serving readiness sender dropped: {error}"));
+
+        drop(serving);
+
+        assert!(
+            matches!(
+                tokio::time::timeout(Duration::from_secs(5), released).await,
+                Ok(Err(_))
+            ),
+            "dropping the serving owner did not release the task's sender"
+        );
+    }
 
     #[tokio::test]
     async fn startup_applies_deployment_origin_and_skips_unchanged_values() {
