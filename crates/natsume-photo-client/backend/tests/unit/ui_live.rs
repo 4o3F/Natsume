@@ -197,7 +197,7 @@ impl Journey {
             }
             Stage::Finished if !ui.get_group_active() => {
                 ensure!(snapshot.thumbnails.is_empty(), InvariantSnafu);
-                ui.set_page(6);
+                ui.set_page(5);
                 ui.set_export_path(self.config.zip.display().to_string().into());
                 ui.invoke_export_results();
                 self.next(Stage::Exported);

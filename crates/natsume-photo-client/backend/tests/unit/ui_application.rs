@@ -425,16 +425,16 @@ fn capture_pages(ui: &crate::gui::PhotoWindow, snapshot: &Snapshot) -> TestResul
                     image::ColorType::Rgba8,
                 )
                 .context(ImageSnafu)?;
-                if step == 9 {
+                if step == 8 {
                     slint::quit_event_loop().context(EventLoopSnafu)?;
                 } else {
                     ui.set_ready(true);
                     ui.set_page(step + 1);
-                    if step >= 7 {
+                    if step >= 6 {
                         ui.set_page(3);
                         ui.set_group_active(true);
                     }
-                    if step == 8 {
+                    if step == 7 {
                         ui.set_dialog_action(2);
                     }
                     ui.set_team_count(1);

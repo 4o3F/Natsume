@@ -604,66 +604,53 @@ async fn segmented_windows_write_blocks_group_closure_until_writer_closes() -> R
 }
 
 #[tokio::test]
-async fn arrivals_without_group_and_reused_path_across_groups_stay_for_review() -> Result {
+async fn arrivals_without_group_and_reused_path_never_enter_the_next_group() -> Result {
     let fixture = fixture().await?;
     let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     let waiting = fixture.hot.join("before-selection.jpg");
     fs::write(&waiting, b"unknown team").context(IoSnafu)?;
-    let initial = wait(&folder, |state| state.photos.len() == 1).await?;
-    assert!(initial.photos[0].group_id.is_none());
     folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
     let first = folder.start_group().await.context(HotFolderSnafu)?;
-    folder
-        .assign_reviewed(initial.photos[0].id, first)
-        .await
-        .context(HotFolderSnafu)?;
-    assert!(
-        folder
-            .assign_reviewed(initial.photos[0].id, first)
-            .await
-            .is_err()
-    );
     let reused = fixture.hot.join("same-name.jpg");
     fs::write(&reused, b"first group").context(IoSnafu)?;
-    wait(&folder, |state| state.photos.len() == 2).await?;
+    wait(&folder, |state| {
+        state.photos.len() == 1 && state.pending_tasks == 0
+    })
+    .await?;
     folder.abandon_group(first).await.context(HotFolderSnafu)?;
-    // A file physically present before starting the next group is found by the
-    // boundary reconciliation even if native notification delivery is delayed.
     fs::write(fixture.hot.join("between.jpg"), b"late arrival").context(IoSnafu)?;
     folder.select_team(TEAM_B).await.context(HotFolderSnafu)?;
     let second = folder.start_group().await.context(HotFolderSnafu)?;
     fs::write(&reused, b"overwritten across boundary").context(IoSnafu)?;
-    let state = wait(&folder, |state| state.photos.len() == 4).await?;
+    fs::write(fixture.hot.join("new-team.jpg"), b"second group").context(IoSnafu)?;
+    let state = wait(&folder, |state| {
+        state.photos.len() == 2 && state.pending_tasks == 0
+    })
+    .await?;
     assert_eq!(
         state
             .photos
             .iter()
             .filter(|photo| photo.group_id == Some(first))
             .count(),
-        2
+        1
     );
     assert_eq!(
         state
             .photos
             .iter()
-            .filter(|photo| photo.group_id.is_none())
+            .filter(|photo| photo.group_id == Some(second))
             .count(),
-        2
+        1
     );
-    assert!(
-        state
-            .photos
-            .iter()
-            .all(|photo| photo.group_id != Some(second))
+    assert!(state.photos.iter().all(|photo| photo.group_id.is_some()));
+    assert!(waiting.is_file());
+    assert_eq!(
+        fs::read(reused).context(IoSnafu)?,
+        b"overwritten across boundary"
     );
-    for photo in state.photos.iter().filter(|photo| photo.group_id.is_none()) {
-        folder
-            .assign_reviewed(photo.id, second)
-            .await
-            .context(HotFolderSnafu)?;
-    }
     Ok(())
 }
 
@@ -706,8 +693,7 @@ async fn archive_failure_pauses_and_automatic_retry_keeps_group_identity() -> Re
 }
 
 #[tokio::test]
-async fn removed_monitor_directory_pauses_then_rewatches_and_quarantines_uncertain_files() -> Result
-{
+async fn removed_monitor_directory_recovers_without_importing_uncertain_files() -> Result {
     let fixture = fixture().await?;
     let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
@@ -726,13 +712,13 @@ async fn removed_monitor_directory_pauses_then_rewatches_and_quarantines_uncerta
         b"uncertain owner",
     )
     .context(IoSnafu)?;
-    let state = wait(&folder, |state| !state.paused && state.photos.len() == 1).await?;
+    let state = wait(&folder, |state| !state.paused && state.pending_tasks == 0).await?;
     assert_eq!(state.group_id, Some(group));
-    assert!(state.photos[0].group_id.is_none());
-    folder
-        .assign_reviewed(state.photos[0].id, group)
-        .await
-        .context(HotFolderSnafu)?;
+    assert!(state.photos.is_empty());
+    fs::write(fixture.hot.join("after-recovery.jpg"), b"known owner").context(IoSnafu)?;
+    let state = wait(&folder, |state| state.photos.len() == 1).await?;
+    assert_eq!(state.photos[0].group_id, Some(group));
+    assert!(fixture.hot.join("during-disconnect.png").is_file());
     Ok(())
 }
 
@@ -774,6 +760,8 @@ async fn unknown_extensions_are_not_imported_but_remain_in_source_folder() -> Re
     let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
+    folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+    folder.start_group().await.context(HotFolderSnafu)?;
     fs::write(fixture.hot.join("camera.raw"), b"raw bytes").context(IoSnafu)?;
     fs::write(fixture.hot.join("supported.jpeg"), b"jpeg input").context(IoSnafu)?;
     let state = wait(&folder, |state| state.photos.len() == 1).await?;
@@ -827,8 +815,7 @@ async fn worker_reports_deleted_and_renamed_pending_sources_without_stalling() -
         assert_eq!(loss.missing_sources[0].group_id, Some(group));
         assert_eq!(loss.pending_tasks, 0);
         if rename {
-            let archived = wait(&folder, |s| s.photos.len() == 1).await?;
-            assert!(archived.photos[0].group_id.is_none());
+            assert!(folder.snapshot().context(HotFolderSnafu)?.photos.is_empty());
             assert!(renamed.is_file());
         }
         folder.abandon_group(group).await.context(HotFolderSnafu)?;

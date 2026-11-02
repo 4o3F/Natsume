@@ -17,13 +17,22 @@ pub(super) fn bind(ui: &PhotoWindow, app: &Rc<Controller>) {
 fn bind_window_controls(ui: &PhotoWindow, app: &Rc<Controller>) {
     let weak = ui.as_weak();
     ui.on_drag_window(move || {
-        if let Some(ui) = weak.upgrade()
-            && let Some(result) = ui
-                .window()
-                .with_winit_window(winit::window::Window::drag_window)
-            && let Err(error) = result.context(WindowDragSnafu)
+        // Let Slint finish handling the mouse press/capture before Windows
+        // starts its native move loop. The physical button remains pressed.
+        let weak = weak.clone();
+        if let Err(error) = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = weak.upgrade()
+                && let Some(result) = ui
+                    .window()
+                    .with_winit_window(winit::window::Window::drag_window)
+                && let Err(error) = result.context(WindowDragSnafu)
+            {
+                tracing::error!(%error, "cannot drag Photo window");
+            }
+        })
+        .context(WindowEventLoopSnafu)
         {
-            tracing::error!(%error, "cannot drag Photo window");
+            tracing::error!(%error, "cannot schedule Photo window drag");
         }
     });
     let weak = ui.as_weak();
@@ -153,12 +162,6 @@ fn bind_capture(ui: &PhotoWindow, app: &Rc<Controller>) {
     let app_copy = app.clone();
     ui.on_abandon(move || {
         app_copy.send_group(GroupAction::Abandon);
-    });
-    let app_copy = app.clone();
-    ui.on_assign_photo(move |id| {
-        if let Ok(id) = uuid::Uuid::parse_str(&id) {
-            app_copy.send_group(GroupAction::Assign(id));
-        }
     });
 }
 

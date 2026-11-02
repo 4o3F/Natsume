@@ -47,7 +47,6 @@ pub(super) enum GroupAction {
     Finish,
     Retake,
     Abandon,
-    Assign(Uuid),
 }
 
 #[derive(Debug, Snafu)]
@@ -455,10 +454,6 @@ impl Application {
                 .context(CaptureSnafu)?,
             GroupAction::Automatic => session
                 .use_latest_candidate(group)
-                .await
-                .context(CaptureSnafu)?,
-            GroupAction::Assign(id) => session
-                .assign_reviewed(id, group)
                 .await
                 .context(CaptureSnafu)?,
             GroupAction::Finish => {

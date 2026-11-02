@@ -12,7 +12,7 @@ pub(super) use display::receipt;
 
 use super::{
     ContestantWindow, Error, PhotoRow, PhotoWindow, PlatformSnafu, RenderingSnafu, TeamRow,
-    ThreadSnafu, WindowDragSnafu,
+    ThreadSnafu, WindowDragSnafu, WindowEventLoopSnafu,
     application::{self, Command, GroupAction, Snapshot},
 };
 use natsume_photo_client::capture_session::{

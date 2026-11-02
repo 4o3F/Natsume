@@ -92,14 +92,6 @@ impl Ingestion {
         ensure!(before != self.missing_sources.len(), NotReviewableSnafu);
         Ok(())
     }
-    pub(super) fn assign_reviewed(&mut self, photo: Uuid, group: GroupId) -> Result<()> {
-        self.photos
-            .iter_mut()
-            .find(|p| p.id == photo && p.group_id.is_none())
-            .context(NotReviewableSnafu)?
-            .group_id = Some(group);
-        Ok(())
-    }
     pub(super) fn reconcile(&mut self, owner: Option<GroupId>) -> Result<()> {
         match self.scan(owner) {
             Ok(()) => {
@@ -259,6 +251,21 @@ impl Ingestion {
             return Ok(());
         }
         let version = version.ok_or_else(|| ArchiveSnafu.into_error(ArchiveError::Changed))?;
+        if pending.owner.is_none() {
+            // Baseline only: never archive or later reassign an ambiguous arrival.
+            self.pending.remove(path);
+            self.seen.insert(
+                path.to_owned(),
+                ObservedSource {
+                    version,
+                    owner: None,
+                },
+            );
+            self.checked.insert(path.to_owned(), Instant::now());
+            self.missing_sources
+                .retain(|missing| missing.source != path);
+            return Ok(());
+        }
         let destination = match archive::copy(path, &self.hot_folder, &self.archive, &version) {
             Ok(path) => path,
             Err(ArchiveError::Changed) => {

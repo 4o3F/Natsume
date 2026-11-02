@@ -35,9 +35,9 @@ cargo test -p natsume-photo-client --locked
 
 依次 await `CaptureSession::prepare`、`select_team`、`start_group`。准备时先注册通知，再验证热文件夹为空。目录与工作区不得互相包含。消息通道处理操作，Tokio 定时器和原生通知触发同一对账入口；WinRT 对象在一个 Tokio 管理的线程中创建、使用和释放，不添加 unsafe 或手写 Send。
 
-`IngestionState` 区分 Running、RecoveringMonitor、PausedDirectory、PausedArchive、Stopped。`Error` 表示一次调用失败，状态表示持续运行情况。文件句柄共享限制防止读取正在写入的照片；通知可能晚于写入，周期扫描仍会发现待处理任务。复制、目录或监控故障阻止切组并重试，身份和任务不丢失。完整目录枚举成功后发现 pending 源消失，则解除对应任务，在 `missing_sources: Vec<MissingSource>` 记录源路径与组身份；不创建虚假 ArchivedPhoto。同轮出现的新路径先留待核对，目录失效仍暂停。
+`IngestionState` 区分 Running、RecoveringMonitor、PausedDirectory、PausedArchive、Stopped。`Error` 表示一次调用失败，状态表示持续运行情况。文件句柄共享限制防止读取正在写入的照片；通知可能晚于写入，周期扫描仍会发现待处理任务。复制、目录或监控故障阻止切组并重试，身份和任务不丢失。完整目录枚举成功后发现 pending 源消失，则解除对应任务，在 `missing_sources: Vec<MissingSource>` 记录源路径与组身份；不创建虚假 ArchivedPhoto。同轮出现的归属不确定新路径只建立基线、不归档，目录失效仍暂停。
 
-`snapshot()` 返回 `HotFolderSnapshot`；`wait_until().await` 等待后台发布，不主动扫描。显式 `shutdown().await` 等待运行中的文件任务及监听清理，Drop 只取消。未确认会话和组只在内存中，重启不恢复；源照片永不移动或删除，归属不确定的副本需要人工核对。
+`snapshot()` 返回 `HotFolderSnapshot`；`wait_until().await` 等待后台发布，不主动扫描。显式 `shutdown().await` 等待运行中的文件任务及监听清理，Drop 只取消。未确认会话和组只在内存中，重启不恢复；源照片永不移动或删除；无活动组或归属不确定的来图不创建归档副本，也不提供人工归组 API。
 
 归档后通过 `capture_session/photo_validation.rs` 校验 JPEG/PNG 的哈希、长度、结束标记并完整解码；同一解码像素交给私有 `candidate.rs`，应用 EXIF 方向和 RGB ICC → sRGB，保留原尺寸，生成规范文件及最长边 512 的 PNG 缩略图。JPEG 质量 92，PNG 输出 8 位并保留透明度；源 EXIF/GPS/XMP 不复制，输出嵌入标准 sRGB ICC。无色彩声明按 sRGB；未支持的 Gray/CMYK ICC、HDR/CICP、自定义 PNG gamma/色度明确拒绝。输入 50 MiB、80 百万像素，解码分配/输出及规范像素缓冲各 256 MiB，ICC 4 MiB，单个输出文件 50 MiB；预算不是整个进程 RSS 保证。
 
@@ -83,7 +83,7 @@ Server 测试在 WSL 运行。真实联调用例由 WSL Server 启动 Windows �
 
 ## 已确认组清理
 
-`capture_session/cleanup.rs` 负责已结束组的删除队列。finish_and_clean 先执行 Session.finish_group 的确认/任务屏障校验，成功后 retire_group_files 收集本组确切文件、移除已结束组的照片与候选记录，再执行 clean_retired。源观察和归属墓碑不清除，其他组及待核对照片继续保护共享归档。
+`capture_session/cleanup.rs` 负责已结束组的删除队列。finish_and_clean 先执行 Session.finish_group 的确认/任务屏障校验，成功后 retire_group_files 收集本组确切文件、移除已结束组的照片与候选记录，再执行 clean_retired。源观察和归属墓碑不清除，其他组照片继续保护共享归档。
 
 finish_group 与 retry_cleanup 返回 CleanupReport，文件失败不撤销确认。快照公开 cleanup_pending / cleanup_failures；使用者必须检查 failures，不能把 Result::Ok 等同于所有文件已删。已删除或缺失的队列条目可幂等重试；只 remove_file / remove_dir，不递归清理未知目录内容。预览用 CandidateImage::open 保持只共享读取的句柄，释放后才可删除。
 

@@ -188,24 +188,6 @@ impl Controller {
                 .map_or_else(|| "—".into(), |row| row.title.clone()),
         );
         ui.set_candidates(ModelRc::new(VecModel::from(rows)));
-        let unassigned: Vec<_> = capture
-            .into_iter()
-            .flat_map(|capture| &capture.photos)
-            .filter(|photo| photo.group_id.is_none())
-            .map(|photo| PhotoRow {
-                id: photo.id.to_string().into(),
-                title: photo
-                    .source
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-                    .into(),
-                note: "未归组 · 请人工核对".into(),
-                ..PhotoRow::default()
-            })
-            .collect();
-        ui.set_unassigned(ModelRc::new(VecModel::from(unassigned)));
     }
 
     fn apply_frame(&self, ui: &PhotoWindow, snapshot: &Snapshot) {

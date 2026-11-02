@@ -13,7 +13,7 @@ the prototype's simulated filesystem, or its local-storage database.
 | `screens/init/*` | Initialization sidebar and form; `controller/bindings.rs` calls the real initializer |
 | `screens/Overview`, `screens/SessionSetup` | Local overview, real monitor enumeration and hot-folder admission |
 | `screens/workbench/*` | Team / photo / confirmation columns, candidate filmstrip and confirmation dialog |
-| `screens/Unassigned`, `screens/Finals`, `screens/Export` | Real review assignments, verified final preview and offline ZIP export |
+| `screens/Finals`, `screens/Export` | Team overview, verified final preview and offline ZIP export |
 | `display/DisplayView` | Independent `ContestantWindow`, containing only public team and image properties |
 | `state/store` and browser display channel | `application.rs`, backend `CaptureSession`, typed commands and snapshots |
 
@@ -134,3 +134,5 @@ optimized Server passed, as did recovery after a cold debug Server exceeded the
 30-second request timeout. Server was then stopped: offline diagnosis and a
 second export passed with byte-identical ZIP output. Evidence is retained in
 the ignored `target/photo-ui-live-*` artifacts and local learning notes.
+
+The Unassigned page and manual assignment API have been removed. Arrivals without a known active capture group are baselined in the source folder, not copied into the workspace or reassigned later. The four navigation items use equal widths. Dragging is available on non-interactive header regions; its native move request is queued after pointer-press handling to avoid competing with pointer capture.

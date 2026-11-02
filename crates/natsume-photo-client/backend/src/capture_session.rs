@@ -183,7 +183,6 @@ enum Action {
     Select(String),
     Start,
     Abandon(GroupId),
-    Assign(Uuid, GroupId),
     SelectCandidate(GroupId, Uuid),
     UseLatest(GroupId),
     AttachDisplay,
@@ -365,12 +364,6 @@ impl CaptureSession {
     /// Rejects pending work, stale identities and unavailable monitoring.
     pub async fn abandon_group(&self, id: GroupId) -> Result<()> {
         self.request(Action::Abandon(id)).await.map(|_| ())
-    }
-    /// Assigns an unowned archive after photographer review.
-    /// # Errors
-    /// Rejects paused groups and invalid or already-owned archives.
-    pub async fn assign_reviewed(&self, photo: Uuid, group: GroupId) -> Result<()> {
-        self.request(Action::Assign(photo, group)).await.map(|_| ())
     }
     /// Keeps a ready candidate selected until automatic mode is explicitly restored.
     /// # Errors
@@ -827,14 +820,6 @@ impl CaptureState {
                 self.reconcile();
                 self.session.abandon_group(id).context(CaptureSnafu)?;
                 self.manual_selection = None;
-            }
-            Action::Assign(photo, group) => {
-                ensure!(
-                    !self.session.is_paused()
-                        && self.session.group().is_some_and(|g| g.id() == group),
-                    NotReviewableSnafu
-                );
-                self.ingestion.assign_reviewed(photo, group)?;
             }
             Action::SelectCandidate(group, photo) => {
                 ensure!(self.confirmed.is_none(), FinalizedSnafu);

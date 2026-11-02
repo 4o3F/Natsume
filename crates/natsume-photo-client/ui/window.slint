@@ -57,7 +57,6 @@ export component PhotoWindow inherits Window {
     in property <[TeamRow]> teams;
     in property <[TeamRow]> overview-teams;
     in property <[PhotoRow]> candidates;
-    in property <[PhotoRow]> unassigned;
     in property <[string]> diagnostics;
     callback choose-path(string);
     callback open-workspace;
@@ -71,7 +70,6 @@ export component PhotoWindow inherits Window {
     callback finish-group;
     callback retake;
     callback abandon;
-    callback assign-photo(string);
     callback retry-cleanup;
     callback acknowledge-missing;
     callback export-results;
@@ -88,25 +86,25 @@ export component PhotoWindow inherits Window {
         spacing: 0;
         Rectangle {
             height: 56px; background: Palette.ink;
+            TouchArea { mouse-cursor: move; pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.drag-window(); } } }
             HorizontalLayout {
                 padding-left: 32px; padding-right: 32px; spacing: 0;
                 Rectangle {
                     width: root.ready ? 200px : 157px;
                     Label { text: "NATSUME PHOTO"; color: Palette.paper; font-size: 16px; font-weight: 800; width: parent.width; height: parent.height; }
-                    TouchArea { pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.drag-window(); } } }
                 }
                 if !root.ready: Label { text: root.create-workspace ? "首次初始化" : "打开已有工作区"; color: #999999; }
                 if root.ready: HorizontalLayout {
                     spacing: 0;
-                    for tab[i] in ["拍摄", "待归组", "队伍概览", "导出", "异常"]: Rectangle {
-                        width: i == 2 ? 180px : 100px; background: nav-touch.has-hover ? #292929 : transparent;
+                    for tab[i] in ["拍摄", "队伍概览", "导出", "异常"]: Rectangle {
+                        width: 112px; background: nav-touch.has-hover ? #292929 : transparent;
                         Label { text: tab; color: root.page == i + 3 ? Palette.paper : #999999; font-weight: 700; horizontal-alignment: center; width: parent.width; height: parent.height; }
                         if root.page == i + 3: Rectangle { x: 20px; y: parent.height - 4px; height: 4px; width: parent.width - 40px; background: Palette.signal; }
                         nav-touch := TouchArea { clicked => { root.search = ""; root.search-edited(""); root.page = i == 0 && !root.session-active ? 2 : i + 3; } }
                     }
                     Rectangle { horizontal-stretch: 1; }
                     Label { text: root.display-online ? "● 选手窗口在线" : "○ 选手窗口未连接"; color: root.display-online ? #eeeeee : #999999; font-size: 12px; width: 170px; }
-                    Rectangle { width: 1px; height: 24px; background: #555555; }
+                    Rectangle { width: 1px; Rectangle { y: (parent.height - 24px) / 2; width: 1px; height: 24px; background: #555555; } }
                     Rectangle { width: 16px; }
                     Label { text: "离线工作中"; color: #aaaaaa; font-size: 12px; width: 100px; }
                 }
@@ -121,7 +119,7 @@ export component PhotoWindow inherits Window {
             height: 40px; border-width: 0px;
             HorizontalLayout {
                 padding-left: 32px; padding-right: 32px; spacing: 16px;
-                Eyebrow { text: "当前处理"; }
+                Eyebrow { text: "当前处理"; height: parent.height; }
                 Label { text: root.account == "" ? "—" : root.account + "  " + root.school + " / " + root.team; font-weight: 700; horizontal-stretch: 1; }
                 Label { text: root.presented ? "选手正在看  " + root.photo-label : "选手正在看  —"; font-size: 13px; width: 200px; }
                 Label { text: "文件任务  " + root.pending; font-family: "Cascadia Mono"; width: 120px; }
@@ -236,7 +234,7 @@ export component PhotoWindow inherits Window {
             HorizontalLayout {
                 spacing: 12px;
                 Action { text: "开始新会话"; signal: true; clicked => { root.page = 2; } }
-                Action { text: "查看队伍概览"; outline: true; clicked => { root.page = 5; } }
+                Action { text: "查看队伍概览"; outline: true; clicked => { root.page = 4; } }
                 Rectangle { horizontal-stretch: 1; }
             }
             Eyebrow { text: "工作区路径"; }
@@ -270,7 +268,7 @@ export component PhotoWindow inherits Window {
                     Label { text: "02    热文件夹"; font-size: 20px; font-weight: 700; height: 36px; }
                     Field { text <=> root.hot-folder; placeholder: "相机或联机软件写入照片的文件夹"; enabled: !root.session-active; }
                     Action { text: "选择热文件夹…"; outline: true; reason: root.session-active ? "会话中不可更换热文件夹" : ""; clicked => { root.choose-path("hot"); } }
-                    Label { text: "启动时目录必须为空，并位于工作区之外。原照片始终保留；无法确定归属的照片须人工核对。"; color: Palette.muted; wrap: word-wrap; height: 70px; }
+                    Label { text: "启动时目录必须为空，并位于工作区之外。仅导入当前拍摄组的新照片，热文件夹原图始终保留。"; color: Palette.muted; wrap: word-wrap; height: 70px; }
                     Action { text: "检查并开始会话"; signal: true; reason: root.busy ? "正在检查热文件夹" : root.session-active ? "会话已启动" : root.hot-folder == "" ? "请选择热文件夹" : root.monitors.length > 1 && root.operator-monitor == root.display-monitor ? "两个窗口不能使用同一显示器" : ""; clicked => { if root.monitors.length <= 1 { root.dialog-action = 3; } else { root.start-session(); } } }
                     Label { text: root.status; wrap: word-wrap; color: Palette.muted; height: 80px; }
                     Rectangle { vertical-stretch: 1; }
@@ -390,7 +388,7 @@ export component PhotoWindow inherits Window {
                 if root.confirmed: Rectangle { height: 100px; background: Palette.ok; VerticalLayout { padding: 16px; Label { text: "✓ 已确认"; color: white; font-size: 16px; font-weight: 700; } Label { text: root.photo-label; color: white; font-family: "Cascadia Mono"; font-size: 40px; font-weight: 700; } } }
                 if !root.confirmed: VerticalLayout {
                     spacing: 12px;
-                    HorizontalLayout { height: 48px; Eyebrow { text: "照片"; } Label { text: root.photo-label; font-family: "Cascadia Mono"; font-size: 40px; font-weight: 700; horizontal-alignment: right; } }
+                    HorizontalLayout { height: 48px; Eyebrow { text: "照片"; height: parent.height; } Label { text: root.photo-label; font-family: "Cascadia Mono"; font-size: 40px; font-weight: 700; horizontal-alignment: right; } }
                     for c in [{ok: root.candidates.length > 0, text: "照片已处理完成"}, {ok: root.display-online, text: "选手窗口在线"}, {ok: root.presented, text: "已在选手窗口展示"}]: VerticalLayout {
                         spacing: 0px; Rule { }
                         Label { text: (c.ok ? "✓  " : "–  ") + c.text; color: c.ok ? Palette.ok : Palette.muted; font-size: 13px; height: 32px; font-weight: c.ok ? 700 : 400; }
@@ -402,7 +400,7 @@ export component PhotoWindow inherits Window {
                 Rectangle { height: 2px; background: Palette.ink; }
                 Action { text: "选手不满意，重拍"; outline: true; reason: !root.group-active ? "请先开始拍摄组" : root.pending > 0 || root.busy ? "等待文件任务完成" : ""; clicked => { root.dialog-action = 2; } }
                 Action { text: "完成本队"; reason: !root.confirmed ? "请先确认成品" : root.pending > 0 || root.busy ? "等待文件任务完成" : ""; clicked => { root.finish-group(); } }
-                Label { text: "已知任务完成不代表相机没有尚未传来的图片。之后到达的图片将进入待归组。"; font-size: 11px; color: Palette.muted; wrap: word-wrap; height: 58px; }
+                Label { text: "完成本队后再开始下一队拍摄；热文件夹原照片始终保留。"; font-size: 11px; color: Palette.muted; wrap: word-wrap; height: 58px; }
                 Action { text: "放弃本组"; outline: true; reason: !root.group-active || root.confirmed || root.pending > 0 || root.busy ? "当前不可放弃" : ""; clicked => { root.dialog-action = 1; } }
                 }
                 if !root.display-online: Action { text: "重新打开选手窗口"; outline: true; reason: !root.session-active || root.busy ? "请先准备会话" : ""; clicked => { root.reopen-display(); } }
@@ -411,15 +409,6 @@ export component PhotoWindow inherits Window {
         }
 
         if root.ready && root.page == 4: VerticalLayout {
-            padding: 32px; padding-top: 40px; spacing: 24px;
-            Eyebrow { text: "UNASSIGNED"; }
-            Title { text: "待归组"; }
-            Rectangle { height: 2px; background: Palette.ink; }
-            Label { text: "时间不证明归属。核对原照片后，才能将其明确分配给当前拍摄组。"; color: Palette.muted; height: 24px; }
-            ScrollView { content-width: self.width; VerticalLayout { spacing: 0px; for p in root.unassigned: VerticalLayout { spacing: 12px; HorizontalLayout { Label { text: p.title; font-family: "Cascadia Mono"; } Label { text: p.note; color: Palette.muted; } Action { text: "已核对，归入当前组"; outline: true; reason: !root.group-active || root.confirmed || root.busy ? "需有未确认的活动拍摄组" : ""; clicked => { root.assign-photo(p.id); } } } Rule { } } } }
-        }
-
-        if root.ready && root.page == 5: VerticalLayout {
             padding: 32px; padding-top: 40px; spacing: 24px;
             Eyebrow { text: "LOCAL FINALS"; }
             HorizontalLayout { Title { text: "队伍概览"; } Label { text: root.final-count + " / " + root.team-count; font-family: "Cascadia Mono"; font-size: 40px; font-weight: 700; horizontal-alignment: right; } }
@@ -470,7 +459,7 @@ export component PhotoWindow inherits Window {
             }
         }
 
-        if root.ready && root.page == 6: HorizontalLayout {
+        if root.ready && root.page == 5: HorizontalLayout {
             padding: 32px; padding-top: 40px; spacing: 32px;
             VerticalLayout {
                 width: 32%; spacing: 16px;
@@ -489,7 +478,7 @@ export component PhotoWindow inherits Window {
             VerticalLayout { spacing: 20px; Eyebrow { text: "LOCAL PACKAGE"; } Label { text: "导出状态"; font-size: 20px; font-weight: 700; height: 32px; } Label { text: root.export-status == "" ? "尚未开始导出" : root.export-status; wrap: word-wrap; color: Palette.muted; height: 150px; } Label { text: "生成本地包不代表服务器已接收。请将 ZIP 交付给负责上传的工作人员。"; color: Palette.muted; wrap: word-wrap; height: 64px; } Rectangle { vertical-stretch: 1; } }
         }
 
-        if root.ready && root.page == 7: VerticalLayout {
+        if root.ready && root.page == 6: VerticalLayout {
             padding: 32px; padding-top: 40px; spacing: 20px;
             Eyebrow { text: "ATTENTION"; }
             Title { text: "异常与核对"; }
