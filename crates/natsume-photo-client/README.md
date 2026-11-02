@@ -36,10 +36,12 @@
 cargo build -p natsume-photo-client --locked
 if ($LASTEXITCODE -ne 0) { throw 'Build failed; do not continue.' }
 
-cargo run -p natsume-photo-client --locked -- --help
+cargo run -p natsume-photo-client --locked -- --help | Out-Host
 ```
 
 不带参数启动 Slint 工作台：
+
+Windows 可执行文件使用 GUI 子系统，Debug 和 Release 双击均不弹出控制台。CLI 的帮助及诊断日志可通过管道或文件重定向读取；首次配对的交互输入请使用工作台初始化页面。
 
 ```powershell
 cargo run -p natsume-photo-client --locked
