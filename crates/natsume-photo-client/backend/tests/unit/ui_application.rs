@@ -202,6 +202,58 @@ async fn ui_owner_requires_exact_frame_then_saves_and_cleans_without_deleting_ca
 }
 
 #[tokio::test]
+async fn duplicate_or_stale_detach_preserves_the_current_display() -> TestResult {
+    let (_temporary, mut app, _hot) = fixture().await?;
+    app.execute(Command::Attach(Uuid::now_v7()))
+        .await
+        .context(ApplicationSnafu)?;
+    let PresentationStatus::Blank { display_id: old } = app
+        .session()
+        .context(ApplicationSnafu)?
+        .snapshot()
+        .context(CaptureSnafu)?
+        .presentation
+    else {
+        return FixtureSnafu.fail();
+    };
+    app.execute(Command::Detach(old))
+        .await
+        .context(ApplicationSnafu)?;
+    app.execute(Command::Detach(old))
+        .await
+        .context(ApplicationSnafu)?;
+    let generation = Uuid::now_v7();
+    app.execute(Command::Attach(generation))
+        .await
+        .context(ApplicationSnafu)?;
+    let current = app
+        .session()
+        .context(ApplicationSnafu)?
+        .snapshot()
+        .context(CaptureSnafu)?
+        .presentation;
+    app.execute(Command::Detach(old))
+        .await
+        .context(ApplicationSnafu)?;
+    assert_eq!(app.view.display_generation, Some(generation));
+    assert_eq!(
+        app.session()
+            .context(ApplicationSnafu)?
+            .snapshot()
+            .context(CaptureSnafu)?
+            .presentation,
+        current
+    );
+    app.session
+        .take()
+        .context(FixtureSnafu)?
+        .shutdown()
+        .await
+        .context(CaptureSnafu)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn stale_group_command_cannot_abandon_the_retake_group() -> TestResult {
     let (_temporary, mut app, _hot) = fixture().await?;
     let old = app

@@ -253,11 +253,26 @@ impl Application {
                 self.view.display_generation = Some(generation);
             }
             Command::Detach(id) => {
-                self.session()?
-                    .detach_display(id)
-                    .await
-                    .context(CaptureSnafu)?;
-                self.view.display_generation = None;
+                let current = self
+                    .session()?
+                    .snapshot()
+                    .context(CaptureSnafu)?
+                    .presentation;
+                let current_id = match current {
+                    PresentationStatus::Unavailable => None,
+                    PresentationStatus::Blank { display_id } => Some(display_id),
+                    PresentationStatus::Pending(request)
+                    | PresentationStatus::Presented(request) => Some(request.display_id()),
+                };
+                // Old close callbacks and duplicate orphan cleanup must not clear
+                // the generation of a newly attached window.
+                if current_id == Some(id) {
+                    self.session()?
+                        .detach_display(id)
+                        .await
+                        .context(CaptureSnafu)?;
+                    self.view.display_generation = None;
+                }
             }
             Command::Rendered(receipt) => self.rendered(receipt).await?,
             Command::Cleanup => {

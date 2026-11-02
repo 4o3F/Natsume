@@ -91,6 +91,7 @@ impl Config {
 enum Stage {
     Initialize,
     Session,
+    DisplayInvalidating,
     Team,
     Group,
     Photos,
@@ -109,6 +110,16 @@ struct Journey {
     selected: Option<uuid::Uuid>,
     switches: u8,
     originals: Vec<(PathBuf, String)>,
+    display_probes: std::collections::VecDeque<DisplayProbe>,
+    display_generations: Vec<uuid::Uuid>,
+}
+
+#[derive(Debug)]
+enum DisplayProbe {
+    Close,
+    Minimize,
+    WrongMonitor,
+    ExitFullscreen,
 }
 
 impl Journey {
@@ -135,20 +146,24 @@ impl Journey {
         let snapshot = app.snapshot.borrow().clone();
         match self.stage {
             Stage::Initialize if snapshot.root.is_some() => {
-                ensure!(!snapshot.teams.is_empty(), InvariantSnafu);
-                app.refresh_monitors();
-                ui.set_hot_folder(self.config.hot.display().to_string().into());
-                // Explicit automated consent for the single-display dialog; no production bypass.
-                ui.set_single_confirm(true);
-                ui.set_operator_monitor(0);
-                ui.set_display_monitor(1);
-                ui.invoke_start_session();
-                self.next(Stage::Session);
+                self.start_session(app, ui);
             }
             Stage::Session if ui.get_display_online() => {
-                let team = snapshot.teams.first().context(InvariantSnafu)?;
-                ui.invoke_select_team(team.account_id.clone().into());
-                self.next(Stage::Team);
+                if !display_placement(app, ui, self.started.elapsed() >= Duration::from_secs(5))? {
+                    return Ok(false);
+                }
+                self.probe_or_select(app, ui, &snapshot)?;
+            }
+            Stage::DisplayInvalidating
+                if app.display.borrow().is_none()
+                    && snapshot.capture.as_ref().and_then(display_id).is_none() =>
+            {
+                ensure!(
+                    !ui.get_display_online() && !ui.get_presented(),
+                    InvariantSnafu
+                );
+                ui.invoke_reopen_display();
+                self.next(Stage::Session);
             }
             Stage::Team if snapshot.selected.is_some() => {
                 ui.invoke_start_group();
@@ -176,6 +191,7 @@ impl Journey {
                 self.next(Stage::Presented);
             }
             Stage::Presented if ui.get_presented() => {
+                ensure!(display_placement(app, ui, true)?, InvariantSnafu);
                 let frame = snapshot.frame.as_ref().context(InvariantSnafu)?;
                 ensure!(
                     Some(frame.request.photo_id()) == self.selected,
@@ -203,20 +219,102 @@ impl Journey {
                 self.next(Stage::Exported);
             }
             Stage::Exported if self.config.zip.is_file() => {
-                ensure!(
-                    snapshot.export_status.starts_with("导出完成"),
-                    InvariantSnafu
-                );
-                for (path, expected) in &self.originals {
-                    ensure!(&hash_file(path)? == expected, InvariantSnafu);
-                }
-                save_screenshot(ui, &self.config, "exported")?;
+                self.check_export(ui, &snapshot)?;
                 self.next(Stage::Done);
             }
             Stage::Done => return Ok(true),
             _ => {}
         }
         Ok(false)
+    }
+
+    fn check_export(&self, ui: &PhotoWindow, snapshot: &Snapshot) -> Result {
+        ensure!(
+            snapshot.export_status.starts_with("导出完成"),
+            InvariantSnafu
+        );
+        for (path, expected) in &self.originals {
+            ensure!(&hash_file(path)? == expected, InvariantSnafu);
+        }
+        save_screenshot(ui, &self.config, "exported")
+    }
+
+    fn start_session(&mut self, app: &Controller, ui: &PhotoWindow) {
+        app.refresh_monitors();
+        let dual = app.monitors.borrow().len() > 1;
+        if !dual {
+            self.display_probes
+                .retain(|probe| matches!(probe, DisplayProbe::Close | DisplayProbe::Minimize));
+        }
+        ui.set_hot_folder(self.config.hot.display().to_string().into());
+        // Explicit automated consent for the single-display dialog; no production bypass.
+        ui.set_single_confirm(true);
+        let swap = std::env::var_os("PHOTO_LIVE_SWAP_SCREENS").is_some();
+        ui.set_operator_monitor(i32::from(swap && dual));
+        ui.set_display_monitor(i32::from(!swap && dual));
+        ui.invoke_start_session();
+        self.next(Stage::Session);
+    }
+
+    fn probe_or_select(
+        &mut self,
+        app: &Rc<Controller>,
+        ui: &PhotoWindow,
+        snapshot: &Snapshot,
+    ) -> Result {
+        let generation = snapshot.display_generation.context(InvariantSnafu)?;
+        ensure!(
+            !self.display_generations.contains(&generation),
+            InvariantSnafu
+        );
+        self.display_generations.push(generation);
+        if let Some(probe) = self.display_probes.pop_front() {
+            let component = app
+                .display
+                .borrow()
+                .as_ref()
+                .context(InvariantSnafu)?
+                .component
+                .clone_strong();
+            tracing::info!(?probe, "testing display invalidation and reopening");
+            match probe {
+                DisplayProbe::Close => component
+                    .window()
+                    .dispatch_event(slint::platform::WindowEvent::CloseRequested),
+                DisplayProbe::Minimize => {
+                    component
+                        .window()
+                        .with_winit_window(|w| w.set_minimized(true));
+                }
+                DisplayProbe::WrongMonitor => {
+                    let operator = app
+                        .monitors
+                        .borrow()
+                        .get(
+                            usize::try_from(ui.get_operator_monitor())
+                                .map_err(|_| InvariantSnafu.build())?,
+                        )
+                        .cloned()
+                        .context(InvariantSnafu)?;
+                    component.window().with_winit_window(|w| {
+                        w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
+                            operator,
+                        ))));
+                    });
+                }
+                DisplayProbe::ExitFullscreen => {
+                    component
+                        .window()
+                        .with_winit_window(|w| w.set_fullscreen(None));
+                }
+            }
+            self.next(Stage::DisplayInvalidating);
+        } else {
+            let team = snapshot.teams.first().context(InvariantSnafu)?;
+            ui.invoke_select_team(team.account_id.clone().into());
+            self.next(Stage::Team);
+        }
+        Ok(())
     }
 
     fn switch_photo(&mut self, snapshot: &Snapshot, ui: &PhotoWindow) -> Result {
@@ -252,6 +350,46 @@ impl Journey {
     }
 }
 
+fn display_placement(app: &Controller, ui: &PhotoWindow, deadline: bool) -> Result<bool> {
+    let monitors = app.monitors.borrow();
+    if monitors.len() < 2 {
+        return Ok(true);
+    }
+    let target = monitors
+        .get(usize::try_from(ui.get_display_monitor()).map_err(|_| InvariantSnafu.build())?)
+        .context(InvariantSnafu)?;
+    let operator = monitors
+        .get(usize::try_from(ui.get_operator_monitor()).map_err(|_| InvariantSnafu.build())?)
+        .context(InvariantSnafu)?;
+    let displays = app.display.borrow();
+    let display = displays.as_ref().context(InvariantSnafu)?;
+    let state = display.component.window().with_winit_window(|window| {
+        let actual = window.current_monitor();
+        let fullscreen = window.fullscreen();
+        let position = window.outer_position();
+        let size = window.inner_size();
+        let matches = actual.as_ref() == Some(target)
+            && matches!(&fullscreen, Some(winit::window::Fullscreen::Borderless(Some(m))) if m == target)
+            && position.as_ref().is_ok_and(|p| *p == target.position())
+            && size == target.size();
+        if matches || deadline {
+            tracing::info!(target = ?target.name(), target_position = ?target.position(), target_size = ?target.size(), actual = ?actual.as_ref().and_then(winit::monitor::MonitorHandle::name), actual_position = ?position, actual_size = ?size, ?fullscreen, "dual-display placement measured");
+        }
+        matches
+    }).unwrap_or(false);
+    let operator_matches = ui
+        .window()
+        .with_winit_window(|window| window.current_monitor().as_ref() == Some(operator))
+        .unwrap_or(false);
+    ensure!(
+        !deadline || state && operator_matches,
+        UiSnafu {
+            reason: "双屏窗口实际位置或全屏尺寸与所选屏幕不匹配".to_owned()
+        }
+    );
+    Ok(state && operator_matches)
+}
+
 fn hash_file(path: &Path) -> Result<String> {
     Ok(hex::encode(Sha256::digest(
         fs::read(path).context(IoSnafu)?,
@@ -271,7 +409,7 @@ fn save_screenshot(ui: &PhotoWindow, config: &Config, name: &str) -> Result {
     .context(ImageSnafu)
 }
 
-fn controller(ui: &PhotoWindow, commands: mpsc::Sender<Command>) -> Rc<Controller> {
+pub(super) fn controller(ui: &PhotoWindow, commands: mpsc::Sender<Command>) -> Rc<Controller> {
     // Fixture-owned state uses the same production callbacks, mapping and display adapter.
     Rc::new(Controller {
         ui: ui.as_weak(),
@@ -279,7 +417,7 @@ fn controller(ui: &PhotoWindow, commands: mpsc::Sender<Command>) -> Rc<Controlle
         snapshot: RefCell::default(),
         display: RefCell::default(),
         monitors: RefCell::default(),
-        display_monitor: RefCell::default(),
+        screens: RefCell::default(),
         installed: RefCell::default(),
         quitting: Cell::new(false),
         shutdown_sent: Cell::new(false),
@@ -322,6 +460,14 @@ fn live_server_ui_initialization_through_signed_zip() -> Result {
         selected: None,
         switches: 0,
         originals: Vec::new(),
+        display_probes: [
+            DisplayProbe::Close,
+            DisplayProbe::Minimize,
+            DisplayProbe::WrongMonitor,
+            DisplayProbe::ExitFullscreen,
+        ]
+        .into(),
+        display_generations: Vec::new(),
     };
     let timer = slint::Timer::default();
     let weak = ui.as_weak();
@@ -332,7 +478,12 @@ fn live_server_ui_initialization_through_signed_zip() -> Result {
             let result = (|| {
                 let ui = weak.upgrade().context(InvariantSnafu)?;
                 if snapshots.has_changed().unwrap_or(true) {
+                    let display_existed = app_tick.display.borrow().is_some();
                     app_tick.apply(snapshots.borrow_and_update().clone());
+                    if !display_existed && let Some(display) = app_tick.display.borrow().as_ref() {
+                        let native_ready = display.component.window().has_winit_window();
+                        tracing::info!(native_ready, "display creation callback returned");
+                    }
                 }
                 app_tick.check_display();
                 journey.advance(&app_tick, &ui)

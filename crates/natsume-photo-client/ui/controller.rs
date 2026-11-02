@@ -1,14 +1,20 @@
 mod bindings;
 mod display;
+mod monitors;
 mod view;
 
 #[cfg(test)]
 #[path = "../backend/tests/unit/ui_live.rs"]
 mod live_tests;
 
+#[cfg(test)]
+#[path = "../backend/tests/unit/ui_display.rs"]
+mod display_tests;
+
 use bindings::bind;
-use display::display_id;
 pub(super) use display::receipt;
+use display::{DisplayPhase, display_id};
+use monitors::DisplayPlacement;
 
 use super::{
     ContestantWindow, Error, PhotoRow, PhotoWindow, PlatformSnafu, RenderingSnafu, TeamRow,
@@ -27,7 +33,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, watch};
 
@@ -36,6 +42,8 @@ struct DisplayWindow {
     pending: Rc<RefCell<Option<PresentationRequest>>>,
     lost: Rc<Cell<bool>>,
     generation: uuid::Uuid,
+    placement: DisplayPlacement,
+    phase: Rc<Cell<DisplayPhase>>,
 }
 
 struct Controller {
@@ -44,7 +52,7 @@ struct Controller {
     snapshot: RefCell<Snapshot>,
     display: RefCell<Option<DisplayWindow>>,
     monitors: RefCell<Vec<winit::monitor::MonitorHandle>>,
-    display_monitor: RefCell<Option<winit::monitor::MonitorHandle>>,
+    screens: RefCell<Option<DisplayPlacement>>,
     installed: RefCell<Option<PresentationRequest>>,
     quitting: Cell<bool>,
     shutdown_sent: Cell<bool>,
@@ -73,7 +81,7 @@ pub(super) fn run() -> Result<(), Error> {
         snapshot: RefCell::default(),
         display: RefCell::default(),
         monitors: RefCell::default(),
-        display_monitor: RefCell::default(),
+        screens: RefCell::default(),
         installed: RefCell::default(),
         quitting: Cell::new(false),
         shutdown_sent: Cell::new(false),

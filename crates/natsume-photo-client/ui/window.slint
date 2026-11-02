@@ -34,6 +34,8 @@ export component PhotoWindow inherits Window {
     in property <bool> session-active;
     in property <bool> group-active;
     in property <bool> display-online;
+    in property <bool> display-opening;
+    in property <string> display-problem;
     in property <bool> presented;
     in property <bool> confirmed;
     in property <bool> automatic: true;
@@ -88,7 +90,7 @@ export component PhotoWindow inherits Window {
             height: 56px; background: Palette.ink;
             TouchArea { mouse-cursor: move; pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.drag-window(); } } }
             HorizontalLayout {
-                padding-left: 32px; padding-right: 32px; spacing: 0;
+                padding-left: 32px; padding-right: 0px; spacing: 0;
                 Rectangle {
                     width: root.ready ? 200px : 157px;
                     Label { text: "NATSUME PHOTO"; color: Palette.paper; font-size: 16px; font-weight: 800; width: parent.width; height: parent.height; }
@@ -109,7 +111,7 @@ export component PhotoWindow inherits Window {
                     Label { text: "离线工作中"; color: #aaaaaa; font-size: 12px; width: 100px; }
                 }
                 for caption[i] in ["—", "□", "×"]: Rectangle {
-                    width: 36px; background: caption-touch.has-hover ? (i == 2 ? Palette.signal : #333333) : transparent;
+                    width: 56px; height: 56px; background: caption-touch.has-hover ? (i == 2 ? Palette.signal : #333333) : transparent;
                     Label { text: caption; color: Palette.paper; horizontal-alignment: center; width: parent.width; height: parent.height; font-size: 18px; }
                     caption-touch := TouchArea { clicked => { if i == 0 { root.minimize-window(); } else if i == 1 { root.maximize-window(); } else { root.close-window(); } } }
                 }
@@ -127,9 +129,9 @@ export component PhotoWindow inherits Window {
             }
             Rectangle { y: parent.height - 2px; height: 2px; width: parent.width; background: Palette.ink; }
         }
-        if root.problem != "": Rectangle {
+        if root.problem != "" || root.display-problem != "": Rectangle {
             height: 56px; background: #f7e9e9;
-            Label { x: 32px; width: parent.width - 64px; height: parent.height; text: root.problem; color: Palette.error; wrap: word-wrap; font-weight: 700; }
+            Label { x: 32px; width: parent.width - 64px; height: parent.height; text: root.display-problem != "" ? root.display-problem : root.problem; color: Palette.error; wrap: word-wrap; font-weight: 700; }
             Rectangle { y: parent.height - 2px; height: 2px; width: parent.width; background: Palette.error; }
         }
 
@@ -256,9 +258,10 @@ export component PhotoWindow inherits Window {
                     Label { text: root.monitors.length > 1 ? "双屏模式" : "单屏模式"; font-size: 28px; font-weight: 700; height: 48px; }
                     Label { text: root.monitors.length > 1 ? "操作窗口与选手窗口使用不同显示器，选手窗口默认全屏。" : "未检测到第二台显示器。确认单屏启动后，两个窗口均不全屏。"; color: Palette.muted; wrap: word-wrap; height: 48px; }
                     Eyebrow { text: "操作显示器"; }
-                    ComboBox { model: root.monitors; current-index <=> root.operator-monitor; enabled: !root.session-active; }
+                    ComboBox { model: root.monitors; current-index <=> root.operator-monitor; enabled: !root.busy && !root.display-online && !root.display-opening; }
                     if root.monitors.length > 1: Eyebrow { text: "选手显示器"; }
-                    if root.monitors.length > 1: ComboBox { model: root.monitors; current-index <=> root.display-monitor; enabled: !root.session-active; }
+                    if root.monitors.length > 1: ComboBox { model: root.monitors; current-index <=> root.display-monitor; enabled: !root.busy && !root.display-online && !root.display-opening; }
+                    if root.session-active && !root.display-online: Action { text: "应用设置并打开选手窗口"; outline: true; reason: root.busy || root.display-opening ? "请等待窗口初始化" : ""; clicked => { if root.monitors.length <= 1 && !root.single-confirm { root.dialog-action = 4; } else { root.reopen-display(); } } }
                     if root.monitors.length <= 1: Label { text: "未检测到第二台显示器，启动前需要确认单屏模式。"; color: Palette.warn; wrap: word-wrap; height: 48px; }
                     Rectangle { vertical-stretch: 1; }
                 }
@@ -403,7 +406,8 @@ export component PhotoWindow inherits Window {
                 Label { text: "完成本队后再开始下一队拍摄；热文件夹原照片始终保留。"; font-size: 11px; color: Palette.muted; wrap: word-wrap; height: 58px; }
                 Action { text: "放弃本组"; outline: true; reason: !root.group-active || root.confirmed || root.pending > 0 || root.busy ? "当前不可放弃" : ""; clicked => { root.dialog-action = 1; } }
                 }
-                if !root.display-online: Action { text: "重新打开选手窗口"; outline: true; reason: !root.session-active || root.busy ? "请先准备会话" : ""; clicked => { root.reopen-display(); } }
+                if root.session-active && !root.display-online && !root.display-opening: Action { text: "显示设置"; outline: true; clicked => { root.page = 2; } }
+                if !root.display-online: Action { text: root.display-opening ? "正在打开选手窗口…" : "重新打开选手窗口"; outline: true; reason: !root.session-active || root.busy || root.display-opening ? "请等待窗口初始化或准备会话" : ""; clicked => { root.reopen-display(); } }
                 Rectangle { vertical-stretch: 1; }
             }
         }
@@ -497,10 +501,10 @@ export component PhotoWindow inherits Window {
             Rectangle { x: 0px; y: 0px; width: parent.width; height: 8px; background: Palette.ink; }
             VerticalLayout {
                 padding-top: 32px; spacing: 8px;
-                Label { text: root.dialog-action == 3 ? "选择单屏启动" : root.dialog-action == 1 ? "放弃本组？" : "选手不满意，开始重拍？"; font-size: 28px; font-weight: 700; height: 36px; x: 32px; width: parent.width - 64px; }
-                Label { text: root.dialog-action == 3 ? "未检测到第二台显示器。确认后将打开操作窗口和选手窗口，两个窗口默认均不全屏。" : root.dialog-action == 1 ? "当前未确认的候选不会保存为成品，热文件夹原照片保留。" : "本组结束后开始新的拍摄组。已有成品会保留，直到新的照片确认成功。"; wrap: word-wrap; color: Palette.muted; height: 72px; x: 32px; width: parent.width - 64px; }
+                Label { text: root.dialog-action >= 3 ? "选择单屏启动" : root.dialog-action == 1 ? "放弃本组？" : "选手不满意，开始重拍？"; font-size: 28px; font-weight: 700; height: 36px; x: 32px; width: parent.width - 64px; }
+                Label { text: root.dialog-action >= 3 ? "未检测到第二台显示器。确认后将打开操作窗口和选手窗口，两个窗口默认均不全屏。" : root.dialog-action == 1 ? "当前未确认的候选不会保存为成品，热文件夹原照片保留。" : "本组结束后开始新的拍摄组。已有成品会保留，直到新的照片确认成功。"; wrap: word-wrap; color: Palette.muted; height: 72px; x: 32px; width: parent.width - 64px; }
                 Rectangle { height: 2px; background: Palette.ink; }
-                HorizontalLayout { padding-left: 32px; padding-right: 32px; padding-top: 8px; padding-bottom: 16px; spacing: 12px; Action { text: "确认"; signal: true; clicked => { if root.dialog-action == 3 { root.single-confirm = true; root.start-session(); } else if root.dialog-action == 1 { root.abandon(); } else { root.retake(); } root.dialog-action = 0; } } Action { text: "取消"; outline: true; clicked => { root.dialog-action = 0; } } Rectangle { horizontal-stretch: 1; } }
+                HorizontalLayout { padding-left: 32px; padding-right: 32px; padding-top: 8px; padding-bottom: 16px; spacing: 12px; Action { text: "确认"; signal: true; clicked => { if root.dialog-action == 3 { root.single-confirm = true; root.start-session(); } else if root.dialog-action == 4 { root.single-confirm = true; root.reopen-display(); } else if root.dialog-action == 1 { root.abandon(); } else { root.retake(); } root.dialog-action = 0; } } Action { text: "取消"; outline: true; clicked => { root.dialog-action = 0; } } Rectangle { horizontal-stretch: 1; } }
             }
         }
     }

@@ -90,20 +90,8 @@ fn bind_workspace(ui: &PhotoWindow, app: &Rc<Controller>) {
     let app_copy = app.clone();
     ui.on_start_session(move || {
         if let Some(ui) = app_copy.ui.upgrade() {
-            app_copy.refresh_monitors();
-            let count = app_copy.monitors.borrow().len();
-            let operator = usize::try_from(ui.get_operator_monitor()).ok();
-            let display = usize::try_from(ui.get_display_monitor()).ok();
-            if count == 0
-                || count == 1 && !ui.get_single_confirm()
-                || count > 1
-                    && (operator == display
-                        || operator.is_none_or(|index| index >= count)
-                        || display.is_none_or(|index| index >= count))
-            {
-                ui.set_problem(
-                    "显示器配置已变化。请重新选择两台显示器，或确认选择单屏启动。".into(),
-                );
+            if let Err(error) = app_copy.select_screens() {
+                app_copy.report_display_error(&error);
                 return;
             }
             app_copy.send(Command::Session(ui.get_hot_folder().as_str().into()), true);
@@ -199,10 +187,11 @@ fn bind_files(ui: &PhotoWindow, app: &Rc<Controller>) {
     });
     let app_copy = app.clone();
     ui.on_reopen_display(move || {
-        if let Err(error) = app_copy.open_display()
-            && let Some(ui) = app_copy.ui.upgrade()
+        if let Err(error) = app_copy
+            .select_screens()
+            .and_then(|()| app_copy.open_display())
         {
-            ui.set_problem(error.to_string().into());
+            app_copy.report_display_error(&error);
         }
     });
     let app_copy = app.clone();

@@ -56,9 +56,17 @@ impl Controller {
         ui.set_automatic(capture.is_none_or(|capture| {
             matches!(capture.selection, CandidateSelection::Automatic { .. })
         }));
+        ui.set_display_opening(self.display.borrow().as_ref().is_some_and(|d| {
+            matches!(
+                d.phase.get(),
+                super::DisplayPhase::Opening(_)
+                    | super::DisplayPhase::Positioning(_)
+                    | super::DisplayPhase::Attaching(_)
+            )
+        }));
         ui.set_display_online(
             self.display.borrow().as_ref().is_some_and(|display| {
-                snapshot.display_generation == Some(display.generation) && !display.lost.get()
+                snapshot.display_generation == Some(display.generation) && display.ready()
             }) && capture.and_then(display_id).is_some(),
         );
         ui.set_presented(
@@ -93,7 +101,7 @@ impl Controller {
         if new_session {
             ui.set_page(3);
             if let Err(error) = self.open_display() {
-                ui.set_problem(error.to_string().into());
+                self.report_display_error(&error);
             }
         }
     }
@@ -201,7 +209,7 @@ impl Controller {
         }
         if let Some(display) = self.display.borrow().as_ref()
             && snapshot.display_generation == Some(display.generation)
-            && !display.lost.get()
+            && display.ready()
         {
             let display_changed = display.component.get_photo() != ui.get_preview()
                 || display.component.get_has_team() == ui.get_selected_id().is_empty()

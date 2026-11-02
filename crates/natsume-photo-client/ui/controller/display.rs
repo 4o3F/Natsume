@@ -1,56 +1,89 @@
 use super::*;
+use snafu::{OptionExt as _, ensure};
 
-impl Controller {
-    pub(super) fn refresh_monitors(&self) {
-        let Some(ui) = self.ui.upgrade() else {
-            return;
-        };
-        if let Some(monitors) = ui
-            .window()
-            .with_winit_window(|window| window.available_monitors().collect::<Vec<_>>())
-        {
-            let labels: Vec<slint::SharedString> = monitors
-                .iter()
-                .enumerate()
-                .map(|(index, monitor)| {
-                    let size = monitor.size();
-                    format!(
-                        "显示器 {} · {} · {}×{}",
-                        index + 1,
-                        monitor.name().unwrap_or_default(),
-                        size.width,
-                        size.height
-                    )
-                    .into()
-                })
-                .collect();
-            ui.set_monitors(ModelRc::new(VecModel::from(labels)));
-            *self.monitors.borrow_mut() = monitors;
-        }
+#[derive(Clone, Copy)]
+pub(super) enum DisplayPhase {
+    Opening(Instant),
+    Positioning(Instant),
+    Attaching(Instant),
+    Ready,
+    Closed,
+}
+
+impl DisplayWindow {
+    pub fn ready(&self) -> bool {
+        matches!(self.phase.get(), DisplayPhase::Ready) && !self.lost.get()
     }
 
+    fn healthy(&self) -> bool {
+        !self.lost.get()
+            && self
+                .component
+                .window()
+                .with_winit_window(|window| self.placement.healthy(window))
+                .unwrap_or(false)
+    }
+}
+
+impl Controller {
     pub(super) fn open_display(self: &Rc<Self>) -> Result<(), Error> {
         if self.display.borrow().is_some() {
             return Ok(());
         }
-        let display = ContestantWindow::new().context(PlatformSnafu)?;
-        if self
-            .snapshot
+        ensure!(
+            self.snapshot
+                .borrow()
+                .capture
+                .as_ref()
+                .and_then(display_id)
+                .is_none(),
+            super::super::DisplayClosingSnafu
+        );
+        let placement = self
+            .screens
             .borrow()
-            .capture
-            .as_ref()
-            .and_then(display_id)
-            .is_some()
-        {
-            return super::super::DisplayClosingSnafu.fail();
-        }
-        let pending = Rc::new(RefCell::new(None::<PresentationRequest>));
-        let slot = pending.clone();
+            .clone()
+            .context(super::super::DisplaySelectionSnafu)?;
+        let component = ContestantWindow::new().context(PlatformSnafu)?;
+        let pending = Rc::new(RefCell::new(None));
         let lost = Rc::new(Cell::new(false));
-        let renderer_lost = lost.clone();
+        let phase = Rc::new(Cell::new(DisplayPhase::Opening(Instant::now())));
         let generation = uuid::Uuid::now_v7();
+        self.bind_display(&component, &placement, &pending, &lost, &phase, generation)?;
+        component.show().context(PlatformSnafu)?;
+        *self.display.borrow_mut() = Some(DisplayWindow {
+            component,
+            pending,
+            lost,
+            generation,
+            placement,
+            phase,
+        });
+        self.installed.borrow_mut().take();
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_display_problem("".into());
+            ui.set_display_opening(true);
+            ui.set_display_online(false);
+        }
+        Ok(())
+    }
+
+    fn bind_display(
+        self: &Rc<Self>,
+        component: &ContestantWindow,
+        placement: &DisplayPlacement,
+        pending: &Rc<RefCell<Option<PresentationRequest>>>,
+        lost: &Rc<Cell<bool>>,
+        phase: &Rc<Cell<DisplayPhase>>,
+        generation: uuid::Uuid,
+    ) -> Result<(), Error> {
+        let slot = pending.clone();
+        let renderer_lost = lost.clone();
+        let phase = phase.clone();
+        let placement = placement.clone();
+        let weak_window = component.as_weak();
         let commands = self.commands.clone();
-        display
+        component
             .window()
             .set_rendering_notifier(move |state, _| {
                 if matches!(state, slint::RenderingState::RenderingTeardown) {
@@ -58,75 +91,160 @@ impl Controller {
                     slot.borrow_mut().take();
                     return;
                 }
-                if !matches!(state, slint::RenderingState::AfterRendering) || renderer_lost.get() {
+                if matches!(state, slint::RenderingState::RenderingSetup)
+                    && !matches!(phase.get(), DisplayPhase::Ready | DisplayPhase::Closed)
+                {
+                    renderer_lost.set(false);
+                }
+                if !matches!(state, slint::RenderingState::AfterRendering)
+                    || !matches!(phase.get(), DisplayPhase::Ready)
+                    || renderer_lost.get()
+                {
+                    return;
+                }
+                let healthy = weak_window.upgrade().is_some_and(|window| {
+                    window
+                        .window()
+                        .with_winit_window(|native| placement.healthy(native))
+                        .unwrap_or(false)
+                });
+                if !healthy {
+                    renderer_lost.set(true);
+                    slot.borrow_mut().take();
                     return;
                 }
                 let mut pending = slot.borrow_mut();
-                if let Some(request) = pending.as_ref() {
-                    let receipt = super::receipt(request);
-                    if commands.try_send(Command::Rendered(receipt)).is_ok() {
-                        pending.take();
-                    }
+                if let Some(request) = pending.as_ref()
+                    && commands
+                        .try_send(Command::Rendered(super::receipt(request)))
+                        .is_ok()
+                {
+                    pending.take();
                 }
             })
             .context(RenderingSnafu)?;
         let weak = Rc::downgrade(self);
-        display.window().on_close_requested(move || {
+        component.window().on_close_requested(move || {
             if let Some(app) = weak.upgrade() {
-                app.detach();
+                let current = app
+                    .display
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|d| d.generation == generation);
+                if current {
+                    app.detach();
+                }
             }
             slint::CloseRequestResponse::HideWindow
         });
-        display.show().context(PlatformSnafu)?;
-        if let Some(ui) = self.ui.upgrade() {
-            let monitors = self.monitors.borrow();
-            if monitors.len() > 1 {
-                let operator = usize::try_from(ui.get_operator_monitor())
-                    .ok()
-                    .and_then(|index| monitors.get(index));
-                let chosen = usize::try_from(ui.get_display_monitor())
-                    .ok()
-                    .and_then(|index| monitors.get(index));
-                if let (Some(operator), Some(chosen)) = (operator, chosen) {
-                    ui.window()
-                        .with_winit_window(|window| window.set_outer_position(operator.position()));
-                    display.window().with_winit_window(|window| {
-                        window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
-                            chosen.clone(),
-                        ))));
-                    });
-                    *self.display_monitor.borrow_mut() = Some(chosen.clone());
+        Ok(())
+    }
+
+    fn advance_display(&self) -> Result<bool, Error> {
+        let ui = self
+            .ui
+            .upgrade()
+            .context(super::super::DisplayClosingSnafu)?;
+        let displays = self.display.borrow();
+        let Some(display) = displays.as_ref() else {
+            return Ok(false);
+        };
+        match display.phase.get() {
+            DisplayPhase::Opening(started) => {
+                ensure!(
+                    started.elapsed() < Duration::from_secs(5),
+                    super::super::DisplayTimeoutSnafu
+                );
+                let available = display
+                    .component
+                    .window()
+                    .with_winit_window(|w| display.placement.available(w));
+                ensure!(
+                    available != Some(false),
+                    super::super::DisplaySelectionSnafu
+                );
+                if available == Some(true)
+                    && display
+                        .placement
+                        .place(ui.window(), display.component.window())
+                {
+                    display.phase.set(DisplayPhase::Positioning(started));
                 }
-            } else if let Some(monitor) = monitors.first() {
-                // Centered defaults completely overlap on one screen. Keep the
-                // contestant window visible when the operator takes focus;
-                // Windows may stop painting a fully occluded window.
-                ui.window().with_winit_window(|window| {
-                    window.set_outer_position(monitor.position());
-                });
-                display.window().with_winit_window(|window| {
-                    let origin = monitor.position();
-                    let available = monitor
-                        .size()
-                        .width
-                        .saturating_sub(window.outer_size().width);
-                    let offset = i32::try_from(available).unwrap_or(i32::MAX);
-                    window.set_outer_position(winit::dpi::PhysicalPosition::new(
-                        origin.x.saturating_add(offset),
-                        origin.y,
-                    ));
-                });
+            }
+            DisplayPhase::Positioning(started) => {
+                ensure!(
+                    started.elapsed() < Duration::from_secs(5),
+                    super::super::DisplayTimeoutSnafu
+                );
+                let positioned = !display.lost.get()
+                    && display
+                        .component
+                        .window()
+                        .with_winit_window(|w| display.placement.positioned(ui.window(), w))
+                        .unwrap_or(false);
+                if positioned {
+                    // Do not hide backpressure behind the general fire-and-forget UI sender.
+                    self.commands
+                        .try_send(Command::Attach(display.generation))
+                        .map_err(|error| match error {
+                            mpsc::error::TrySendError::Full(_) => {
+                                super::super::DisplayQueueFullSnafu.build()
+                            }
+                            mpsc::error::TrySendError::Closed(_) => {
+                                super::super::DisplayWorkerStoppedSnafu.build()
+                            }
+                        })?;
+                    display.phase.set(DisplayPhase::Attaching(Instant::now()));
+                }
+            }
+            DisplayPhase::Attaching(started) => {
+                ensure!(
+                    started.elapsed() < Duration::from_secs(5),
+                    super::super::DisplayTimeoutSnafu
+                );
+                ensure!(display.healthy(), super::super::DisplayInvalidSnafu);
+                let snapshot = self.snapshot.borrow();
+                if snapshot.display_generation == Some(display.generation)
+                    && snapshot.capture.as_ref().and_then(display_id).is_some()
+                {
+                    display.phase.set(DisplayPhase::Ready);
+                    return Ok(true);
+                }
+            }
+            DisplayPhase::Ready => {
+                ensure!(display.healthy(), super::super::DisplayInvalidSnafu);
+                if display.pending.borrow().is_some() {
+                    display.component.window().request_redraw();
+                }
+            }
+            DisplayPhase::Closed => {}
+        }
+        Ok(false)
+    }
+
+    pub(super) fn check_display(self: &Rc<Self>) {
+        if self.quitting.get() {
+            self.detach();
+            return;
+        }
+        match self.advance_display() {
+            Ok(true) => {
+                let snapshot = self.snapshot.borrow().clone();
+                self.apply(snapshot);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.detach();
+                self.report_display_error(&error);
             }
         }
-        *self.display.borrow_mut() = Some(DisplayWindow {
-            component: display,
-            pending,
-            lost,
-            generation,
-        });
-        self.installed.borrow_mut().take();
-        self.send(Command::Attach(generation), true);
-        Ok(())
+    }
+
+    pub(super) fn report_display_error(&self, error: &Error) {
+        tracing::warn!(%error, "Photo display unavailable");
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_display_problem(error.to_string().into());
+        }
     }
 
     pub(super) fn detach(&self) {
@@ -135,63 +253,19 @@ impl Controller {
         if let Some(id) = self.snapshot.borrow().capture.as_ref().and_then(display_id) {
             self.send(Command::Detach(id), false);
         }
-        if let Some(display) = self.display.borrow_mut().take() {
+        let display = self.display.borrow_mut().take();
+        if let Some(display) = display {
+            display.phase.set(DisplayPhase::Closed);
             display.component.set_photo(slint::Image::default());
             if let Err(error) = display.component.hide() {
                 tracing::error!(%error, "cannot hide contestant window");
             }
         }
-        self.display_monitor.borrow_mut().take();
         if let Some(ui) = self.ui.upgrade() {
+            ui.set_display_opening(false);
             ui.set_display_online(false);
             ui.set_presented(false);
             ui.set_verbal(false);
-        }
-    }
-
-    pub(super) fn check_display(&self) {
-        if self.display.borrow().is_none() {
-            return;
-        }
-        let disconnected = self
-            .ui
-            .upgrade()
-            .and_then(|ui| {
-                ui.window().with_winit_window(|window| {
-                    self.display_monitor
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|monitor| {
-                            !window
-                                .available_monitors()
-                                .any(|available| available == *monitor)
-                        })
-                })
-            })
-            .unwrap_or(true);
-        let minimized = self
-            .display
-            .borrow()
-            .as_ref()
-            .and_then(|display| {
-                display
-                    .component
-                    .window()
-                    .with_winit_window(slint::winit_030::winit::window::Window::is_minimized)
-            })
-            .flatten()
-            .unwrap_or(false);
-        let lost = self
-            .display
-            .borrow()
-            .as_ref()
-            .is_some_and(|display| display.lost.get());
-        if disconnected || minimized || lost {
-            self.detach();
-        } else if let Some(display) = self.display.borrow().as_ref()
-            && display.pending.borrow().is_some()
-        {
-            display.component.window().request_redraw();
         }
     }
 }

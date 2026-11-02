@@ -81,6 +81,8 @@ tests are in `backend/tests/unit/ui_application.rs`:
 | `application_shutdown_leaves_a_final_snapshot_after_the_sender_closes` | Final state survives Sender closure; the window loop must terminate on closure |
 | `stale_group_command_cannot_abandon_the_retake_group` | Old queued group identity cannot affect a retake |
 | `changed_image_never_produces_pixels_or_a_receipt` | Tampered normalized input is rejected before display |
+| `duplicate_or_stale_detach_preserves_the_current_display` | Duplicate cleanup and old display IDs cannot detach a newer generation |
+| `native_display_queue_failure_retry_and_stale_close` | Native readiness, early close, Attach backpressure rollback/retry, stale close isolation, stable monitor selection and windowed placement |
 | `native_windows_render_each_page_and_acknowledge_only_a_rendered_photo` | Real Skia windows, page screenshots, actual render notification and backend confirmation |
 | `live_server_ui_initialization_through_signed_zip` | Opt-in real HTTPS Server, Windows vault, production Slint callbacks and display adapter, photo ingestion/confirmation/cleanup, signed ZIP and read-only reopen |
 
@@ -136,3 +138,31 @@ second export passed with byte-identical ZIP output. Evidence is retained in
 the ignored `target/photo-ui-live-*` artifacts and local learning notes.
 
 The Unassigned page and manual assignment API have been removed. Arrivals without a known active capture group are baselined in the source folder, not copied into the workspace or reassigned later. The four navigation items use equal widths. Dragging is available on non-interactive header regions; its native move request is queued after pointer-press handling to avoid competing with pointer capture.
+
+## Display window lifecycle
+
+The 100 ms UI timer advances `Opening → Positioning → Attaching → Ready`.
+`show()` alone does not imply that Winit has created its native window. The
+adapter waits for that window, positions both roles using frozen monitor handles,
+checks the actual monitor, physical position, fullscreen mode and size, and only
+then queues Attach. Ready also requires a matching backend generation. Each
+startup phase has a five-second deadline; failures hide the window and retain a
+visible diagnostic so the operator can retry. Monitor-list refresh preserves
+selected identities rather than reusing indices from an older enumeration.
+
+Only Ready windows can send AfterRendering receipts. Both the timer and the
+render callback validate the native display; confirmation also runs the timer
+check before sending its command. Closing, minimizing, losing the renderer or
+breaking the chosen fullscreen placement invalidates the old presentation.
+Windowed mode permits moving within the selected monitor. Reopening creates a
+new generation; stale close callbacks and duplicate backend Detach commands
+cannot invalidate it. Display settings remain available after a lost window.
+
+On 2026-11-02 the live UI journey passed with DISPLAY1 as operator and DISPLAY5
+as viewer, and with those roles reversed. It measured actual fullscreen geometry,
+closed/minimized/misplaced/exited fullscreen and reopened each window, switched
+photos without clicking the viewer, then confirmed and verified a signed ZIP.
+These runs reopened an already authorized workspace offline; they did not repeat
+Server pairing. The separate native lifecycle fixture exercised a full command
+queue and the non-fullscreen placement path. Neither test proves physical monitor
+unplugging, mixed-DPI behavior or real-camera transfer.
