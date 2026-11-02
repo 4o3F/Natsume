@@ -182,6 +182,13 @@ async fn ui_owner_requires_exact_frame_then_saves_and_cleans_without_deleting_ca
         .await
         .context(ApplicationSnafu)?;
     assert!(app.view.final_preview.is_some());
+    assert_eq!(
+        app.view
+            .final_team
+            .as_ref()
+            .map(|team| team.account_id.as_str()),
+        Some(TEAM)
+    );
     assert!(
         app.view.frame.is_none(),
         "viewing a saved result cannot create a presentation receipt"
@@ -192,6 +199,66 @@ async fn ui_owner_requires_exact_frame_then_saves_and_cleans_without_deleting_ca
             .is_err()
     );
     assert!(app.view.final_preview.is_none());
+    app.session
+        .take()
+        .context(FixtureSnafu)?
+        .shutdown()
+        .await
+        .context(CaptureSnafu)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_review_suspends_receipts_and_resume_preserves_the_capture_group() -> TestResult {
+    let (_temporary, mut app, hot) = fixture().await?;
+    let request = ready(&mut app, &hot).await?;
+    app.execute(Command::Rendered(crate::gui::controller::receipt(&request)))
+        .await
+        .context(ApplicationSnafu)?;
+    app.execute(Command::Confirm(request.clone()))
+        .await
+        .context(ApplicationSnafu)?;
+    app.refresh().await.context(ApplicationSnafu)?;
+    let before = app.view.capture.clone().context(FixtureSnafu)?;
+    app.execute(Command::PreviewFinal(TEAM.to_owned()))
+        .await
+        .context(ApplicationSnafu)?;
+    app.refresh().await.context(ApplicationSnafu)?;
+    let review = app.view.capture.as_ref().context(FixtureSnafu)?;
+    assert_eq!(review.group_id, before.group_id);
+    assert_eq!(review.selection, before.selection);
+    assert_eq!(app.view.selected.as_deref(), Some(TEAM));
+    assert!(matches!(
+        review.presentation,
+        PresentationStatus::Unavailable
+    ));
+    assert!(app.view.frame.is_none());
+    assert!(app.view.final_preview.is_some());
+    assert!(
+        app.execute(Command::Confirm(request.clone()))
+            .await
+            .is_err()
+    );
+    let generation = Uuid::now_v7();
+    app.execute(Command::ResumeDisplay(Some(generation)))
+        .await
+        .context(ApplicationSnafu)?;
+    app.refresh().await.context(ApplicationSnafu)?;
+    assert!(app.view.final_team.is_none());
+    assert_eq!(app.view.display_generation, Some(generation));
+    let capture = app.view.capture.as_ref().context(FixtureSnafu)?;
+    assert_eq!(capture.group_id, before.group_id);
+    let PresentationStatus::Pending(current) = &capture.presentation else {
+        return FixtureSnafu.fail();
+    };
+    assert_ne!(current.display_id(), request.display_id());
+    let current = current.clone();
+    app.execute(Command::Rendered(crate::gui::controller::receipt(&request)))
+        .await
+        .context(ApplicationSnafu)?;
+    assert!(
+        matches!(app.session().context(ApplicationSnafu)?.snapshot().context(CaptureSnafu)?.presentation, PresentationStatus::Pending(ref request) if request == &current)
+    );
     app.session
         .take()
         .context(FixtureSnafu)?
@@ -420,6 +487,16 @@ fn native_windows_render_each_page_and_acknowledge_only_a_rendered_photo() -> Te
     ui.show().context(PlatformSnafu)?;
     display.show().context(PlatformSnafu)?;
     capture_pages(&ui, &app.view)?;
+    let screenshot = display.window().take_snapshot().context(PlatformSnafu)?;
+    image::save_buffer(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/photo-ui-screenshots/contestant.png"),
+        screenshot.as_bytes(),
+        screenshot.width(),
+        screenshot.height(),
+        image::ColorType::Rgba8,
+    )
+    .context(ImageSnafu)?;
     assert_eq!(
         ui.window()
             .with_winit_window(winit::window::Window::is_decorated),

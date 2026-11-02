@@ -15,6 +15,7 @@ pub(super) fn bind(ui: &PhotoWindow, app: &Rc<Controller>) {
 }
 
 fn bind_window_controls(ui: &PhotoWindow, app: &Rc<Controller>) {
+    super::window::bind(ui.window(), false);
     let weak = ui.as_weak();
     ui.on_drag_window(move || {
         // Let Slint finish handling the mouse press/capture before Windows
@@ -155,7 +156,29 @@ fn bind_capture(ui: &PhotoWindow, app: &Rc<Controller>) {
 
 fn bind_files(ui: &PhotoWindow, app: &Rc<Controller>) {
     let app_copy = app.clone();
+    ui.on_display_page_changed(move || {
+        app_copy.clear_render();
+        app_copy.installed.borrow_mut().take();
+        if let Some(ui) = app_copy.ui.upgrade() {
+            ui.set_presented(false);
+            ui.set_verbal(false);
+            if ui.get_page() != 4 {
+                let generation = app_copy
+                    .display
+                    .borrow()
+                    .as_ref()
+                    .map(|display| display.generation);
+                app_copy.send(Command::ResumeDisplay(generation), false);
+            }
+        }
+    });
+    let app_copy = app.clone();
     ui.on_preview_final(move |account| {
+        app_copy.clear_render();
+        if let Some(ui) = app_copy.ui.upgrade() {
+            ui.set_presented(false);
+            ui.set_verbal(false);
+        }
         app_copy.send(Command::PreviewFinal(account.to_string()), true);
     });
     let app_copy = app.clone();

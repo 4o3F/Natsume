@@ -154,7 +154,8 @@ Only Ready windows can send AfterRendering receipts. Both the timer and the
 render callback validate the native display; confirmation also runs the timer
 check before sending its command. Closing, minimizing, losing the renderer or
 breaking the chosen fullscreen placement invalidates the old presentation.
-Windowed mode permits moving within the selected monitor. Reopening creates a
+Windowed mode permits moving within the selected monitor and toggling fullscreen
+with F11 while the viewer has keyboard focus. Reopening creates a
 new generation; stale close callbacks and duplicate backend Detach commands
 cannot invalidate it. Display settings remain available after a lost window.
 
@@ -166,3 +167,23 @@ These runs reopened an already authorized workspace offline; they did not repeat
 Server pairing. The separate native lifecycle fixture exercised a full command
 queue and the non-fullscreen placement path. Neither test proves physical monitor
 unplugging, mixed-DPI behavior or real-camera transfer.
+
+Frameless operator and windowed viewer borders use a six-logical-pixel native
+resize region, including all four corners. Winit pointer presses in that region
+are consumed before Slint captures them, then passed to the native resize API.
+Maximized and fullscreen windows do not resize from those borders. F11 handling
+is registered only for the single-screen viewer and ignores key repeats.
+`native_frameless_resize_and_f11_restore` is an opt-in interactive fixture:
+resize both windows, focus the viewer and press F11 twice within 90 seconds.
+It checks that both sizes change, single-screen fullscreen remains healthy, and
+the viewer returns to windowed mode. On 2026-11-02 an actual mouse/keyboard probe
+resized the operator from 1440×960 to 1520×1010 and the viewer from 960×540 to
+1040×590, entered 2560×1440 fullscreen, then restored 1040×590.
+
+Overview View projects the saved team's identity, logo and verified final image
+to the contestant window. It suspends the capture presentation without changing
+the selected capture team or group. Leaving Overview resumes capture with a new
+DisplayId, so old receipts cannot authorize a new confirmation. Review images
+never populate the rendering receipt slot. The live journey checks viewing team A
+while B remains selected, and restoring B's blank capture view before ZIP export.
+The footer retains its status text without the overlapping separator rule.

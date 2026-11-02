@@ -17,24 +17,7 @@ impl Controller {
         }
         ui.set_status(snapshot.status.clone().into());
         ui.set_export_status(snapshot.export_status.clone().into());
-        if snapshot.final_preview.as_ref().map(std::sync::Arc::as_ptr)
-            != self
-                .final_preview
-                .borrow()
-                .as_ref()
-                .map(std::sync::Arc::as_ptr)
-        {
-            ui.set_final_preview(
-                snapshot
-                    .final_preview
-                    .as_ref()
-                    .map_or_else(slint::Image::default, |pixels| pixels.image()),
-            );
-            self.final_preview
-                .borrow_mut()
-                .clone_from(&snapshot.final_preview);
-        }
-        ui.set_final_details(snapshot.final_details.clone().into());
+        let final_changed = self.apply_final_preview(&ui, &snapshot);
         let newly_ready = !ui.get_ready() && snapshot.root.is_some();
         ui.set_ready(snapshot.root.is_some());
         if let Some(root) = &snapshot.root {
@@ -64,13 +47,15 @@ impl Controller {
                     | super::DisplayPhase::Attaching(_)
             )
         }));
-        ui.set_display_online(
-            self.display.borrow().as_ref().is_some_and(|display| {
-                snapshot.display_generation == Some(display.generation) && display.ready()
-            }) && capture.and_then(display_id).is_some(),
-        );
+        ui.set_display_online(self.display.borrow().as_ref().is_some_and(|display| {
+            display.ready()
+                && (snapshot.final_team.is_some()
+                    || snapshot.display_generation == Some(display.generation)
+                        && capture.and_then(display_id).is_some())
+        }));
         ui.set_presented(
             ui.get_display_online()
+                && snapshot.final_team.is_none()
                 && snapshot.frame.as_ref().is_some_and(|frame| capture.is_some_and(|capture| {
                     matches!(&capture.presentation, PresentationStatus::Presented(request) if *request == frame.request)
                 })),
@@ -90,6 +75,11 @@ impl Controller {
         } else {
             None
         };
+        let review_needs_window = final_changed
+            && ui.get_page() == 4
+            && snapshot.final_team.is_some()
+            && self.display.borrow().is_none()
+            && self.screens.borrow().is_some();
         *self.snapshot.borrow_mut() = snapshot;
         if let Some(id) = orphaned_display {
             self.send(Command::Detach(id), false);
@@ -100,10 +90,34 @@ impl Controller {
         }
         if new_session {
             ui.set_page(3);
-            if let Err(error) = self.open_display() {
-                self.report_display_error(&error);
-            }
         }
+        if (new_session || review_needs_window)
+            && let Err(error) = self.open_display()
+        {
+            self.report_display_error(&error);
+        }
+    }
+
+    fn apply_final_preview(&self, ui: &PhotoWindow, snapshot: &Snapshot) -> bool {
+        let changed = snapshot.final_preview.as_ref().map(std::sync::Arc::as_ptr)
+            != self
+                .final_preview
+                .borrow()
+                .as_ref()
+                .map(std::sync::Arc::as_ptr);
+        if changed {
+            ui.set_final_preview(
+                snapshot
+                    .final_preview
+                    .as_ref()
+                    .map_or_else(slint::Image::default, |pixels| pixels.image()),
+            );
+            self.final_preview
+                .borrow_mut()
+                .clone_from(&snapshot.final_preview);
+        }
+        ui.set_final_details(snapshot.final_details.clone().into());
+        changed
     }
 
     fn apply_models(&self, ui: &PhotoWindow, snapshot: &Snapshot) -> bool {
@@ -199,6 +213,10 @@ impl Controller {
     }
 
     fn apply_frame(&self, ui: &PhotoWindow, snapshot: &Snapshot) {
+        if ui.get_page() == 4 && snapshot.final_team.is_some() {
+            self.apply_final_display(ui, snapshot);
+            return;
+        }
         let frame = snapshot.frame.as_ref();
         let changed = self.installed.borrow().as_ref() != frame.map(|frame| &frame.request);
         if changed {
@@ -206,6 +224,14 @@ impl Controller {
             ui.set_verbal(false);
             ui.set_preview(frame.map_or_else(slint::Image::default, |frame| frame.pixels.image()));
             *self.installed.borrow_mut() = frame.map(|frame| frame.request.clone());
+        }
+        if let Some(display) = self.display.borrow().as_ref()
+            && snapshot.display_generation != Some(display.generation)
+        {
+            display.pending.borrow_mut().take();
+            display.component.set_has_team(false);
+            display.component.set_has_photo(false);
+            display.component.set_photo(slint::Image::default());
         }
         if let Some(display) = self.display.borrow().as_ref()
             && snapshot.display_generation == Some(display.generation)
@@ -236,6 +262,41 @@ impl Controller {
                 display.component.window().request_redraw();
             }
         }
+    }
+
+    fn apply_final_display(&self, ui: &PhotoWindow, snapshot: &Snapshot) {
+        self.clear_render();
+        let displays = self.display.borrow();
+        let Some(display) = displays.as_ref().filter(|display| display.ready()) else {
+            return;
+        };
+        let Some(team) = &snapshot.final_team else {
+            return;
+        };
+        display.component.set_has_team(true);
+        display.component.set_account(team.account.clone().into());
+        display
+            .component
+            .set_school(team.school_name_zh.clone().into());
+        display
+            .component
+            .set_school_en(team.school_name_en.clone().into());
+        display.component.set_team(team.team_name_zh.clone().into());
+        display
+            .component
+            .set_team_en(team.team_name_en.clone().into());
+        display.component.set_logo(
+            snapshot
+                .final_logo
+                .as_ref()
+                .map_or_else(slint::Image::default, |pixels| pixels.image()),
+        );
+        display
+            .component
+            .set_has_photo(snapshot.final_preview.is_some());
+        display.component.set_confirmed(true);
+        display.component.set_photo(ui.get_final_preview());
+        display.component.window().request_redraw();
     }
     pub(super) fn filter(&self, query: &str) {
         let Some(ui) = self.ui.upgrade() else {

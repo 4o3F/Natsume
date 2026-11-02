@@ -39,6 +39,9 @@ impl DisplayPlacement {
         match self {
             Self::Fullscreen { .. } => true,
             Self::Windowed(m) => {
+                if viewer_window.fullscreen().is_some() {
+                    return true;
+                }
                 let offset = m
                     .size()
                     .width
@@ -63,7 +66,13 @@ impl DisplayPlacement {
             Self::Windowed(monitor) => {
                 available.contains(monitor)
                     && window.current_monitor().as_ref() == Some(monitor)
-                    && window.fullscreen().is_none()
+                    && match window.fullscreen() {
+                        None => true,
+                        Some(winit::window::Fullscreen::Borderless(selected)) => {
+                            selected.as_ref().is_none_or(|selected| selected == monitor)
+                        }
+                        _ => false,
+                    }
             }
             Self::Fullscreen { operator, viewer } => {
                 available.contains(operator)

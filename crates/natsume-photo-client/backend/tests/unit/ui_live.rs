@@ -99,6 +99,9 @@ enum Stage {
     Presented,
     Confirmed,
     Finished,
+    ReviewSelected,
+    Review,
+    Resumed,
     Exported,
     Done,
 }
@@ -211,15 +214,102 @@ impl Journey {
                 ui.invoke_finish_group();
                 self.next(Stage::Finished);
             }
+            Stage::Finished
+            | Stage::ReviewSelected
+            | Stage::Review
+            | Stage::Resumed
+            | Stage::Exported
+            | Stage::Done => return self.advance_completed(app, ui, &snapshot),
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn advance_completed(
+        &mut self,
+        app: &Controller,
+        ui: &PhotoWindow,
+        snapshot: &Snapshot,
+    ) -> Result<bool> {
+        match self.stage {
             Stage::Finished if !ui.get_group_active() => {
                 ensure!(snapshot.thumbnails.is_empty(), InvariantSnafu);
+                let other = snapshot.teams.get(1).context(InvariantSnafu)?;
+                ui.invoke_select_team(other.account_id.clone().into());
+                self.next(Stage::ReviewSelected);
+            }
+            Stage::ReviewSelected
+                if snapshot.selected.as_deref()
+                    == snapshot.teams.get(1).map(|team| team.account_id.as_str()) =>
+            {
+                ui.set_page(4);
+                let saved = snapshot.finals.first().context(InvariantSnafu)?;
+                ui.invoke_preview_final(saved.account_id().into());
+                self.next(Stage::Review);
+            }
+            Stage::Review if snapshot.final_team.is_some() => {
+                let team = snapshot.final_team.as_ref().context(InvariantSnafu)?;
+                ensure!(
+                    snapshot.selected.as_deref() != Some(team.account_id.as_str()),
+                    InvariantSnafu
+                );
+                let displays = app.display.borrow();
+                let display = displays.as_ref().context(InvariantSnafu)?;
+                ensure!(
+                    display.component.get_account() == team.account
+                        && display.component.get_photo() == ui.get_final_preview(),
+                    InvariantSnafu
+                );
+                ensure!(
+                    display.component.get_confirmed()
+                        && display.pending.borrow().is_none()
+                        && !ui.get_presented(),
+                    InvariantSnafu
+                );
+                save_screenshot(ui, &self.config, "overview")?;
+                let image = display
+                    .component
+                    .window()
+                    .take_snapshot()
+                    .context(PlatformSnafu)?;
+                image::save_buffer(
+                    self.config
+                        .zip
+                        .parent()
+                        .context(InvariantSnafu)?
+                        .join("overview-display.png"),
+                    image.as_bytes(),
+                    image.width(),
+                    image.height(),
+                    image::ColorType::Rgba8,
+                )
+                .context(ImageSnafu)?;
+                drop(displays);
+                ui.set_page(3);
+                self.next(Stage::Resumed);
+            }
+            Stage::Resumed if snapshot.final_team.is_none() && ui.get_display_online() => {
+                let displays = app.display.borrow();
+                let display = displays.as_ref().context(InvariantSnafu)?;
+                ensure!(
+                    display.component.get_account() == ui.get_account()
+                        && !display.component.get_has_photo(),
+                    InvariantSnafu
+                );
+                ensure!(
+                    snapshot.capture.as_ref().is_some_and(|capture| matches!(
+                        capture.presentation,
+                        PresentationStatus::Blank { .. }
+                    )),
+                    InvariantSnafu
+                );
                 ui.set_page(5);
                 ui.set_export_path(self.config.zip.display().to_string().into());
                 ui.invoke_export_results();
                 self.next(Stage::Exported);
             }
             Stage::Exported if self.config.zip.is_file() => {
-                self.check_export(ui, &snapshot)?;
+                self.check_export(ui, snapshot)?;
                 self.next(Stage::Done);
             }
             Stage::Done => return Ok(true),

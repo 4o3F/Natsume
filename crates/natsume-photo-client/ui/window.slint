@@ -83,6 +83,8 @@ export component PhotoWindow inherits Window {
     callback minimize-window;
     callback maximize-window;
     callback close-window;
+    callback display-page-changed;
+    changed page => { root.display-page-changed(); }
 
     VerticalLayout {
         spacing: 0;
@@ -490,7 +492,7 @@ export component PhotoWindow inherits Window {
             ScrollView { content-width: self.width; VerticalLayout { spacing: 12px; for message in root.diagnostics: Label { text: message; color: Palette.error; wrap: word-wrap; height: 52px; } } }
             HorizontalLayout { spacing: 16px; Action { text: "重试本地清理"; outline: true; reason: !root.session-active || root.busy ? "会话未就绪" : ""; clicked => { root.retry-cleanup(); } } Action { text: "已核对丢失源文件"; outline: true; reason: !root.session-active || root.busy ? "会话未就绪" : ""; clicked => { root.acknowledge-missing(); } } Rectangle { horizontal-stretch: 1; } }
         }
-        Rectangle { height: 32px; border-width: 0px; Rule { width: parent.width; } Label { x: 32px; height: parent.height; width: parent.width - 64px; text: root.status; font-size: 12px; color: Palette.muted; } }
+        Rectangle { height: 32px; border-width: 0px; Label { x: 32px; height: parent.height; width: parent.width - 64px; text: root.status; font-size: 12px; color: Palette.muted; } }
     }
     if root.dialog-action != 0: Rectangle {
         x: 0px; y: 0px; width: root.width; height: root.height; background: #11111180;
@@ -543,7 +545,11 @@ export component ContestantWindow inherits Window {
                     Rectangle { height: 8px * root.stage-scale; }
                     HorizontalLayout { spacing: 24px * root.stage-scale; Label { text: root.team; color: Palette.paper; font-size: 44px * root.stage-scale; font-weight: 700; height: 54px * root.stage-scale; } Label { text: root.team-en; color: #999999; font-size: 28px * root.stage-scale; } }
                 }
-                VerticalLayout { width: 260px * root.stage-scale; Eyebrow { text: "TEAM ID"; color: #999999; horizontal-alignment: right; font-size: 20px * root.stage-scale; height: 28px * root.stage-scale; } Label { text: root.account; color: Palette.paper; font-family: "Cascadia Mono"; font-size: 64px * root.stage-scale; font-weight: 700; horizontal-alignment: right; } }
+                VerticalLayout {
+                    width: max(260px * root.stage-scale, team-number.preferred-width);
+                    Eyebrow { text: "TEAM ID"; color: #999999; horizontal-alignment: right; font-size: 20px * root.stage-scale; height: 28px * root.stage-scale; }
+                    team-number := Label { text: root.account; color: Palette.paper; font-family: "Cascadia Mono"; font-size: 64px * root.stage-scale; font-weight: 700; horizontal-alignment: right; }
+                }
             }
             Rectangle { y: parent.height - 1px; height: 1px; width: parent.width; background: #383838; }
         }

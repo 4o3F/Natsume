@@ -42,6 +42,10 @@ pub(crate) enum Error {
     WindowDrag {
         source: slint::winit_030::winit::error::ExternalError,
     },
+    #[snafu(display("cannot resize the Photo window"))]
+    WindowResize {
+        source: slint::winit_030::winit::error::ExternalError,
+    },
 }
 
 pub(crate) fn run() -> Result<(), Error> {

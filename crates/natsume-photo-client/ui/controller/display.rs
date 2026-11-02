@@ -49,6 +49,10 @@ impl Controller {
         let lost = Rc::new(Cell::new(false));
         let phase = Rc::new(Cell::new(DisplayPhase::Opening(Instant::now())));
         let generation = uuid::Uuid::now_v7();
+        super::window::bind(
+            component.window(),
+            matches!(placement, DisplayPlacement::Windowed(_)),
+        );
         self.bind_display(&component, &placement, &pending, &lost, &phase, generation)?;
         component.show().context(PlatformSnafu)?;
         *self.display.borrow_mut() = Some(DisplayWindow {
@@ -183,6 +187,10 @@ impl Controller {
                         .with_winit_window(|w| display.placement.positioned(ui.window(), w))
                         .unwrap_or(false);
                 if positioned {
+                    if self.snapshot.borrow().final_team.is_some() {
+                        display.phase.set(DisplayPhase::Ready);
+                        return Ok(true);
+                    }
                     // Do not hide backpressure behind the general fire-and-forget UI sender.
                     self.commands
                         .try_send(Command::Attach(display.generation))
@@ -204,8 +212,9 @@ impl Controller {
                 );
                 ensure!(display.healthy(), super::super::DisplayInvalidSnafu);
                 let snapshot = self.snapshot.borrow();
-                if snapshot.display_generation == Some(display.generation)
-                    && snapshot.capture.as_ref().and_then(display_id).is_some()
+                if snapshot.final_team.is_some()
+                    || snapshot.display_generation == Some(display.generation)
+                        && snapshot.capture.as_ref().and_then(display_id).is_some()
                 {
                     display.phase.set(DisplayPhase::Ready);
                     return Ok(true);

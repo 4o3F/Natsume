@@ -38,6 +38,7 @@ pub(super) enum Command {
     AcknowledgeMissing(Vec<PathBuf>),
     Export(PathBuf),
     PreviewFinal(String),
+    ResumeDisplay(Option<Uuid>),
     Shutdown,
 }
 
@@ -110,6 +111,8 @@ pub(super) struct Snapshot {
     pub display_generation: Option<Uuid>,
     pub final_preview: Option<Arc<Pixels>>,
     pub final_details: String,
+    pub final_team: Option<PhotoTeam>,
+    pub final_logo: Option<Arc<Pixels>>,
 }
 
 #[derive(Default)]
@@ -301,6 +304,7 @@ impl Application {
             Command::PreviewFinal(account) => {
                 self.preview_final(&account).await?;
             }
+            Command::ResumeDisplay(generation) => self.resume_display(generation).await?,
             Command::Group { id: group, action } => {
                 self.group(group, action).await?;
             }
@@ -380,6 +384,7 @@ impl Application {
     }
 
     async fn confirm(&mut self, request: PresentationRequest) -> Result<()> {
+        snafu::ensure!(self.view.final_team.is_none(), NotReadySnafu);
         self.view.final_preview = None;
         self.view.final_details.clear();
         let intent = self
@@ -432,7 +437,17 @@ impl Application {
     async fn preview_final(&mut self, account: &str) -> Result<()> {
         self.view.final_preview = None;
         self.view.final_details.clear();
+        self.view.final_team = None;
+        self.view.final_logo = None;
+        self.suspend_display().await?;
         let workspace = self.workspace.as_ref().context(NotReadySnafu)?;
+        let team = self
+            .view
+            .teams
+            .iter()
+            .find(|team| team.account_id == account)
+            .cloned()
+            .context(NotReadySnafu)?;
         let photo = workspace
             .confirmed_photos()
             .await
@@ -455,6 +470,51 @@ impl Application {
                 .context(WorkerSnafu)?
                 .context(ImageSnafu)?,
         );
+        if let Some(path) = workspace.logo_path(account).await.context(WorkspaceSnafu)? {
+            self.view.final_logo = Some(
+                tokio::task::spawn_blocking(move || images::logo(&path))
+                    .await
+                    .context(WorkerSnafu)?
+                    .context(ImageSnafu)?,
+            );
+        }
+        self.view.final_team = Some(team);
+        Ok(())
+    }
+
+    async fn suspend_display(&mut self) -> Result<()> {
+        if let Some(session) = &self.session {
+            let status = session.snapshot().context(CaptureSnafu)?.presentation;
+            let id = match status {
+                PresentationStatus::Unavailable => None,
+                PresentationStatus::Blank { display_id } => Some(display_id),
+                PresentationStatus::Pending(request) | PresentationStatus::Presented(request) => {
+                    Some(request.display_id())
+                }
+            };
+            if let Some(id) = id {
+                session.detach_display(id).await.context(CaptureSnafu)?;
+            }
+        }
+        self.view.display_generation = None;
+        self.view.frame = None;
+        Ok(())
+    }
+
+    async fn resume_display(&mut self, generation: Option<Uuid>) -> Result<()> {
+        if self.view.final_team.take().is_some() {
+            self.suspend_display().await?;
+        }
+        self.view.final_logo = None;
+        if let (Some(session), Some(generation)) = (&self.session, generation)
+            && matches!(
+                session.snapshot().context(CaptureSnafu)?.presentation,
+                PresentationStatus::Unavailable
+            )
+        {
+            session.attach_display().await.context(CaptureSnafu)?;
+            self.view.display_generation = Some(generation);
+        }
         Ok(())
     }
 

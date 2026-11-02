@@ -2,6 +2,7 @@ mod bindings;
 mod display;
 mod monitors;
 mod view;
+mod window;
 
 #[cfg(test)]
 #[path = "../backend/tests/unit/ui_live.rs"]
