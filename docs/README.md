@@ -11,6 +11,7 @@
 | [DOMjudge 打印受理与独立交付](../packaging/print-domjudge/README.md) | 独立 wrapper 包、固定 Typst／字体、专用来源令牌、DOMjudge 配置及同步受理预算 |
 | [架构决策记录（ADR）](adr/) | 已接受决策的背景、取舍与后果；架构契约仍以 architecture.md 为准 |
 | [Server 首次安装工具决策](adr/0001-server-setup-installer.md) | 首次安装边界、证书来源、私钥交接与运行时校验差异 |
+| [Server 按 Feature 组装决策](adr/0002-server-feature-composition.md) | Composition root 拆分为 feature 组装、运行期所有者与窄 HTTP 状态 |
 | [Agent 文档规则](agents/domain.md) | 领域术语、架构权威和文档阅读规则 |
 | [Agent Issue 工作流](agents/issue-tracker.md) | GitHub Issues 和技能工作流的仓库约定 |
 
