@@ -12,7 +12,7 @@ pub(super) use display::receipt;
 
 use super::{
     ContestantWindow, Error, PhotoRow, PhotoWindow, PlatformSnafu, RenderingSnafu, TeamRow,
-    ThreadSnafu,
+    ThreadSnafu, WindowDragSnafu,
     application::{self, Command, GroupAction, Snapshot},
 };
 use natsume_photo_client::capture_session::{
@@ -135,6 +135,15 @@ pub(super) fn run() -> Result<(), Error> {
 }
 
 impl Controller {
+    fn request_shutdown(&self) {
+        tracing::info!("operator requested Photo shutdown");
+        self.quitting.set(true);
+        self.clear_render();
+        if let Some(ui) = self.ui.upgrade() {
+            ui.set_busy(true);
+            ui.set_status("正在等待已开始的文件与导出任务结束，请勿强制关闭…".into());
+        }
+    }
     fn clear_render(&self) {
         if let Some(display) = self.display.borrow().as_ref() {
             display.pending.borrow_mut().take();

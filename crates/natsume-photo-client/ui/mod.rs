@@ -26,6 +26,10 @@ pub(crate) enum Error {
     Thread { source: std::io::Error },
     #[snafu(display("the Photo application thread failed"))]
     ThreadPanicked,
+    #[snafu(display("cannot drag the Photo window"))]
+    WindowDrag {
+        source: slint::winit_030::winit::error::ExternalError,
+    },
 }
 
 pub(crate) fn run() -> Result<(), Error> {

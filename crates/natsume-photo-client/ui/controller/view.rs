@@ -2,6 +2,7 @@ use super::{
     CandidateSelection, Command, Controller, ModelRc, PhotoRow, PhotoWindow, PresentationStatus,
     Rc, Snapshot, TeamRow, VecModel, display_id,
 };
+use natsume_photo_protocol::PhotoTeam;
 use slint::ComponentHandle as _;
 
 impl Controller {
@@ -87,6 +88,7 @@ impl Controller {
         }
         if teams_changed {
             self.filter(&ui.get_search());
+            self.filter_overview();
         }
         if new_session {
             ui.set_page(3);
@@ -265,20 +267,38 @@ impl Controller {
                 .iter()
                 .any(|field| field.to_lowercase().contains(&query))
             })
-            .map(|team| TeamRow {
-                id: team.account_id.clone().into(),
-                account: team.account.clone().into(),
-                school: team.school_name_zh.clone().into(),
-                school_en: team.school_name_en.clone().into(),
-                name: team.team_name_zh.clone().into(),
-                name_en: team.team_name_en.clone().into(),
-                r#final: snapshot
-                    .finals
-                    .iter()
-                    .any(|result| result.account_id() == team.account_id),
+            .map(|team| {
+                team_row(
+                    team,
+                    snapshot
+                        .finals
+                        .iter()
+                        .any(|result| result.account_id() == team.account_id),
+                )
             })
             .collect();
         ui.set_teams(ModelRc::new(VecModel::from(rows)));
+    }
+
+    pub(super) fn filter_overview(&self) {
+        let Some(ui) = self.ui.upgrade() else {
+            return;
+        };
+        let snapshot = self.snapshot.borrow();
+        let query = ui.get_overview_search().trim().to_lowercase();
+        let rows: Vec<_> = snapshot
+            .teams
+            .iter()
+            .filter_map(|team| {
+                let completed = snapshot
+                    .finals
+                    .iter()
+                    .any(|result| result.account_id() == team.account_id);
+                overview_matches(team, completed, ui.get_overview_filter(), &query)
+                    .then(|| team_row(team, completed))
+            })
+            .collect();
+        ui.set_overview_teams(ModelRc::new(VecModel::from(rows)));
     }
 }
 
@@ -317,3 +337,31 @@ fn apply_diagnostics(
     }
     ui.set_diagnostics(ModelRc::new(VecModel::from(diagnostics)));
 }
+
+fn team_row(team: &PhotoTeam, completed: bool) -> TeamRow {
+    TeamRow {
+        id: team.account_id.clone().into(),
+        account: team.account.clone().into(),
+        school: team.school_name_zh.clone().into(),
+        school_en: team.school_name_en.clone().into(),
+        name: team.team_name_zh.clone().into(),
+        name_en: team.team_name_en.clone().into(),
+        r#final: completed,
+    }
+}
+
+fn overview_matches(team: &PhotoTeam, completed: bool, filter: i32, query: &str) -> bool {
+    let status_matches = match filter {
+        1 => completed,
+        2 => !completed,
+        _ => true,
+    };
+    status_matches
+        && [team.school_name_zh.as_str(), team.school_name_en.as_str()]
+            .iter()
+            .any(|school| school.to_lowercase().contains(query))
+}
+
+#[cfg(test)]
+#[path = "../../backend/tests/unit/ui_overview.rs"]
+mod tests;

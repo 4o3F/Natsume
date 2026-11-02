@@ -4,19 +4,50 @@ pub(super) fn bind(ui: &PhotoWindow, app: &Rc<Controller>) {
     let weak = Rc::downgrade(app);
     ui.window().on_close_requested(move || {
         if let Some(app) = weak.upgrade() {
-            tracing::info!("operator requested Photo shutdown");
-            app.quitting.set(true);
-            app.clear_render();
-            if let Some(ui) = app.ui.upgrade() {
-                ui.set_busy(true);
-                ui.set_status("正在等待已开始的文件与导出任务结束，请勿强制关闭…".into());
-            }
+            app.request_shutdown();
         }
         slint::CloseRequestResponse::KeepWindowShown
     });
     bind_workspace(ui, app);
     bind_capture(ui, app);
     bind_files(ui, app);
+    bind_window_controls(ui, app);
+}
+
+fn bind_window_controls(ui: &PhotoWindow, app: &Rc<Controller>) {
+    let weak = ui.as_weak();
+    ui.on_drag_window(move || {
+        if let Some(ui) = weak.upgrade()
+            && let Some(result) = ui
+                .window()
+                .with_winit_window(winit::window::Window::drag_window)
+            && let Err(error) = result.context(WindowDragSnafu)
+        {
+            tracing::error!(%error, "cannot drag Photo window");
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_minimize_window(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.window()
+                .with_winit_window(|window| window.set_minimized(true));
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_maximize_window(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.window()
+                .with_winit_window(|window| window.set_maximized(!window.is_maximized()));
+        }
+    });
+    let weak = Rc::downgrade(app);
+    ui.on_close_window(move || {
+        if let Some(app) = weak.upgrade() {
+            app.request_shutdown();
+        }
+    });
+    let app = app.clone();
+    ui.on_overview_filter_changed(move || app.filter_overview());
 }
 
 fn bind_workspace(ui: &PhotoWindow, app: &Rc<Controller>) {

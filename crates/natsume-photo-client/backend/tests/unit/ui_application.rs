@@ -316,7 +316,10 @@ async fn changed_image_never_produces_pixels_or_a_receipt() -> TestResult {
 fn native_windows_render_each_page_and_acknowledge_only_a_rendered_photo() -> TestResult {
     use slint::{
         ComponentHandle as _,
-        winit_030::{winit, winit::platform::windows::EventLoopBuilderExtWindows as _},
+        winit_030::{
+            WinitWindowAccessor as _, winit,
+            winit::platform::windows::EventLoopBuilderExtWindows as _,
+        },
     };
     use std::{cell::RefCell, rc::Rc};
     let runtime = tokio::runtime::Runtime::new().context(IoSnafu)?;
@@ -365,6 +368,17 @@ fn native_windows_render_each_page_and_acknowledge_only_a_rendered_photo() -> Te
     ui.show().context(PlatformSnafu)?;
     display.show().context(PlatformSnafu)?;
     capture_pages(&ui, &app.view)?;
+    assert_eq!(
+        ui.window()
+            .with_winit_window(winit::window::Window::is_decorated),
+        Some(false)
+    );
+    assert_eq!(
+        display
+            .window()
+            .with_winit_window(winit::window::Window::is_decorated),
+        Some(false)
+    );
     runtime
         .block_on(app.execute(Command::Rendered(
             rendered.borrow_mut().take().context(FixtureSnafu)?,
@@ -424,8 +438,8 @@ fn capture_pages(ui: &crate::gui::PhotoWindow, snapshot: &Snapshot) -> TestResul
                         ui.set_dialog_action(2);
                     }
                     ui.set_team_count(1);
-                    ui.set_teams(slint::ModelRc::new(slint::VecModel::from(vec![
-                        crate::gui::TeamRow {
+                    let rows =
+                        slint::ModelRc::new(slint::VecModel::from(vec![crate::gui::TeamRow {
                             id: TEAM.into(),
                             account: "team001".into(),
                             school: "测试大学".into(),
@@ -433,8 +447,9 @@ fn capture_pages(ui: &crate::gui::PhotoWindow, snapshot: &Snapshot) -> TestResul
                             name: "测试队伍".into(),
                             name_en: "Test Team".into(),
                             r#final: false,
-                        },
-                    ])));
+                        }]));
+                    ui.set_teams(rows.clone());
+                    ui.set_overview_teams(rows);
                     stage.set(step + 1);
                 }
                 Ok::<_, TestError>(())
