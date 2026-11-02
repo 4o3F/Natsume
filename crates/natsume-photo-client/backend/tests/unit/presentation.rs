@@ -47,8 +47,7 @@ fn target() -> TestResult<(tempfile::TempDir, PresentationTarget)> {
             },
             image: DynamicImage::ImageRgb8(image::RgbImage::new(2, 3)),
             orientation: Orientation::NoTransforms,
-            icc: None,
-            captured_at: PhotoTime::read(None, std::time::UNIX_EPOCH),
+            captured_at: PhotoTime::read(std::time::UNIX_EPOCH),
         },
     )
     .context(CandidateSnafu)?;

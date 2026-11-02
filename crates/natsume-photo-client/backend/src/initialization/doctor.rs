@@ -7,10 +7,24 @@ use snafu::ResultExt as _;
 /// # Errors
 /// Reports invalid workspace data, writer conflicts or missing signing credentials.
 pub async fn open_authorized(path: &std::path::Path, secrets: &impl Secrets) -> Result<Workspace> {
-    let workspace = Workspace::open(path).await.context(WorkspaceSnafu)?;
+    open_authorized_with_progress(path, secrets, &crate::progress::Reporter::default()).await
+}
+/// Opens offline with observable verification stages.
+/// # Errors
+/// Returns the same validation and credential failures as `open_authorized`.
+pub async fn open_authorized_with_progress(
+    path: &std::path::Path,
+    secrets: &impl Secrets,
+    progress: &crate::progress::Reporter,
+) -> Result<Workspace> {
+    let workspace = Workspace::open_with_progress(path, progress)
+        .await
+        .context(WorkspaceSnafu)?;
+    progress.report(crate::progress::Stage::Verify, "正在校验离线授权", 0, 0);
     super::authorization::verify(&workspace, secrets)
         .await
         .context(super::OfflineAuthorizationSnafu)?;
+    progress.report(crate::progress::Stage::Publish, "工作区校验完成", 1, 1);
     Ok(workspace)
 }
 

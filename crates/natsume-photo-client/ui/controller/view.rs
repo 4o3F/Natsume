@@ -1,6 +1,6 @@
 use super::{
-    CandidateSelection, Command, Controller, ModelRc, PhotoRow, PhotoWindow, PresentationStatus,
-    Rc, Snapshot, TeamRow, VecModel, display_id,
+    Command, Controller, ModelRc, PhotoRow, PhotoWindow, PresentationStatus, Rc, Snapshot, TeamRow,
+    VecModel, display_id,
 };
 use natsume_photo_protocol::PhotoTeam;
 use slint::ComponentHandle as _;
@@ -35,9 +35,6 @@ impl Controller {
         ui.set_confirmed(capture.is_some_and(|capture| capture.confirmed.is_some()));
         ui.set_pending(capture.map_or(0, |capture| {
             i32::try_from(capture.pending_tasks).unwrap_or(i32::MAX)
-        }));
-        ui.set_automatic(capture.is_none_or(|capture| {
-            matches!(capture.selection, CandidateSelection::Automatic { .. })
         }));
         ui.set_display_opening(self.display.borrow().as_ref().is_some_and(|d| {
             matches!(
@@ -304,6 +301,11 @@ impl Controller {
         };
         let snapshot = self.snapshot.borrow();
         let query = query.trim().to_lowercase();
+        let completed: std::collections::HashSet<_> = snapshot
+            .finals
+            .iter()
+            .map(natsume_photo_client::workspace::ConfirmedPhoto::account_id)
+            .collect();
         let rows: Vec<_> = snapshot
             .teams
             .iter()
@@ -318,15 +320,7 @@ impl Controller {
                 .iter()
                 .any(|field| field.to_lowercase().contains(&query))
             })
-            .map(|team| {
-                team_row(
-                    team,
-                    snapshot
-                        .finals
-                        .iter()
-                        .any(|result| result.account_id() == team.account_id),
-                )
-            })
+            .map(|team| team_row(team, completed.contains(team.account_id.as_str())))
             .collect();
         ui.set_teams(ModelRc::new(VecModel::from(rows)));
     }
@@ -337,16 +331,18 @@ impl Controller {
         };
         let snapshot = self.snapshot.borrow();
         let query = ui.get_overview_search().trim().to_lowercase();
+        let completed: std::collections::HashSet<_> = snapshot
+            .finals
+            .iter()
+            .map(natsume_photo_client::workspace::ConfirmedPhoto::account_id)
+            .collect();
         let rows: Vec<_> = snapshot
             .teams
             .iter()
             .filter_map(|team| {
-                let completed = snapshot
-                    .finals
-                    .iter()
-                    .any(|result| result.account_id() == team.account_id);
-                overview_matches(team, completed, ui.get_overview_filter(), &query)
-                    .then(|| team_row(team, completed))
+                let is_completed = completed.contains(team.account_id.as_str());
+                overview_matches(team, is_completed, ui.get_overview_filter(), &query)
+                    .then(|| team_row(team, is_completed))
             })
             .collect();
         ui.set_overview_teams(ModelRc::new(VecModel::from(rows)));

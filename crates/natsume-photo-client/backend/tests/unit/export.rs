@@ -552,6 +552,7 @@ async fn pinned_export_keeps_old_bytes_during_retake_and_releases_cleanup_afterw
         &f.identity,
         &f.secrets,
         snapshot,
+        &crate::progress::Reporter::default(),
     )
     .context(ExportSnafu)?;
     assert_eq!(result.result_count, 1);

@@ -70,7 +70,9 @@ impl ImageRef {
         let path = std::fs::canonicalize(root.join(&self.path)).context(IoSnafu)?;
         ensure!(path.starts_with(root), PathSnafu);
         ensure!(
-            Self::for_bytes(&read_image(&path)?) == *self,
+            // Import decoded this exact content before storing its hash. Reopening
+            // verifies every byte without decoding all school logos again.
+            Self::for_bytes(&read_bytes(&path)?) == *self,
             HashMismatchSnafu
         );
         Ok(path)
@@ -97,17 +99,25 @@ pub(super) struct Prepared {
     files: BTreeMap<String, (PathBuf, ImageRef)>,
 }
 impl Prepared {
-    pub(crate) fn from_paths(
+    pub(crate) fn from_paths_with_progress(
         source: &Path,
         logos: Vec<SchoolLogo>,
         organizations: &BTreeSet<i64>,
+        progress: &crate::progress::Reporter,
     ) -> Result<Self> {
         let mut references = BTreeMap::new();
         let mut prepared = Self {
             cache: Cache::default(),
             files: BTreeMap::new(),
         };
-        for logo in logos {
+        let total = logos.len() as u64;
+        progress.report(
+            crate::progress::Stage::Verify,
+            "正在解析并校验校徽",
+            0,
+            total,
+        );
+        for (index, logo) in logos.into_iter().enumerate() {
             ensure!(
                 organizations.contains(&logo.organization_id),
                 UnknownSchoolSnafu
@@ -137,6 +147,12 @@ impl Prepared {
                 .files
                 .insert(reference.path.clone(), (path, reference.clone()));
             prepared.cache.logos.insert(logo.organization_id, reference);
+            progress.report(
+                crate::progress::Stage::Verify,
+                "正在解析并校验校徽",
+                index as u64 + 1,
+                total,
+            );
         }
         Ok(prepared)
     }
@@ -145,7 +161,7 @@ impl Prepared {
             std::fs::create_dir(root.join("resources")).context(IoSnafu)?;
         }
         for (source, reference) in self.files.values() {
-            let bytes = read_image(source)?;
+            let bytes = read_bytes(source)?;
             ensure!(ImageRef::for_bytes(&bytes) == *reference, HashMismatchSnafu);
             let mut file =
                 std::fs::File::create_new(root.join(&reference.path)).context(IoSnafu)?;
@@ -157,6 +173,20 @@ impl Prepared {
     }
 }
 fn read_image(path: &Path) -> Result<Vec<u8>> {
+    let bytes = read_bytes(path)?;
+    let mut reader = image::ImageReader::new(Cursor::new(&bytes))
+        .with_guessed_format()
+        .context(IoSnafu)?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().context(DecodeSnafu)?;
+    Ok(bytes)
+}
+
+fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     const LIMIT: u64 = 16 * 1024 * 1024;
     let mut bytes = Vec::new();
     std::fs::File::open(path)
@@ -165,22 +195,13 @@ fn read_image(path: &Path) -> Result<Vec<u8>> {
         .read_to_end(&mut bytes)
         .context(IoSnafu)?;
     ensure!(bytes.len() as u64 <= LIMIT, ByteLimitSnafu);
-    let mut reader = image::ImageReader::new(Cursor::new(&bytes))
-        .with_guessed_format()
-        .context(IoSnafu)?;
     ensure!(
         matches!(
-            reader.format(),
-            Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)
+            image::guess_format(&bytes),
+            Ok(image::ImageFormat::Png | image::ImageFormat::Jpeg)
         ),
         FormatSnafu
     );
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(4096);
-    limits.max_image_height = Some(4096);
-    limits.max_alloc = Some(64 * 1024 * 1024);
-    reader.limits(limits);
-    reader.decode().context(DecodeSnafu)?;
     Ok(bytes)
 }
 #[cfg(test)]

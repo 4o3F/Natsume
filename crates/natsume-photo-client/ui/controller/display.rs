@@ -49,8 +49,8 @@ impl Controller {
         let lost = Rc::new(Cell::new(false));
         let phase = Rc::new(Cell::new(DisplayPhase::Opening(Instant::now())));
         let generation = uuid::Uuid::now_v7();
-        super::window::bind(
-            component.window(),
+        super::window::bind_contestant(
+            &component,
             matches!(placement, DisplayPlacement::Windowed(_)),
         );
         self.bind_display(&component, &placement, &pending, &lost, &phase, generation)?;

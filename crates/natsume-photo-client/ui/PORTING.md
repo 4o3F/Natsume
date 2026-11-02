@@ -32,8 +32,8 @@ claim of pixel-identical output on every Windows configuration.
 - Opening an existing authorized workspace is offline. Initial enrollment uses
   the existing HTTPS initializer, administrator pairing code and Windows vault.
   No separate, simulated connection-check result is presented.
-- Initialization is one backend operation; the UI does not fabricate intermediate
-  registration/download progress or claim a station identity before completion.
+- Initialization remains one backend operation; a separate watch channel reports
+  real stages and resource counts without fabricating download percentages.
 - Unconfirmed groups are in memory only. No prototype recovery screen or
   local-storage recovery is copied into the product.
 - Candidate selection and automatic latest-photo mode use backend presentation
@@ -187,3 +187,22 @@ DisplayId, so old receipts cannot authorize a new confirmation. Review images
 never populate the rendering receipt slot. The live journey checks viewing team A
 while B remains selected, and restoring B's blank capture view before ZIP export.
 The footer retains its status text without the overlapping separator rule.
+
+## Responsiveness and simplified photo handling
+
+Team search and overview use virtualized ListView rows. Completion lookup uses a
+set rather than a nested roster/result scan. Ordinary navigation no longer clears
+and reinstalls unchanged full-resolution previews. Overview reserves 24 logical
+pixels between row actions and the scroll region.
+
+Initialization, offline opening and export project real stage/count updates from
+`progress::Reporter`, independent of the command owner. The four stage bars use
+the reference's thin red stripes and green completed stages. Unknown totals are
+shown as processing rather than simulated percentages.
+
+Button labels are centered; registration has explicit spacing below its header
+rule. The single-screen viewer's top region supports dragging; the footer keeps
+only centered Chinese status text. Latest-photo following is always enabled for
+new arrivals; candidate clicks remain temporary selections. Photo ordering uses
+source file modification times, and image handles orientation and encoding
+without direct moxcms, kamadak-exif or png dependencies or ICC conversion.

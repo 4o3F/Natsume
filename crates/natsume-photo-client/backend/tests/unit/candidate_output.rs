@@ -26,12 +26,3 @@ fn encoded_byte_limit_rejects_before_writing_an_excess_chunk() -> TestResult {
     assert_eq!(writer.bytes, OUTPUT_LIMIT);
     Ok(())
 }
-
-#[test]
-fn profile_size_limit_is_applied_before_profile_parsing() {
-    let image = DynamicImage::ImageRgb8(image::RgbImage::new(1, 1));
-    assert!(matches!(
-        normalize(image, Some(&vec![0; PROFILE_LIMIT + 1])),
-        Err(CandidateError::ProfileLimit)
-    ));
-}

@@ -12,6 +12,10 @@ mod live_tests;
 #[path = "../backend/tests/unit/ui_display.rs"]
 mod display_tests;
 
+#[cfg(test)]
+#[path = "../backend/tests/unit/ui_performance.rs"]
+mod performance_tests;
+
 use bindings::bind;
 pub(super) use display::receipt;
 use display::{DisplayPhase, display_id};
@@ -23,7 +27,7 @@ use super::{
     application::{self, Command, GroupAction, Snapshot},
 };
 use natsume_photo_client::capture_session::{
-    CandidateSelection, DisplayId, PresentationReceipt, PresentationRequest, PresentationStatus,
+    DisplayId, PresentationReceipt, PresentationRequest, PresentationStatus,
 };
 use slint::{
     ComponentHandle as _, ModelRc, VecModel,
@@ -72,9 +76,10 @@ pub(super) fn run() -> Result<(), Error> {
     let ui = PhotoWindow::new().context(PlatformSnafu)?;
     let (commands, receiver) = mpsc::channel(32);
     let (updates, mut snapshots) = watch::channel(Snapshot::default());
+    let (progress, mut progress_updates) = natsume_photo_client::progress::Reporter::channel();
     let worker = std::thread::Builder::new()
         .name("photo-application".to_owned())
-        .spawn(move || application::run(receiver, &updates))
+        .spawn(move || application::run(receiver, &updates, progress))
         .context(ThreadSnafu)?;
     let app = Rc::new(Controller {
         ui: ui.as_weak(),
@@ -99,6 +104,11 @@ pub(super) fn run() -> Result<(), Error> {
         Duration::from_millis(100),
         move || {
             let app = &app_tick;
+            if progress_updates.has_changed().unwrap_or(false)
+                && let Some(ui) = app.ui.upgrade()
+            {
+                apply_progress(&ui, &progress_updates.borrow_and_update());
+            }
             let changed = snapshots.has_changed();
             if changed.is_err() {
                 tracing::info!("Photo worker closed; stopping window event loop");
@@ -141,6 +151,30 @@ pub(super) fn run() -> Result<(), Error> {
     let joined = worker.join().map_err(|_| Error::ThreadPanicked);
     event_result?;
     joined?.map_err(|_| Error::ApplicationStopped)
+}
+
+fn apply_progress(ui: &PhotoWindow, progress: &natsume_photo_client::progress::Progress) {
+    use natsume_photo_client::progress::Stage;
+    ui.set_progress_step(match progress.stage {
+        Stage::Prepare => 0,
+        Stage::Process => 1,
+        Stage::Verify => 2,
+        Stage::Publish => 3,
+    });
+    ui.set_progress_label(progress.label.into());
+    ui.set_progress_known(progress.total > 0);
+    ui.set_progress_value(if progress.total > 0 {
+        let thousandths =
+            u128::from(progress.completed.min(progress.total)) * 1000 / u128::from(progress.total);
+        f32::from(u16::try_from(thousandths).unwrap_or(1000)) / 1000.0
+    } else {
+        0.0
+    });
+    ui.set_progress_count(if progress.total > 0 {
+        format!("{} / {}", progress.completed, progress.total).into()
+    } else {
+        "处理中".into()
+    });
 }
 
 impl Controller {
@@ -187,11 +221,27 @@ impl Controller {
             Command::Export(_) => "正在校验成品并生成 ZIP，请稍候…",
             _ => "正在处理，请稍候…",
         };
+        let exporting = matches!(command, Command::Export(_));
+        if matches!(
+            command,
+            Command::Open(_) | Command::Initialize { .. } | Command::Export(_)
+        ) {
+            ui.set_progress_visible(true);
+            ui.set_progress_export(matches!(command, Command::Export(_)));
+            ui.set_progress_step(0);
+            ui.set_progress_value(0.0);
+            ui.set_progress_known(false);
+            ui.set_progress_label(status.into());
+            ui.set_progress_count("处理中".into());
+        }
         match self.commands.try_send(command) {
             Ok(()) => {
                 if busy {
                     ui.set_busy(true);
                     ui.set_status(status.into());
+                    if exporting {
+                        ui.set_export_status("正在准备导出…".into());
+                    }
                 }
             }
             Err(_) => {

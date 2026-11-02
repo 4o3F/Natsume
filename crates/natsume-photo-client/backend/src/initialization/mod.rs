@@ -20,7 +20,7 @@ use natsume_photo_protocol::{InitializationRequestId, PhotoInitializationComplet
 use natsume_photo_protocol::{PhotoEnrollmentIssued, PhotoInitialization};
 use store::{Phase, Receipt, Store};
 
-pub use doctor::{diagnose, diagnose_path, open_authorized};
+pub use doctor::{diagnose, diagnose_path, open_authorized, open_authorized_with_progress};
 pub use identity::ClientId;
 use identity::PreparedId;
 pub use origin::{OriginError, ServerOrigin};
@@ -217,10 +217,27 @@ impl<S: Secrets> Initializer<S> {
     /// Supply a code only for a new pairing. Open published workspaces with `open_authorized`.
     /// # Errors
     /// Returns typed storage, TLS, authorization, validation or workspace errors.
-    pub async fn run(mut self, code: Option<&str>) -> Result<Workspace> {
+    pub async fn run(self, code: Option<&str>) -> Result<Workspace> {
+        self.run_with_progress(code, crate::progress::Reporter::default())
+            .await
+    }
+
+    /// Runs initialization while reporting real stage and resource progress.
+    /// # Errors
+    /// Returns the same validation and publication failures as `run`.
+    pub async fn run_with_progress(
+        mut self,
+        code: Option<&str>,
+        progress: crate::progress::Reporter,
+    ) -> Result<Workspace> {
+        use crate::progress::Stage;
+        progress.report(Stage::Prepare, "正在验证授权与登记拍照站", 0, 0);
         if let Phase::Completed { receipt } = &self.store.state().phase {
             let receipt = receipt.clone();
-            return self.store.publish(&receipt, &self.secrets).await;
+            progress.report(Stage::Publish, "正在恢复并发布工作区", 0, 0);
+            let workspace = self.store.publish(&receipt, &self.secrets).await?;
+            progress.report(Stage::Publish, "初始化完成", 1, 1);
+            return Ok(workspace);
         }
         let key = self.signing_key().await?;
         let public_key = key.verifying_key();
@@ -243,6 +260,7 @@ impl<S: Secrets> Initializer<S> {
                     &public_key,
                     &download.bytes,
                     download.manifest,
+                    &progress,
                 )
                 .await?;
             self.store.record_saved(receipt).await?;
@@ -251,6 +269,7 @@ impl<S: Secrets> Initializer<S> {
             return JournalSnafu.fail();
         };
         // Revalidate every local file before closing download rights on Server.
+        progress.report(Stage::Verify, "正在校验本地资料与授权", 0, 0);
         self.store.verify(receipt, &self.secrets).await?;
         api.complete(
             &enrollment,
@@ -262,7 +281,10 @@ impl<S: Secrets> Initializer<S> {
         )
         .await?;
         let receipt = self.store.record_completed().await?;
-        self.store.publish(&receipt, &self.secrets).await
+        progress.report(Stage::Publish, "正在保存并发布工作区", 0, 0);
+        let workspace = self.store.publish(&receipt, &self.secrets).await?;
+        progress.report(Stage::Publish, "初始化完成", 1, 1);
+        Ok(workspace)
     }
 
     async fn pair(
@@ -309,6 +331,65 @@ impl<S: Secrets> Initializer<S> {
         self.store.record_pairing(issued.source_id.clone()).await
     }
 
+    async fn download_logos(
+        &self,
+        api: &PhotoEnrollmentClient,
+        enrollment: &PhotoEnrollmentIssued,
+        references: &[natsume_photo_protocol::PhotoLogo],
+        directory: &std::path::Path,
+        progress: &crate::progress::Reporter,
+    ) -> Result<Vec<crate::workspace::resources::SchoolLogo>> {
+        let mut hashes = BTreeSet::new();
+        let unique: Vec<_> = references
+            .iter()
+            .filter(|logo| hashes.insert(logo.sha256.clone()))
+            .collect();
+        let total = unique.len() as u64;
+        let mut completed = 0;
+        progress.report(
+            crate::progress::Stage::Process,
+            "正在下载学校校徽",
+            completed,
+            total,
+        );
+        // Match Server's two download permits rather than creating predictable
+        // 503/Retry-After delays. Responses remain bounded and integrity-checked.
+        for batch in unique.chunks(2) {
+            let fetch = |index: usize| async move {
+                if let Some(logo) = batch.get(index) {
+                    Ok(Some((
+                        logo.sha256.clone(),
+                        api.resource(enrollment, logo).await?,
+                    )))
+                } else {
+                    Ok::<_, Error>(None)
+                }
+            };
+            let (a, b) = tokio::try_join!(fetch(0), fetch(1))?;
+            for (digest, bytes) in [a, b].into_iter().flatten() {
+                let directory = directory.to_owned();
+                self.store
+                    .lease()
+                    .run(move || store::save_download(&directory, &digest, &bytes))
+                    .await?;
+                completed += 1;
+                progress.report(
+                    crate::progress::Stage::Process,
+                    "正在下载学校校徽",
+                    completed,
+                    total,
+                );
+            }
+        }
+        Ok(references
+            .iter()
+            .map(|logo| crate::workspace::resources::SchoolLogo {
+                organization_id: logo.organization_id,
+                path: format!("{}.png", logo.sha256).into(),
+            })
+            .collect())
+    }
+
     async fn prepare(
         &self,
         api: &PhotoEnrollmentClient,
@@ -316,6 +397,7 @@ impl<S: Secrets> Initializer<S> {
         public_key: &ed25519_dalek::VerifyingKey,
         bytes: &[u8],
         manifest: PhotoInitialization,
+        progress: &crate::progress::Reporter,
     ) -> Result<Receipt> {
         let roster = Roster::from_teams(manifest.teams).context(RosterSnafu)?;
         let prepared = PreparedId::generate();
@@ -335,36 +417,23 @@ impl<S: Secrets> Initializer<S> {
                 Ok(())
             })
             .await?;
-        let mut downloaded = BTreeSet::new();
-        let mut logos = Vec::new();
-        for logo in manifest.school_logos {
-            let filename = format!("{}.png", logo.sha256);
-            if downloaded.insert(logo.sha256.clone()) {
-                let image = api.resource(enrollment, &logo).await?;
-                let directory = download.clone();
-                let digest = logo.sha256.clone();
-                self.store
-                    .lease()
-                    .run(move || store::save_download(&directory, &digest, &image))
-                    .await?;
-            }
-            logos.push(crate::workspace::resources::SchoolLogo {
-                organization_id: logo.organization_id,
-                path: filename.into(),
-            });
-        }
+        let logos = self
+            .download_logos(api, enrollment, &manifest.school_logos, &download, progress)
+            .await?;
         let workspace = self.store.root().join(prepared.as_str());
         drop(
             self.store
                 .lease()
                 .run({
                     let workspace = workspace.clone();
+                    let progress = progress.clone();
                     move || {
-                        Workspace::create_with_logos(
+                        Workspace::create_with_logos_with_progress(
                             workspace,
                             roster.teams().to_vec(),
                             &download,
                             logos,
+                            &progress,
                         )
                         .context(WorkspaceSnafu)
                     }

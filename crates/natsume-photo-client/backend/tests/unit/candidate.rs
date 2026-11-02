@@ -1,14 +1,11 @@
 use super::*;
 use image::{DynamicImage, ImageEncoder as _, metadata::Orientation};
-use moxcms::ColorProfile;
 use snafu::{OptionExt as _, Snafu};
 
 #[derive(Debug, Snafu)]
 enum TestError {
     Io { source: std::io::Error },
     Image { source: image::ImageError },
-    Profile { source: moxcms::CmsError },
-    Png { source: ::png::EncodingError },
     Validation { source: PhotoValidationError },
     Fixture,
 }
@@ -98,7 +95,7 @@ fn jpeg_derivatives_apply_orientation_and_strip_original_exif() -> TestResult {
         .into_decoder()
         .context(ImageSnafu)?;
     assert!(decoder.exif_metadata().context(ImageSnafu)?.is_none());
-    assert!(decoder.icc_profile().context(ImageSnafu)?.is_some());
+    assert!(decoder.icc_profile().context(ImageSnafu)?.is_none());
     Ok(())
 }
 
@@ -158,43 +155,9 @@ fn applies_all_exif_orientations_and_removes_source_metadata() -> TestResult {
                 Orientation::NoTransforms
             );
             assert!(decoder.exif_metadata().context(ImageSnafu)?.is_none());
-            assert!(decoder.icc_profile().context(ImageSnafu)?.is_some());
+            assert!(decoder.icc_profile().context(ImageSnafu)?.is_none());
         }
     }
-    Ok(())
-}
-
-#[test]
-fn converts_display_p3_pixels_instead_of_only_relabeling_the_profile() -> TestResult {
-    let image =
-        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(1, 1, image::Rgb([128, 64, 32])));
-    let profile = ColorProfile::new_display_p3()
-        .encode()
-        .context(ProfileSnafu)?;
-    let (_directory, candidate) = process(&png(&image, 1, Some(profile))?)?;
-    let output = image::open(candidate.image().path())
-        .context(ImageSnafu)?
-        .into_rgb8();
-    let pixel = output.get_pixel(0, 0).0;
-    // Independent reference values for Display P3 -> sRGB, with rounding tolerance.
-    assert!(pixel[0].abs_diff(138) <= 2, "red: {pixel:?}");
-    assert!(pixel[1].abs_diff(59) <= 2, "green: {pixel:?}");
-    assert!(pixel[2].abs_diff(21) <= 2, "blue: {pixel:?}");
-    let bytes = fs::read(candidate.image().path()).context(IoSnafu)?;
-    let mut decoder = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .context(IoSnafu)?
-        .into_decoder()
-        .context(ImageSnafu)?;
-    let icc = decoder
-        .icc_profile()
-        .context(ImageSnafu)?
-        .context(FixtureSnafu)?;
-    let profile = ColorProfile::new_from_slice(&icc).context(ProfileSnafu)?;
-    assert_eq!(profile.color_space, moxcms::DataColorSpace::Rgb);
-    assert_eq!(profile.creation_date_time.year, 2000);
-    assert_eq!(profile.creation_date_time.month, 1);
-    assert_eq!(profile.creation_date_time.day_of_the_month, 1);
     Ok(())
 }
 
@@ -206,10 +169,7 @@ fn thumbnails_preserve_alpha_and_aspect_ratio_without_upscaling_small_inputs() -
             height,
             image::Rgba([80, 90, 100, 123]),
         ));
-        let profile = ColorProfile::new_display_p3()
-            .encode()
-            .context(ProfileSnafu)?;
-        let (_directory, candidate) = process(&png(&image, 1, Some(profile))?)?;
+        let (_directory, candidate) = process(&png(&image, 1, None)?)?;
         let normalized = image::open(candidate.image().path())
             .context(ImageSnafu)?
             .into_rgba8();
@@ -221,48 +181,6 @@ fn thumbnails_preserve_alpha_and_aspect_ratio_without_upscaling_small_inputs() -
         assert_eq!(thumbnail.dimensions(), expected);
         assert_eq!(thumbnail.get_pixel(0, 0)[3], 123);
     }
-    Ok(())
-}
-
-#[test]
-fn rejects_bad_icc_and_unsupported_color_metadata_without_publishing_candidates() -> TestResult {
-    use crate::capture_session::CandidateError;
-    let image = DynamicImage::ImageRgb8(image::RgbImage::new(2, 2));
-    let directory = tempfile::tempdir().context(IoSnafu)?;
-    let photo = archived(
-        &directory,
-        &png(&image, 1, Some(b"invalid ICC profile".to_vec()))?,
-    )?;
-    let check = PhotoCheck::inspect(&photo, photo.path.parent().context(FixtureSnafu)?);
-    assert!(matches!(
-        check.result(),
-        Err(PhotoValidationError::Candidate {
-            source: CandidateError::Color { .. }
-        })
-    ));
-    assert!(!check.retryable());
-    assert_eq!(fs::read_dir(directory.path()).context(IoSnafu)?.count(), 1);
-
-    let mut bytes = Vec::new();
-    let mut encoder = ::png::Encoder::new(&mut bytes, 2, 2);
-    encoder.set_color(::png::ColorType::Rgb);
-    encoder.set_source_gamma(::png::ScaledFloat::from_scaled(70_000));
-    // Fixture errors are dependency errors too, so retain their typed source.
-    let mut writer = encoder.write_header().context(PngSnafu)?;
-    writer.write_image_data(&[0; 12]).context(PngSnafu)?;
-    writer.finish().context(PngSnafu)?;
-    let photo = archived(&directory, &bytes)?;
-    let check = PhotoCheck::inspect(&photo, photo.path.parent().context(FixtureSnafu)?);
-    assert!(
-        matches!(
-            check.result(),
-            Err(PhotoValidationError::Candidate {
-                source: CandidateError::UnsupportedColor
-            })
-        ),
-        "{check:?}"
-    );
-    assert_eq!(fs::read_dir(directory.path()).context(IoSnafu)?.count(), 1);
     Ok(())
 }
 

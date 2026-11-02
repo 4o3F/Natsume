@@ -49,10 +49,41 @@ export component Action inherits Rectangle {
     background: root.reason != "" ? #e1dfda : root.outline && !touch.has-hover ? transparent : root.signal ? (touch.has-hover ? #c71d15 : Palette.signal) : Palette.ink;
     HorizontalLayout {
         padding-left: 16px; padding-right: 16px; spacing: 16px;
-        Label { text: root.text; font-weight: 700; color: root.reason != "" ? Palette.muted : root.outline && !touch.has-hover ? Palette.ink : Palette.paper; }
+        Label { text: root.text; horizontal-alignment: center; font-weight: 700; color: root.reason != "" ? Palette.muted : root.outline && !touch.has-hover ? Palette.ink : Palette.paper; }
         if root.hint != "": Label { text: root.hint; font-family: "Cascadia Mono"; font-size: 12px; color: root.reason != "" ? Palette.muted : root.outline && !touch.has-hover ? Palette.muted : #aaaaaa; horizontal-stretch: 0; }
     }
     touch := TouchArea { enabled: root.reason == ""; clicked => { root.clicked(); } }
+}
+
+export component ProgressPanel inherits Rectangle {
+    in property <int> step;
+    in property <float> value;
+    in property <bool> known;
+    in property <string> label;
+    in property <string> count;
+    height: 100px;
+    VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout { height: 24px; Label { text: root.label; font-weight: 700; } Label { text: root.count; horizontal-alignment: right; color: Palette.muted; font-family: "Cascadia Mono"; } }
+        HorizontalLayout {
+            spacing: 12px; height: 48px;
+            for title[i] in ["准备", "处理", "校验", "完成"]: VerticalLayout {
+                spacing: 8px;
+                Rectangle {
+                    height: 8px; background: i < root.step ? Palette.ok : i == root.step ? #e2231a33 : transparent;
+                    border-width: i > root.step ? 1px : 0px; border-color: Palette.rule;
+                    Rectangle {
+                        clip: true; height: parent.height;
+                        width: i < root.step ? parent.width : i == root.step ? parent.width * (root.known ? root.value : 1.0) : 0px;
+                        background: i < root.step ? Palette.ok : Palette.signal;
+                        for stripe in 80: Path { x: stripe * 12px; width: 12px; height: 8px; commands: "M 0 0 L 4 0 L 12 8 L 8 8 Z"; fill: #ffffff44; }
+                        animate width { duration: 150ms; }
+                    }
+                }
+                Label { text: "0" + (i + 1) + "  " + title; height: 24px; font-size: 12px; font-weight: i == root.step ? 700 : 400; color: i == root.step ? Palette.ink : Palette.muted; }
+            }
+        }
+    }
 }
 
 export component Field inherits Rectangle {

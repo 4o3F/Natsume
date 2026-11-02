@@ -16,6 +16,9 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Snafu)]
 enum Error {
+    Time {
+        source: chrono::ParseError,
+    },
     Io {
         source: std::io::Error,
     },
@@ -34,9 +37,6 @@ enum Error {
     Candidate {
         source: crate::capture_session::CandidateError,
     },
-    Exif {
-        source: exif::Error,
-    },
     Database {
         source: diesel::ConnectionError,
     },
@@ -48,37 +48,23 @@ enum Error {
 }
 
 fn write_timed_png(path: &std::path::Path, time: &[u8]) -> Result<()> {
-    use image::ImageEncoder as _;
-    let fields = [
-        exif::Field {
-            tag: exif::Tag::DateTimeOriginal,
-            ifd_num: exif::In::PRIMARY,
-            value: exif::Value::Ascii(vec![time.to_vec()]),
-        },
-        exif::Field {
-            tag: exif::Tag::OffsetTimeOriginal,
-            ifd_num: exif::In::PRIMARY,
-            value: exif::Value::Ascii(vec![b"+00:00".to_vec()]),
-        },
-    ];
-    let mut metadata = exif::experimental::Writer::new();
-    for field in &fields {
-        metadata.push_field(field);
-    }
-    let mut bytes = std::io::Cursor::new(Vec::new());
-    metadata.write(&mut bytes, false).context(ExifSnafu)?;
-    let mut encoder = image::codecs::png::PngEncoder::new(fs::File::create(path).context(IoSnafu)?);
-    encoder
-        .set_exif_metadata(bytes.into_inner())
-        .map_err(image::ImageError::Unsupported)
+    let modified =
+        chrono::NaiveDateTime::parse_from_str(&String::from_utf8_lossy(time), "%Y:%m:%d %H:%M:%S")
+            .context(TimeSnafu)?
+            .and_utc();
+    image::RgbImage::from_pixel(8, 6, image::Rgb([30; 3]))
+        .save(path)
         .context(ImageSnafu)?;
-    encoder
-        .write_image(&[30; 8 * 6 * 3], 8, 6, image::ExtendedColorType::Rgb8)
-        .context(ImageSnafu)
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .context(IoSnafu)?;
+    file.set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::from(modified)))
+        .context(IoSnafu)
 }
 
 #[tokio::test]
-async fn candidate_selection_uses_capture_time_and_manual_choices_survive_new_images() -> Result {
+async fn candidate_selection_uses_file_time_and_resumes_latest_on_new_images() -> Result {
     use crate::capture_session::{CandidateSelection, PhotoTimeSource};
     let fixture = fixture().await?;
     let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
@@ -104,7 +90,7 @@ async fn candidate_selection_uses_capture_time_and_manual_choices_survive_new_im
             .context(FixtureSnafu)?
             .captured_at()
             .source(),
-        PhotoTimeSource::ExifOriginal
+        PhotoTimeSource::FileModified
     );
 
     // This older exposure finishes processing later; it must not steal selection.
@@ -140,7 +126,9 @@ async fn candidate_selection_uses_capture_time_and_manual_choices_survive_new_im
         .photo_id();
     assert_eq!(
         snapshot.selection,
-        CandidateSelection::Manual { photo_id: older }
+        CandidateSelection::Automatic {
+            photo_id: Some(latest)
+        }
     );
     assert!(matches!(
         folder.select_candidate(group, uuid::Uuid::now_v7()).await,
@@ -152,7 +140,7 @@ async fn candidate_selection_uses_capture_time_and_manual_choices_survive_new_im
             .context(HotFolderSnafu)?
             .selection
             .photo_id(),
-        Some(older)
+        Some(latest)
     );
     folder
         .use_latest_candidate(group)

@@ -51,7 +51,12 @@ fn application_shutdown_leaves_a_final_snapshot_after_the_sender_closes() -> Tes
     let (commands, receive) = mpsc::channel(1);
     let (updates, snapshots) = watch::channel(Snapshot::default());
     assert!(commands.blocking_send(Command::Shutdown).is_ok());
-    super::run(receive, &updates).context(ApplicationSnafu)?;
+    super::run(
+        receive,
+        &updates,
+        natsume_photo_client::progress::Reporter::default(),
+    )
+    .context(ApplicationSnafu)?;
     drop(updates);
     assert!(snapshots.has_changed().is_err());
     assert!(snapshots.borrow().stopped);
@@ -472,6 +477,7 @@ fn native_windows_render_each_page_and_acknowledge_only_a_rendered_photo() -> Te
     display.set_school("测试大学".into());
     display.set_school_en("Test University".into());
     display.set_team("测试队伍".into());
+    display.set_team_en("Test Team".into());
     display.set_photo(
         app.view
             .frame

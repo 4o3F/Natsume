@@ -535,7 +535,8 @@ fn live_server_ui_initialization_through_signed_zip() -> Result {
     let ui = PhotoWindow::new().context(PlatformSnafu)?;
     let (commands, receive) = mpsc::channel(32);
     let (updates, mut snapshots) = watch::channel(Snapshot::default());
-    let worker = std::thread::spawn(move || application::run(receive, &updates));
+    let (progress, mut progress_updates) = natsume_photo_client::progress::Reporter::channel();
+    let worker = std::thread::spawn(move || application::run(receive, &updates, progress));
     let app = controller(&ui, commands);
     bind(&ui, &app);
     ui.show().context(PlatformSnafu)?;
@@ -561,12 +562,22 @@ fn live_server_ui_initialization_through_signed_zip() -> Result {
     };
     let timer = slint::Timer::default();
     let weak = ui.as_weak();
+    let mut progress_captures = std::collections::BTreeSet::new();
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
         move || {
             let result = (|| {
                 let ui = weak.upgrade().context(InvariantSnafu)?;
+                if progress_updates.has_changed().unwrap_or(false) {
+                    let progress = progress_updates.borrow_and_update().clone();
+                    apply_progress(&ui, &progress);
+                    tracing::info!(stage=?progress.stage, completed=progress.completed, total=progress.total, "live operation progress");
+                    let name = if ui.get_page() == 5 { "export-progress" } else { "initialization-progress" };
+                    if ui.get_busy() && progress_captures.insert(name) {
+                        save_screenshot(&ui, &journey.config, name)?;
+                    }
+                }
                 if snapshots.has_changed().unwrap_or(true) {
                     let display_existed = app_tick.display.borrow().is_some();
                     app_tick.apply(snapshots.borrow_and_update().clone());

@@ -249,7 +249,11 @@ async fn finishing_removes_group_copies_but_preserves_originals_finals_and_forei
     let report = folder.finish_group(group).await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
     assert!(report.pending_paths.is_empty());
-    assert!(report.removed_files >= 6);
+    let unique_files = paths
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    assert!(report.removed_files >= unique_files);
     assert!(paths.iter().all(|path| !path.exists()));
     assert!(fixture.workspace.root().join(saved.path()).is_file());
     assert_eq!(fs::read(&foreign).context(IoSnafu)?, b"leave this alone");

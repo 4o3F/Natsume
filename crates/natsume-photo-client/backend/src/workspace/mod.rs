@@ -69,15 +69,22 @@ impl Workspace {
             final_operations: self.final_operations.clone(),
         }
     }
-    pub(crate) fn create_with_logos(
+    pub(crate) fn create_with_logos_with_progress(
         root: PathBuf,
         teams: Vec<PhotoTeam>,
         source: &Path,
         logos: Vec<resources::SchoolLogo>,
+        progress: &crate::progress::Reporter,
     ) -> Result<Self> {
         let organizations = teams.iter().map(|team| team.organization_id).collect();
-        let prepared =
-            Prepared::from_paths(source, logos, &organizations).context(ResourceSnafu)?;
+        let prepared = Prepared::from_paths_with_progress(source, logos, &organizations, progress)
+            .context(ResourceSnafu)?;
+        progress.report(
+            crate::progress::Stage::Verify,
+            "正在保存校徽并建立工作区数据库",
+            0,
+            0,
+        );
         Self::create_blocking(root, teams, prepared)
     }
     fn create_blocking(root: PathBuf, teams: Vec<PhotoTeam>, prepared: Prepared) -> Result<Self> {
@@ -110,6 +117,16 @@ impl Workspace {
     /// # Errors
     /// Rejects concurrent writers, invalid metadata, roster or resources.
     pub async fn open(root: &Path) -> Result<Self> {
+        Self::open_with_progress(root, &crate::progress::Reporter::default()).await
+    }
+    /// Opens with observable resource verification progress.
+    /// # Errors
+    /// Returns the same writer and data-integrity failures as `open`.
+    pub async fn open_with_progress(
+        root: &Path,
+        progress: &crate::progress::Reporter,
+    ) -> Result<Self> {
+        progress.report(crate::progress::Stage::Prepare, "正在打开本地工作区", 0, 0);
         let (root, database, owner) = storage::open_writer(root.to_owned())
             .await
             .context(StorageSnafu)?;
@@ -119,7 +136,7 @@ impl Workspace {
             access: Writable(owner),
             final_operations: std::sync::Arc::default(),
         };
-        workspace.verify().await?;
+        workspace.verify_with_progress(progress).await?;
         Ok(workspace)
     }
     pub(crate) fn writable_owner(&self) -> WorkspaceWriter {
@@ -216,15 +233,26 @@ impl<Access> Workspace<Access> {
             .context(FinalPhotoSnafu)
     }
     async fn verify(&self) -> Result<()> {
+        self.verify_with_progress(&crate::progress::Reporter::default())
+            .await
+    }
+    async fn verify_with_progress(&self, progress: &crate::progress::Reporter) -> Result<()> {
         let metadata = self.database.metadata().await.context(PersistenceSnafu)?;
         ensure!(matches!(metadata.ready, 0 | 1), InvalidReadinessSnafu);
         ensure!(metadata.ready == 1, IncompleteSnafu);
         self.roster().await?;
-        self.verify_resources().await?;
+        self.verify_resources_with_progress(progress).await?;
         self.confirmed_photos().await?;
         Ok(())
     }
     pub(crate) async fn verify_resources(&self) -> Result<()> {
+        self.verify_resources_with_progress(&crate::progress::Reporter::default())
+            .await
+    }
+    async fn verify_resources_with_progress(
+        &self,
+        progress: &crate::progress::Reporter,
+    ) -> Result<()> {
         let rows = self.database.logos().await.context(PersistenceSnafu)?;
         let references: BTreeSet<_> = rows
             .into_iter()
@@ -235,9 +263,23 @@ impl<Access> Workspace<Access> {
             .flatten()
             .collect();
         let root = self.root.clone();
+        let progress = progress.clone();
         tokio::task::spawn_blocking(move || {
-            for reference in references {
+            let total = references.len() as u64;
+            progress.report(
+                crate::progress::Stage::Process,
+                "正在校验本地校徽",
+                0,
+                total,
+            );
+            for (index, reference) in references.into_iter().enumerate() {
                 reference.verify(&root)?;
+                progress.report(
+                    crate::progress::Stage::Process,
+                    "正在校验本地校徽",
+                    index as u64 + 1,
+                    total,
+                );
             }
             Ok(())
         })

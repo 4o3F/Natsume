@@ -39,13 +39,13 @@ cargo test -p natsume-photo-client --locked
 
 `snapshot()` 返回 `HotFolderSnapshot`；`wait_until().await` 等待后台发布，不主动扫描。显式 `shutdown().await` 等待运行中的文件任务及监听清理，Drop 只取消。未确认会话和组只在内存中，重启不恢复；源照片永不移动或删除；无活动组或归属不确定的来图不创建归档副本，也不提供人工归组 API。
 
-归档后通过 `capture_session/photo_validation.rs` 校验 JPEG/PNG 的哈希、长度、结束标记并完整解码；同一解码像素交给私有 `candidate.rs`，应用 EXIF 方向和 RGB ICC → sRGB，保留原尺寸，生成规范文件及最长边 512 的 PNG 缩略图。JPEG 质量 92，PNG 输出 8 位并保留透明度；源 EXIF/GPS/XMP 不复制，输出嵌入标准 sRGB ICC。无色彩声明按 sRGB；未支持的 Gray/CMYK ICC、HDR/CICP、自定义 PNG gamma/色度明确拒绝。输入 50 MiB、80 百万像素，解码分配/输出及规范像素缓冲各 256 MiB，ICC 4 MiB，单个输出文件 50 MiB；预算不是整个进程 RSS 保证。
+归档后通过 `capture_session/photo_validation.rs` 校验 JPEG/PNG 的哈希、长度、结束标记并完整解码；同一解码像素交给私有 `candidate.rs`，使用 image 应用 EXIF 方向，保留原尺寸，生成规范文件及最长边 512 的 PNG 缩略图。JPEG 质量 92，PNG 输出 8 位并保留透明度；源 EXIF/GPS/XMP 和 ICC 不复制，不做 ICC 转换。输入 50 MiB、80 百万像素，解码分配/输出及规范像素缓冲各 256 MiB，单个输出文件 50 MiB；预算不是整个进程 RSS 保证。
 
 每轮最多处理一个已归组副本，直到文件都同步且一起发布后才结束组任务。`photo_checks` 保存 `Result<PhotoCandidate, PhotoValidationError>`，快照通过 `candidates()` 只迭代当前组的成功候选，不保存像素。内容拒绝缓存；共享冲突等临时 I/O 失败间隔至少一秒重试；永久失败结束任务并保留来源。发布失败清理私有暂存，不覆盖现有目标；源和原始归档保留。
 
-`photo_time.rs` 在规范化移除元数据前解析 EXIF 原始拍摄时间、时区与小数秒；缺失/无效时回退 `ArchivedPhoto.modified` 保存的源版本修改时间。无 EXIF 时区按 Windows 本地时区解释，歧义则回退；EXIF 时间解析限制 1 MiB。快照按时间、候选 ID 稳定倒序排列，错误在后且不能被选择。`PhotoTimeSource` 记录 EXIF/文件时间来源，不用处理完成时间排序。
+`photo_time.rs` 只使用 `ArchivedPhoto.modified` 保存的源文件修改时间，快照按时间、候选 ID 稳定倒序排列，错误在后且不能被选择。不再解析 EXIF 原始拍摄时间。
 
-`CaptureSession::select_candidate(group_id, photo_id)` 将当前未暂停组的成功候选设为手动选择，`use_latest_candidate(group_id)` 恢复自动最新；新图及迟到结果不会抢占手动选择。`snapshot.selection` 使用 `CandidateSelection::Automatic { photo_id: Option<Uuid> }` / `Manual { photo_id: Uuid }`，成功开始/放弃组会清除旧选择，命令应答前发布快照。选择只在内存，成品保存使用下述独立接口；实际屏幕仍待实现，离线 ZIP 已实现，热文件夹原图保留。
+`CaptureSession::select_candidate(group_id, photo_id)` 将当前未暂停组的成功候选设为手动选择，`use_latest_candidate(group_id)` 恢复自动最新；下一张有效照片处理完成后恢复自动最新，确认成品后仍保持锁定。`snapshot.selection` 使用 `CandidateSelection::Automatic { photo_id: Option<Uuid> }` / `Manual { photo_id: Uuid }`，成功开始/放弃组会清除旧选择，命令应答前发布快照。选择只在内存，成品保存使用下述独立接口；实际屏幕和离线 ZIP 已实现，热文件夹原图保留。
 
 `presentation.rs` 管理窗口实例、帧修订与回执；CaptureState 仍拥有组和选图策略。`publish_snapshot` 从同一份已排序快照派生展示目标，再发布新帧/应答，避免选图已完成但呈现版本仍旧。`attach_display` 返回本次窗口的 DisplayId，`detach_display` 只接受当前 ID；无候选/暂停置 Blank，停止置 Unavailable。当前图像/身份未变时保留修订与回执，A→B→A 则生成新修订。修订不能绕回；耗尽时停止并清除呈现。
 
@@ -53,7 +53,7 @@ cargo test -p natsume-photo-client --locked
 
 `photo.rs` 保存图片格式/尺寸及独立的 ConfirmationId、ResultId、SubmissionId；捕获与工作区复用这些领域值。`workspace/final_photos.rs` 负责源/目标路径、64 KiB 流式复制、哈希/格式/尺寸验证和无覆盖发布；`workspace/db.rs` 通过 typed Diesel 与现有 Transaction 原子校验基线并写入 photo_team_results；确认幂等、身份生成与修订递增由成品业务层负责。文件失败或事务回滚不删除旧成品；提交失败的完整无引用文件留待后续对账。
 
-工作区目前三张业务表；新表 migration 仅在新工作区安装，打开不迁移旧开发库。重开和 confirmed_photos() 都验证当前成品，共享图片只读取一次并核对所有引用元信息。确认后的已结束组清理已实现，离线 ZIP 已实现。标准 sRGB ICC 的头日期已固定，避免图像库写入当前时间造成规范输出哈希不稳定。
+工作区目前三张业务表；新表 migration 仅在新工作区安装，打开不迁移旧开发库。重开和 confirmed_photos() 都验证当前成品，共享图片只读取一次并核对所有引用元信息。确认后的已结束组清理已实现，离线 ZIP 已实现。输出不嵌入 ICC 或源拍摄元数据。
 
 ## 测试文件组织
 
@@ -107,3 +107,9 @@ export/archive.rs 使用 STORE、固定 ZIP 时间与有界写入器；每张图
 
 导出目标限制本地磁盘绝对路径，拒绝 UNC、父级穿越、ADS 和工作区内部输出；父目录需存在。现有不同内容绝不覆盖。下载授权令牌无需存在，导出只需要原签名密钥和已完成的本地资料。测试注入 Secrets 和文件写入故障，不增加生产测试字段。
 初始化恢复目录在正式工作区发布成功后清理，删除前关闭日志句柄，清理期间继续持有同级永久初始化锁。失败或中断保留恢复数据；清理失败记录 tracing 警告，不将已成功发布的工作区报告为初始化失败。已完成工作区通过 `initialization::open_authorized` 离线打开，不再次执行首次初始化。
+
+## 可观察进度
+
+`progress::Reporter` 通过独立 watch 通道报告 Prepare/Process/Verify/Publish 阶段和实际计数。`Initializer::run_with_progress`、`open_authorized_with_progress`、`export_results_with_progress` 允许 UI 观察长任务；原入口默认不订阅进度，接受任务的取消安全和导出租约不变。校徽下载最多 2 个并发响应，匹配当前 Server 的两个下载许可。
+
+校徽在导入时完整解码并按内容哈希入库，复制及后续验证核对每个文件完整字节、哈希和路径。相同内容不在每次打开时重新解码；授权检查继续把本地名单与校徽映射和原初始化 manifest 比对。

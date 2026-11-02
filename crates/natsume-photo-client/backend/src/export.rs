@@ -76,6 +76,30 @@ pub async fn export_results(
     target: &Path,
     secrets: &impl Secrets,
 ) -> Result<ExportedPackage> {
+    export_results_with_progress(
+        workspace,
+        target,
+        secrets,
+        crate::progress::Reporter::default(),
+    )
+    .await
+}
+
+/// Exports with observable stages and per-image write progress.
+/// # Errors
+/// Returns the same authorization, integrity and publication failures as `export_results`.
+pub async fn export_results_with_progress(
+    workspace: &Workspace,
+    target: &Path,
+    secrets: &impl Secrets,
+    progress: crate::progress::Reporter,
+) -> Result<ExportedPackage> {
+    progress.report(
+        crate::progress::Stage::Prepare,
+        "正在校验授权并读取成品",
+        0,
+        0,
+    );
     let root = workspace.root().to_owned();
     let ownership = workspace.writable_owner();
     let lease = tokio::task::spawn_blocking(move || ExportLease::acquire(&root, ownership))
@@ -86,7 +110,7 @@ pub async fn export_results(
     let secrets = secrets.clone();
     // Detaching the caller must not drop admission while any accepted I/O is still running.
     tokio::spawn(async move {
-        prepare_export(workspace, target, secrets, lease)
+        prepare_export(workspace, target, secrets, lease, progress)
             .await
             .inspect_err(|error| {
                 tracing::error!(error = %error, "Accepted offline export failed");
@@ -131,6 +155,7 @@ async fn prepare_export(
     target: PathBuf,
     secrets: impl Secrets,
     lease: ExportLease,
+    progress: crate::progress::Reporter,
 ) -> Result<ExportedPackage> {
     workspace.verify_resources().await.context(WorkspaceSnafu)?;
     let identity = authorization::verify(&workspace, &secrets)
@@ -139,7 +164,9 @@ async fn prepare_export(
     let snapshot = workspace.export_snapshot().await.context(WorkspaceSnafu)?;
     let root = workspace.root().to_owned();
     tokio::task::spawn_blocking(move || {
-        export_blocking(lease, &root, &target, &identity, &secrets, snapshot)
+        export_blocking(
+            lease, &root, &target, &identity, &secrets, snapshot, &progress,
+        )
     })
     .await
     .context(WorkerSnafu)?
@@ -152,7 +179,10 @@ fn export_blocking(
     identity: &authorization::Authorization,
     secrets: &impl Secrets,
     mut snapshot: FinalSnapshot,
+    progress: &crate::progress::Reporter,
 ) -> Result<ExportedPackage> {
+    use crate::progress::Stage;
+    progress.report(Stage::Process, "正在签署成果清单", 0, 0);
     let _lease = lease;
     let target = target_path(root, target)?;
     let key = authorization::load_signing_key(identity, secrets).context(AuthorizationSnafu)?;
@@ -178,8 +208,14 @@ fn export_blocking(
         .prefix(".photo-export-")
         .tempfile_in(parent)
         .context(IoSnafu)?;
-    archive::write(temporary.as_file_mut(), &json, &mut snapshot.images)?;
+    archive::write_with_progress(
+        temporary.as_file_mut(),
+        &json,
+        &mut snapshot.images,
+        progress,
+    )?;
     temporary.as_file().sync_all().context(IoSnafu)?;
+    progress.report(Stage::Verify, "正在验证 ZIP 与图片完整性", 0, 0);
     archive::verify(temporary.as_file_mut(), &signed)?;
     let (bytes, sha256) = archive::digest(temporary.as_file_mut())?;
     let result = ExportedPackage {
@@ -188,6 +224,7 @@ fn export_blocking(
         bytes,
         result_count: signed.manifest.results.len(),
     };
+    progress.report(Stage::Publish, "正在发布 ZIP 并保存导出记录", 0, 0);
     match temporary.persist_noclobber(&target) {
         Ok(_) => {}
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -209,6 +246,7 @@ fn export_blocking(
         bytes = result.bytes,
         "Offline Photo ZIP published and verified"
     );
+    progress.report(Stage::Publish, "导出完成", 1, 1);
     Ok(result)
 }
 

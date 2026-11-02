@@ -1,5 +1,6 @@
 //! Frameless native resize handling, before Slint captures pointer presses.
-use super::winit;
+use super::{WindowDragSnafu, WindowEventLoopSnafu, winit};
+use slint::ComponentHandle as _;
 use slint::winit_030::{EventResult, WinitWindowAccessor as _};
 use snafu::ResultExt as _;
 use winit::{
@@ -8,6 +9,33 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::ResizeDirection,
 };
+
+pub(super) fn bind_contestant(component: &super::ContestantWindow, windowed: bool) {
+    component.set_windowed_controls(windowed);
+    let weak = component.as_weak();
+    component.on_drag_window(move || {
+        let weak = weak.clone();
+        if let Err(error) = slint::invoke_from_event_loop(move || {
+            if let Some(component) = weak.upgrade()
+                && let Some(result) = component.window().with_winit_window(|native| {
+                    if native.fullscreen().is_none() {
+                        native.drag_window()
+                    } else {
+                        Ok(())
+                    }
+                })
+                && let Err(error) = result.context(WindowDragSnafu)
+            {
+                tracing::warn!(%error, "cannot drag contestant window");
+            }
+        })
+        .context(WindowEventLoopSnafu)
+        {
+            tracing::warn!(%error, "cannot schedule contestant drag");
+        }
+    });
+    bind(component.window(), windowed);
+}
 
 pub(super) fn bind(window: &slint::Window, allow_fullscreen: bool) {
     let mut cursor = None;

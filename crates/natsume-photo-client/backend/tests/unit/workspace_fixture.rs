@@ -5,6 +5,23 @@ use crate::{
 use snafu::ResultExt as _;
 use std::path::Path;
 
+impl Workspace {
+    pub(crate) fn create_with_logos(
+        root: std::path::PathBuf,
+        teams: Vec<natsume_photo_protocol::PhotoTeam>,
+        source: &Path,
+        logos: Vec<crate::workspace::resources::SchoolLogo>,
+    ) -> Result<Self> {
+        Self::create_with_logos_with_progress(
+            root,
+            teams,
+            source,
+            logos,
+            &crate::progress::Reporter::default(),
+        )
+    }
+}
+
 pub(crate) async fn create(root: &Path, roster: &Roster) -> Result<Workspace> {
     let root = root.to_owned();
     let teams = roster.teams().to_vec();

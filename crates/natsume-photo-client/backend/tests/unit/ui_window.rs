@@ -1,5 +1,4 @@
 use super::*;
-use slint::ComponentHandle as _;
 use snafu::{OptionExt as _, Snafu, ensure};
 use std::{
     cell::RefCell,
@@ -61,7 +60,7 @@ fn native_frameless_resize_and_f11_restore() -> Result<(), Failure> {
     let ui = crate::gui::PhotoWindow::new().context(PlatformSnafu)?;
     let viewer = crate::gui::ContestantWindow::new().context(PlatformSnafu)?;
     bind(ui.window(), false);
-    bind(viewer.window(), true);
+    bind_contestant(&viewer, true);
     ui.show().context(PlatformSnafu)?;
     viewer.show().context(PlatformSnafu)?;
     let mut initial = None;
@@ -99,7 +98,7 @@ fn native_frameless_resize_and_f11_restore() -> Result<(), Failure> {
                     });
                     viewer.window().with_winit_window(|w| {
                         w.set_title("Photo resize viewer test");
-                        w.set_outer_position(PhysicalPosition::new(1440, 0));
+                        w.set_outer_position(PhysicalPosition::new(800, 100));
                     });
                     initial = Some((a, b));
                     tracing::info!("native resize and F11 fixture ready");

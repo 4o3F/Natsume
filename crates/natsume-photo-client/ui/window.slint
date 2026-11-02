@@ -1,5 +1,5 @@
-import { ScrollView, CheckBox, ComboBox } from "std-widgets.slint";
-import { Palette, Label, Eyebrow, Title, Rule, Action, Field, FormRow, TeamRow, PhotoRow } from "style.slint";
+import { ScrollView, ListView, CheckBox, ComboBox } from "std-widgets.slint";
+import { Palette, Label, Eyebrow, Title, Rule, Action, Field, FormRow, TeamRow, PhotoRow, ProgressPanel } from "style.slint";
 
 export component PhotoWindow inherits Window {
     title: "Natsume Photo 摄影工作台";
@@ -38,7 +38,6 @@ export component PhotoWindow inherits Window {
     in property <string> display-problem;
     in property <bool> presented;
     in property <bool> confirmed;
-    in property <bool> automatic: true;
     in property <int> pending;
     in property <int> final-count;
     in property <int> team-count;
@@ -54,6 +53,13 @@ export component PhotoWindow inherits Window {
     in property <string> final-details;
     in property <string> photo-label: "—";
     in property <string> status: "选择工作区，或完成首次初始化";
+    in property <bool> progress-visible;
+    in property <bool> progress-export;
+    in property <int> progress-step;
+    in property <float> progress-value;
+    in property <bool> progress-known;
+    in property <string> progress-label;
+    in property <string> progress-count;
     in property <string> problem;
     in property <string> export-status;
     in property <[TeamRow]> teams;
@@ -204,7 +210,7 @@ export component PhotoWindow inherits Window {
                     }
                 }
                 if root.setup-step == 1: VerticalLayout {
-                    spacing: 16px;
+                    spacing: 16px; padding-top: 24px;
                     Eyebrow { text: "一次性配对码"; }
                     Field { text <=> root.pairing-code; secret: true; enabled: !root.busy; placeholder: "输入管理员提供的配对码"; }
                     Label { text: "继续同一工作区的初始化时，可留空并使用原凭据恢复。"; font-size: 12px; color: Palette.muted; height: 24px; }
@@ -215,6 +221,7 @@ export component PhotoWindow inherits Window {
                     }
                 }
                 Label { text: root.status; wrap: word-wrap; color: Palette.muted; height: 70px; }
+                if root.progress-visible && !root.progress-export: ProgressPanel { step: root.progress-step; value: root.progress-value; known: root.progress-known; label: root.progress-label; count: root.progress-count; }
                 Rectangle { vertical-stretch: 1; }
             }
         }
@@ -290,10 +297,8 @@ export component PhotoWindow inherits Window {
                 Field { text <=> root.search; placeholder: "队伍 ID / 学校 / 队名"; enabled: !root.group-active; edited(value) => { root.search-edited(value); } }
                 Label { text: root.group-active ? "拍摄中 · 队伍已锁定" : "" + root.teams.length + " 支队伍"; font-size: 12px; color: Palette.muted; height: 24px; }
                 Rectangle { height: 2px; background: Palette.ink; }
-                ScrollView {
+                ListView {
                     content-width: self.width;
-                    VerticalLayout {
-                        spacing: 0px;
                         for t in root.teams: Rectangle {
                             height: 108px; background: root.selected-id == t.id || team-touch.has-hover ? white : transparent;
                             if root.selected-id == t.id: Rectangle { x: 0px; y: 0px; width: 4px; height: parent.height; background: Palette.signal; }
@@ -311,7 +316,6 @@ export component PhotoWindow inherits Window {
                             Rule { y: parent.height - 1px; width: parent.width; }
                             team-touch := TouchArea { enabled: !root.group-active && !root.busy; clicked => { root.select-team(t.id); } }
                         }
-                    }
                 }
                 Rectangle { height: 2px; background: Palette.ink; }
                 if root.selected-id != "": HorizontalLayout {
@@ -354,7 +358,6 @@ export component PhotoWindow inherits Window {
                             VerticalLayout { padding-top: 12px; padding-bottom: 12px; Label { text: root.school; color: white; font-weight: 700; font-size: 16px; } Label { text: root.team + "  " + root.team-en; color: #bbbbbb; } }
                         }
                     }
-                    HorizontalLayout { height: 24px; spacing: 20px; Label { text: root.automatic ? "● 自动展示最新" : "○ 自动展示最新"; font-size: 13px; } Label { text: root.automatic ? "○ 手动保持" : "● 手动保持"; font-size: 13px; } Rectangle { horizontal-stretch: 1; } }
                     Rectangle {
                         min-height: 220px; background: #eae9e5; vertical-stretch: 1;
                         Image { source: root.preview; width: parent.width; height: parent.height; image-fit: contain; }
@@ -362,7 +365,6 @@ export component PhotoWindow inherits Window {
                         if root.candidates.length > 0: Rectangle { x: 12px; y: 12px; width: 68px; height: 28px; background: Palette.paper; Label { text: root.photo-label; width: parent.width; height: parent.height; horizontal-alignment: center; font-family: "Cascadia Mono"; font-weight: 700; } }
                         if root.candidates.length > 0: Rectangle { x: parent.width - self.width - 12px; y: 12px; width: 158px; height: 28px; background: root.presented ? Palette.signal : Palette.ink; Label { text: root.presented ? "● 选手窗口正在显示" : "尚未确认展示"; color: white; width: parent.width; height: parent.height; horizontal-alignment: center; font-size: 12px; } }
                     }
-                    Action { text: "恢复自动展示最新"; outline: true; reason: root.confirmed ? "本组成品已确认" : root.busy ? "处理中" : ""; clicked => { root.auto-select(); } }
                     Rectangle { height: 2px; background: Palette.ink; }
                     Eyebrow { text: "本组候选  /  " + root.candidates.length; }
                     ScrollView {
@@ -427,13 +429,11 @@ export component PhotoWindow inherits Window {
             }
             results-split := HorizontalLayout {
                 spacing: 0px;
-                ScrollView {
+                ListView {
                     preferred-width: root.final-list-width;
                     min-width: 560px; horizontal-stretch: 0;
-                    content-width: self.width;
-                    VerticalLayout { spacing: 0px;
-                        if root.overview-teams.length == 0: Label { text: "没有符合条件的队伍"; color: Palette.muted; height: 56px; }
-                        for t in root.overview-teams: VerticalLayout { spacing: 0px;
+                    content-width: self.width - 20px;
+                        for t in root.overview-teams: VerticalLayout { spacing: 0px; height: 88px; width: root.final-list-width - 24px;
                             HorizontalLayout {
                                 padding-top: 16px; padding-bottom: 16px; spacing: 12px;
                                 Label { text: t.account; font-family: "Cascadia Mono"; width: 80px; font-weight: 700; }
@@ -447,7 +447,6 @@ export component PhotoWindow inherits Window {
                             }
                             Rule { }
                         }
-                    }
                 }
                 Rectangle {
                     width: 12px;
@@ -481,7 +480,7 @@ export component PhotoWindow inherits Window {
                 Rectangle { vertical-stretch: 1; }
             }
             Rectangle { width: 1px; background: Palette.rule; }
-            VerticalLayout { spacing: 20px; Eyebrow { text: "LOCAL PACKAGE"; } Label { text: "导出状态"; font-size: 20px; font-weight: 700; height: 32px; } Label { text: root.export-status == "" ? "尚未开始导出" : root.export-status; wrap: word-wrap; color: Palette.muted; height: 150px; } Label { text: "生成本地包不代表服务器已接收。请将 ZIP 交付给负责上传的工作人员。"; color: Palette.muted; wrap: word-wrap; height: 64px; } Rectangle { vertical-stretch: 1; } }
+            VerticalLayout { spacing: 20px; Eyebrow { text: "LOCAL PACKAGE"; } Label { text: "导出状态"; font-size: 20px; font-weight: 700; height: 32px; } if root.progress-visible && root.progress-export: ProgressPanel { step: root.progress-step; value: root.progress-value; known: root.progress-known; label: root.progress-label; count: root.progress-count; } Label { text: root.export-status == "" ? "尚未开始导出" : root.export-status; wrap: word-wrap; color: Palette.muted; height: 150px; } Label { text: "生成本地包不代表服务器已接收。请将 ZIP 交付给负责上传的工作人员。"; color: Palette.muted; wrap: word-wrap; height: 64px; } Rectangle { vertical-stretch: 1; } }
         }
 
         if root.ready && root.page == 6: VerticalLayout {
@@ -528,7 +527,10 @@ export component ContestantWindow inherits Window {
     in property <string> school-en;
     in property <string> team;
     in property <string> team-en;
+    in property <bool> windowed-controls;
+    callback drag-window;
     property <float> stage-scale: min(root.width / 1920px, root.height / 1080px);
+    property <length> header-column-width: (1920px - 224px) * root.stage-scale / 3;
     if root.has-team: Rectangle {
         width: 1920px * root.stage-scale; height: 1080px * root.stage-scale;
       VerticalLayout {
@@ -537,18 +539,25 @@ export component ContestantWindow inherits Window {
             height: 280px * root.stage-scale;
             HorizontalLayout {
                 padding-left: 64px * root.stage-scale; padding-right: 64px * root.stage-scale; padding-top: 48px * root.stage-scale; padding-bottom: 40px * root.stage-scale; spacing: 48px * root.stage-scale;
-                Image { source: root.logo; width: 160px * root.stage-scale; height: 160px * root.stage-scale; image-fit: contain; }
-                VerticalLayout {
-                    spacing: 8px * root.stage-scale;
-                    Label { text: root.school; color: Palette.paper; font-size: 56px * root.stage-scale; font-weight: 700; height: 68px * root.stage-scale; }
-                    Label { text: root.school-en; color: #999999; font-size: 28px * root.stage-scale; height: 36px * root.stage-scale; }
-                    Rectangle { height: 8px * root.stage-scale; }
-                    HorizontalLayout { spacing: 24px * root.stage-scale; Label { text: root.team; color: Palette.paper; font-size: 44px * root.stage-scale; font-weight: 700; height: 54px * root.stage-scale; } Label { text: root.team-en; color: #999999; font-size: 28px * root.stage-scale; } }
+                HorizontalLayout {
+                    width: root.header-column-width; spacing: 24px * root.stage-scale;
+                    Image { source: root.logo; width: 160px * root.stage-scale; height: 160px * root.stage-scale; image-fit: contain; }
+                    VerticalLayout {
+                        alignment: center; spacing: 12px * root.stage-scale;
+                        Label { text: root.school; color: Palette.paper; font-size: 48px * root.stage-scale; font-weight: 700; height: 96px * root.stage-scale; wrap: word-wrap; }
+                        Label { text: root.school-en; color: #999999; font-size: 28px * root.stage-scale; height: 72px * root.stage-scale; wrap: word-wrap; }
+                    }
                 }
                 VerticalLayout {
-                    width: max(260px * root.stage-scale, team-number.preferred-width);
+                    width: root.header-column-width; alignment: center; spacing: 12px * root.stage-scale;
+                    Label { text: root.team; color: Palette.paper; font-size: 44px * root.stage-scale; font-weight: 700; height: 96px * root.stage-scale; horizontal-alignment: center; wrap: word-wrap; }
+                    Label { text: root.team-en; color: #999999; font-size: 28px * root.stage-scale; height: 72px * root.stage-scale; horizontal-alignment: center; wrap: word-wrap; }
+                }
+                VerticalLayout {
+                    width: max(root.header-column-width, team-number.preferred-width);
+                    alignment: center; spacing: 8px * root.stage-scale;
                     Eyebrow { text: "TEAM ID"; color: #999999; horizontal-alignment: right; font-size: 20px * root.stage-scale; height: 28px * root.stage-scale; }
-                    team-number := Label { text: root.account; color: Palette.paper; font-family: "Cascadia Mono"; font-size: 64px * root.stage-scale; font-weight: 700; horizontal-alignment: right; }
+                    team-number := Label { text: root.account; color: Palette.paper; font-family: "Cascadia Mono"; font-size: 64px * root.stage-scale; font-weight: 700; horizontal-alignment: right; height: 80px * root.stage-scale; }
                 }
             }
             Rectangle { y: parent.height - 1px; height: 1px; width: parent.width; background: #383838; }
@@ -556,8 +565,13 @@ export component ContestantWindow inherits Window {
         Rectangle { vertical-stretch: 1; Image { x: 64px * root.stage-scale; y: 32px * root.stage-scale; width: parent.width - 128px * root.stage-scale; height: parent.height - 64px * root.stage-scale; source: root.photo; image-fit: contain; } }
         if root.has-photo: Rectangle {
             height: 96px * root.stage-scale; background: root.confirmed ? Palette.ok : Palette.signal;
-            HorizontalLayout { padding-left: 64px * root.stage-scale; padding-right: 64px * root.stage-scale; spacing: 24px * root.stage-scale; Rectangle { width: 24px * root.stage-scale; height: 24px * root.stage-scale; background: white; } Label { text: root.confirmed ? "已确认" : "请确认照片"; color: white; font-size: 40px * root.stage-scale; font-weight: 700; horizontal-stretch: 0; } Label { text: root.confirmed ? "Confirmed" : "Please review this photo"; color: #ffffffb3; font-size: 24px * root.stage-scale; } }
+            Label { text: root.confirmed ? "已确认" : "请确认照片"; color: white; font-size: 40px * root.stage-scale; font-weight: 700; horizontal-alignment: center; width: parent.width; height: parent.height; }
         }
       }
+    }
+    if root.windowed-controls: TouchArea {
+        width: root.width; height: 140px * root.stage-scale;
+        mouse-cursor: move;
+        pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { root.drag-window(); } }
     }
 }

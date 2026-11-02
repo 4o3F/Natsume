@@ -141,15 +141,8 @@ fn decode(
             && decoder.total_bytes() <= MAX_ALLOCATION,
         DimensionsSnafu
     );
-    if format == PhotoFormat::Png {
-        candidate::check_png_color(bytes).context(CandidateSnafu)?;
-    }
     let orientation = decoder.orientation().context(DecodeSnafu)?;
-    let captured_at = PhotoTime::read(
-        decoder.exif_metadata().context(DecodeSnafu)?,
-        photo.modified,
-    );
-    let icc = decoder.icc_profile().context(DecodeSnafu)?;
+    let captured_at = PhotoTime::read(photo.modified);
     // Decode exactly once, then consume the same pixels for normalized output
     // and its thumbnail on the capture worker's existing blocking task.
     let image = image::DynamicImage::from_decoder(decoder).context(DecodeSnafu)?;
@@ -164,7 +157,6 @@ fn decode(
             },
             image,
             orientation,
-            icc,
             captured_at,
         },
     )

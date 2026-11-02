@@ -121,16 +121,21 @@ struct Application {
     session: Option<CaptureSession>,
     view: Snapshot,
     thumbnails: HashMap<Uuid, Thumbnail>,
+    progress: natsume_photo_client::progress::Reporter,
 }
 
 pub(super) fn run(
     mut commands: mpsc::Receiver<Command>,
     updates: &watch::Sender<Snapshot>,
+    progress: natsume_photo_client::progress::Reporter,
 ) -> Result<()> {
     let result = (|| {
         let runtime = tokio::runtime::Runtime::new().context(RuntimeSnafu)?;
         runtime.block_on(async {
-            let mut app = Application::default();
+            let mut app = Application {
+                progress,
+                ..Application::default()
+            };
             let mut tick = tokio::time::interval(Duration::from_millis(250));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -221,9 +226,13 @@ impl Application {
             Command::Open(root) => {
                 snafu::ensure!(self.session.is_none(), ActiveSessionSnafu);
                 let workspace =
-                    natsume_photo_client::initialization::open_authorized(&root, &VaultSecrets)
-                        .await
-                        .context(InitializationSnafu)?;
+                    natsume_photo_client::initialization::open_authorized_with_progress(
+                        &root,
+                        &VaultSecrets,
+                        &self.progress,
+                    )
+                    .await
+                    .context(InitializationSnafu)?;
                 self.use_workspace(workspace).await?;
             }
             Command::Initialize { config, code } => {
@@ -346,11 +355,14 @@ impl Application {
                 .context(WorkerSnafu)?
                 .context(InitializationSnafu)?;
         let workspace = initializer
-            .run(if code.is_empty() {
-                None
-            } else {
-                Some(code.as_str())
-            })
+            .run_with_progress(
+                if code.is_empty() {
+                    None
+                } else {
+                    Some(code.as_str())
+                },
+                self.progress.clone(),
+            )
             .await
             .context(InitializationSnafu)?;
         self.use_workspace(workspace).await?;
@@ -407,7 +419,13 @@ impl Application {
     async fn export(&mut self, target: PathBuf) -> Result<()> {
         "本次导出尚未完成。".clone_into(&mut self.view.export_status);
         let workspace = self.workspace.as_ref().context(NotReadySnafu)?;
-        match natsume_photo_client::export::export_results(workspace, &target, &VaultSecrets).await
+        match natsume_photo_client::export::export_results_with_progress(
+            workspace,
+            &target,
+            &VaultSecrets,
+            self.progress.clone(),
+        )
+        .await
         {
             Ok(package) => {
                 self.view.export_status = format!(
@@ -630,8 +648,7 @@ fn photo_time_label(time: natsume_photo_client::capture_session::PhotoTime) -> S
     use natsume_photo_client::capture_session::PhotoTimeSource;
     let instant: chrono::DateTime<chrono::Local> = time.instant().into();
     let origin = match time.source() {
-        PhotoTimeSource::ExifOriginal => "EXIF",
-        PhotoTimeSource::FileModified => "修改时间*",
+        PhotoTimeSource::FileModified => "修改时间",
     };
     format!("{} {origin}", instant.format("%H:%M:%S"))
 }

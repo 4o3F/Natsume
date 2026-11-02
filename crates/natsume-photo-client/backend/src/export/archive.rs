@@ -41,10 +41,25 @@ impl<W: Seek> Seek for Limited<W> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn write<W: Write + Seek>(
     file: W,
     manifest: &[u8],
     images: &mut [SnapshotImage],
+) -> Result<()> {
+    write_with_progress(
+        file,
+        manifest,
+        images,
+        &crate::progress::Reporter::default(),
+    )
+}
+
+pub(super) fn write_with_progress<W: Write + Seek>(
+    file: W,
+    manifest: &[u8],
+    images: &mut [SnapshotImage],
+    progress: &crate::progress::Reporter,
 ) -> Result<()> {
     let mut zip = ZipWriter::new(Limited {
         inner: file,
@@ -55,11 +70,24 @@ pub(super) fn write<W: Write + Seek>(
         .last_modified_time(zip::DateTime::default());
     zip.start_file("manifest.json", options).context(ZipSnafu)?;
     zip.write_all(manifest).context(IoSnafu)?;
-    for image in images {
+    let total = images.len() as u64;
+    progress.report(
+        crate::progress::Stage::Process,
+        "正在写入照片与清单",
+        0,
+        total,
+    );
+    for (index, image) in images.iter_mut().enumerate() {
         zip.start_file(image.entry.image_entry(), options)
             .context(ZipSnafu)?;
         image.file.rewind().context(IoSnafu)?;
         transfer(&mut image.file, Some(&mut zip), &image.entry)?;
+        progress.report(
+            crate::progress::Stage::Process,
+            "正在写入照片与清单",
+            index as u64 + 1,
+            total,
+        );
     }
     zip.finish().context(ZipSnafu)?;
     Ok(())

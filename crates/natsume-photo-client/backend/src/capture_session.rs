@@ -365,7 +365,7 @@ impl CaptureSession {
     pub async fn abandon_group(&self, id: GroupId) -> Result<()> {
         self.request(Action::Abandon(id)).await.map(|_| ())
     }
-    /// Keeps a ready candidate selected until automatic mode is explicitly restored.
+    /// Selects a ready candidate until the next valid photo arrives.
     /// # Errors
     /// Rejects stale groups, unknown/unready candidates, paused state and a stopped worker.
     pub async fn select_candidate(&self, group: GroupId, photo: Uuid) -> Result<()> {
@@ -719,6 +719,9 @@ impl CaptureState {
             self.session
                 .task_finished(task.group, task.id)
                 .context(CaptureSnafu)?;
+        }
+        if check.result().is_ok() && self.confirmed.is_none() {
+            self.manual_selection = None;
         }
         self.photo_checks.insert(photo.id, check);
         Ok(())
