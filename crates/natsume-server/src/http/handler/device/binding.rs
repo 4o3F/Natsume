@@ -1,27 +1,48 @@
-use crate::http::middleware::audit::RequestAudit;
+use std::sync::Arc;
+
 use axum::{
     Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
+    routing::delete,
 };
 
-use crate::component::binding::BindingError;
+use crate::{
+    component::binding::{BindingComponent, BindingError},
+    device_control::DeviceControl,
+    http::{Routes, middleware, middleware::audit::RequestAudit},
+};
 
-use super::super::super::{AppState, error::ApiError};
+use super::super::super::error::ApiError;
 use super::{DevicePath, invalid_device_id, parse_device_id};
+
+pub(crate) fn operator_routes() -> Routes<DeviceBindingState> {
+    vec![(
+        "/devices/{device_id}/binding",
+        middleware::require_admin(delete(delete_device_binding)),
+    )]
+}
+
+#[derive(Clone)]
+pub(crate) struct DeviceBindingState {
+    /// Shared committed binding operations.
+    pub(crate) binding: Arc<BindingComponent>,
+    /// Shared coordinator for publishing committed changes.
+    pub(crate) device_control: Arc<DeviceControl>,
+}
 
 pub(in crate::http) async fn delete_device_binding(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<DeviceBindingState>,
     Path(path): Path<DevicePath>,
 ) -> Response {
     let Some(device_id) = parse_device_id(&path) else {
         return invalid_device_id();
     };
-    match state.binding().unbind(device_id, audit.context()).await {
+    match state.binding.unbind(device_id, audit.context()).await {
         Ok(change) => {
-            state.device_control().publish(change).await;
+            state.device_control.publish(change).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => binding_error(error).into_response(),

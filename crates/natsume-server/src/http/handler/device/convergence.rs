@@ -1,12 +1,16 @@
+use std::sync::Arc;
+
 use axum::{
     Json,
     extract::{Path, State},
     response::{IntoResponse, Response},
+    routing::get,
 };
 
 use crate::{
     component::{gateway::GatewayError, runtime::RuntimeConfigError},
-    device_control::DeviceConvergenceError,
+    device_control::{DeviceControl, DeviceConvergenceError},
+    http::Routes,
 };
 
 use serde::Serialize;
@@ -19,7 +23,7 @@ mod home;
 mod runtime;
 mod session;
 
-use super::super::super::{AppState, error::ApiError};
+use super::super::super::error::ApiError;
 use super::{
     DevicePath, binding::binding_error, home::home_error, invalid_device_id, parse_device_id,
     session::session_error,
@@ -100,13 +104,19 @@ impl From<model::ConvergenceStatus> for ConvergenceStatusResponse {
     }
 }
 
+pub(crate) fn operator_routes() -> Routes<Arc<DeviceControl>> {
+    vec![(
+        "/devices/{device_id}/convergence",
+        get(get_device_convergence),
+    )]
+}
+
 pub(crate) async fn get_device_convergence(
-    State(state): State<AppState>,
+    State(state): State<Arc<DeviceControl>>,
     Path(path): Path<DevicePath>,
 ) -> Result<Json<DeviceConvergenceResponse>, Response> {
     let device_id = parse_device_id(&path).ok_or_else(invalid_device_id)?;
     let convergence = state
-        .device_control()
         .read_device_status(device_id)
         .await
         .map_err(|error| convergence_error(error).into_response())?

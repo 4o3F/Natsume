@@ -4,26 +4,19 @@ use snafu::ResultExt as _;
 
 use crate::{
     component::{
-        binding::BindingComponent,
         contest::ContestComponent,
-        device::DeviceComponent,
         gateway::{GatewayComponent, GatewayLoadError},
-        home::HomeComponent,
         import::ImportComponent,
         operator::OperatorComponent,
-        power::PowerControlComponent,
         print::PrintComponent,
-        runtime::RuntimeConfigComponent,
-        session::SessionControlComponent,
-        target_submission::TargetSubmissionComponent,
     },
     config::ServerConfig,
     db::Database,
-    device_control::{DeviceControl, DeviceControlDependencies},
+    device_control::DeviceControl,
     feature::{
         Infra, PhotoStorageSnafu, PrintStorageSnafu, StartupError, contest::ContestFeature,
-        journal::JournalFeature, operator::OperatorFeature, photo::PhotoFeature,
-        print::PrintFeature, provisioning::ProvisioningFeature,
+        device::DeviceFeature, journal::JournalFeature, operator::OperatorFeature,
+        photo::PhotoFeature, print::PrintFeature, provisioning::ProvisioningFeature,
     },
     http::AccessRoutes,
     journal::{Journal, JournalComponent},
@@ -47,12 +40,7 @@ pub(crate) struct ServerState {
     /// Transitional handle for the two Import candidate routes; removed in Step 10.
     contest: Arc<ContestComponent>,
     import: ImportComponent,
-    device: Arc<DeviceComponent>,
-    /// Shared Binding owner used directly by single-component entrypoints.
-    binding: Arc<BindingComponent>,
-    session: Arc<SessionControlComponent>,
-    home: Arc<HomeComponent>,
-    target_submission: TargetSubmissionComponent,
+    /// Transitional handle for Import routes and tests; removed in Steps 10/11.
     device_control: Arc<DeviceControl>,
     /// Shared emit handle for request-level journal events.
     journal: Journal,
@@ -140,39 +128,23 @@ impl ServerState {
         gateway: GatewayComponent,
         utc_offset: time::UtcOffset,
     ) -> LoadedServer {
+        let operator_feature = OperatorFeature::load(infra.database.clone(), infra.journal.clone());
+        let provisioning_feature = ProvisioningFeature::load();
+        let device_feature = DeviceFeature::load(
+            &infra,
+            gateway,
+            Arc::clone(provisioning_feature.component()),
+        );
         let Infra {
             database,
             vault,
             journal: emitter,
             lifecycle,
         } = infra;
-        let operator_feature = OperatorFeature::load(database.clone(), emitter.clone());
-        let provisioning_feature = ProvisioningFeature::load();
-        let device = Arc::new(DeviceComponent::new(database.clone(), emitter.clone()));
-        let binding = Arc::new(BindingComponent::new(
-            database.clone(),
-            Arc::clone(&vault),
-            emitter.clone(),
-        ));
-        let session = Arc::new(SessionControlComponent::new(database.clone()));
-        let home = Arc::new(HomeComponent::new(database.clone()));
-        let power = Arc::new(PowerControlComponent::new(database.clone()));
-        let device_control = Arc::new(DeviceControl::new(DeviceControlDependencies {
-            provisioning: Arc::clone(provisioning_feature.component()),
-            device: Arc::clone(&device),
-            gateway,
-            binding: Arc::clone(&binding),
-            runtime: RuntimeConfigComponent::new(database.clone()),
-            session: Arc::clone(&session),
-            home: Arc::clone(&home),
-            power: Arc::clone(&power),
-            journal: emitter.clone(),
-            lifecycle: lifecycle.clone(),
-        }));
         let journal_feature = JournalFeature::load(
             journal.reader(),
             Arc::clone(operator_feature.component()),
-            device_control.live_lease_view(),
+            device_feature.device_control().live_lease_view(),
             utc_offset,
         );
         let routes = AccessRoutes::new()
@@ -181,20 +153,20 @@ impl ServerState {
             .merge(operator_feature.routes())
             .merge(provisioning_feature.routes())
             .merge(contest.routes())
-            .merge(photo.routes());
+            .merge(photo.routes())
+            .merge(device_feature.routes());
         let print = Arc::clone(print_feature.component());
-        let runtime = ServerRuntime::new(lifecycle.clone(), Arc::clone(&device_control), journal);
+        let runtime = ServerRuntime::new(
+            lifecycle.clone(),
+            Arc::clone(device_feature.device_control()),
+            journal,
+        );
         let state = Self {
             operator: Arc::clone(operator_feature.component()),
             print,
             contest: Arc::clone(contest.component()),
-            target_submission: TargetSubmissionComponent::new(database.clone(), emitter.clone()),
             import: ImportComponent::new(database, vault),
-            device,
-            binding,
-            session,
-            home,
-            device_control,
+            device_control: Arc::clone(device_feature.device_control()),
             journal: emitter,
             lifecycle,
         };
@@ -229,26 +201,6 @@ impl ServerState {
 
     pub(crate) const fn import(&self) -> &ImportComponent {
         &self.import
-    }
-
-    pub(crate) fn device(&self) -> &DeviceComponent {
-        &self.device
-    }
-
-    pub(crate) fn binding(&self) -> &BindingComponent {
-        &self.binding
-    }
-
-    pub(crate) fn session(&self) -> &SessionControlComponent {
-        &self.session
-    }
-
-    pub(crate) fn home(&self) -> &HomeComponent {
-        &self.home
-    }
-
-    pub(crate) const fn target_submission(&self) -> &TargetSubmissionComponent {
-        &self.target_submission
     }
 }
 

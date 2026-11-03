@@ -13,7 +13,9 @@ use tokio_tungstenite::{Connector, client_async_tls_with_config};
 
 use super::*;
 use crate::{
-    component::target_submission::{TargetAction, TargetScope, TargetSubmissionRequest},
+    component::target_submission::{
+        TargetAction, TargetScope, TargetSubmissionComponent, TargetSubmissionRequest,
+    },
     tls::{PeerAddress, TlsListener, tests::TestIdentity},
 };
 
@@ -36,7 +38,8 @@ async fn activate_device(
     );
     let EnrollmentStartOutcome::Pending(review, activation) = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .start_enrollment(
             evidence,
             std::net::IpAddr::from([127, 0, 0, 1]),
@@ -51,7 +54,8 @@ async fn activate_device(
     };
     let approval = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .approve_enrollment(
             review.review_id(),
             crate::component::device::EnrollmentApprovalMode::Manual,
@@ -339,14 +343,14 @@ async fn exercise_mixed_load(
         tracing::info!("preview + commit: {:?}", started.elapsed());
         Ok::<_, crate::test_error::TestError>(())
     };
+    let target_submission =
+        TargetSubmissionComponent::new(fixture.database.clone(), fixture.state.journal().clone());
     let submitting = async {
         let mut jobs = Vec::new();
         for _ in 0..10 {
             jobs.push(async {
                 let started = Instant::now();
-                let outcome = fixture
-                    .state
-                    .target_submission()
+                let outcome = target_submission
                     .submit(
                         Uuid::now_v7(),
                         TargetSubmissionRequest {

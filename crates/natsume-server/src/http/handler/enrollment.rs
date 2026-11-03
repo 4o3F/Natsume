@@ -16,9 +16,10 @@ use crate::component::device::{
     PendingEnrollmentReview,
 };
 
-use super::super::{AppState, error::ApiError, middleware};
+use super::super::{error::ApiError, middleware};
+use super::device::lifecycle::DeviceRecordState;
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<DeviceRecordState> {
     vec![
         ("/enrollment-reviews", get(list_enrollment_reviews)),
         (
@@ -75,8 +76,8 @@ impl From<&PendingEnrollmentReview> for EnrollmentReviewResponse {
     }
 }
 
-pub(crate) async fn list_enrollment_reviews(State(state): State<AppState>) -> Response {
-    let reviews = state.device().pending_enrollment_reviews().await;
+pub(crate) async fn list_enrollment_reviews(State(state): State<DeviceRecordState>) -> Response {
+    let reviews = state.device.pending_enrollment_reviews().await;
     let mut response = reviews
         .iter()
         .map(EnrollmentReviewResponse::from)
@@ -87,7 +88,7 @@ pub(crate) async fn list_enrollment_reviews(State(state): State<AppState>) -> Re
 
 pub(in crate::http) async fn approve_enrollment_review(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<DeviceRecordState>,
     Extension(admission): Extension<crate::lifecycle::Admission>,
     Path(path): Path<EnrollmentReviewPath>,
 ) -> Response {
@@ -96,7 +97,7 @@ pub(in crate::http) async fn approve_enrollment_review(
             .into_response();
     };
     match state
-        .device_control()
+        .device_control
         .approve_enrollment(&admission, review_id, audit.context())
         .await
     {
@@ -112,7 +113,7 @@ pub(in crate::http) async fn approve_enrollment_review(
 
 pub(in crate::http) async fn deny_enrollment_review(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<DeviceRecordState>,
     Path(path): Path<EnrollmentReviewPath>,
 ) -> Response {
     let Some(review_id) = EnrollmentReviewId::parse(&path.review_id) else {
@@ -120,7 +121,7 @@ pub(in crate::http) async fn deny_enrollment_review(
             .into_response();
     };
     if state
-        .device()
+        .device
         .deny_enrollment_review(review_id, audit.context())
         .await
     {

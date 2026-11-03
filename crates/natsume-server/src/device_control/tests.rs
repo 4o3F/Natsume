@@ -1060,7 +1060,8 @@ async fn failure_transient_refresh_retries_without_a_pending_client_snapshot() {
     drop(lock);
     fixture
         .state
-        .session()
+        .device_control()
+        .session
         .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
@@ -1259,7 +1260,8 @@ async fn cancelled_http_mutation_commits_and_publishes_the_complete_target()
     assert_eq!(
         fixture
             .state
-            .home()
+            .device_control()
+            .home
             .read_current(device_id)
             .await
             .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error))),
@@ -1331,7 +1333,8 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
 
     fixture
         .state
-        .session()
+        .device_control()
+        .session
         .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
@@ -1377,7 +1380,8 @@ async fn periodic_refresh_recovers_the_current_target_without_dirty() {
 
     fixture
         .state
-        .session()
+        .device_control()
+        .session
         .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
@@ -1542,7 +1546,8 @@ async fn cancelled_request_does_not_cancel_authority_fence_completion() {
         loop {
             let device = fixture
                 .state
-                .device()
+                .device_control()
+                .device
                 .find_device(device_id)
                 .await
                 .unwrap_or_else(|error| panic!("Device lookup failed: {error:?}"))
@@ -1630,6 +1635,7 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
 #[tokio::test]
 async fn approval_uses_current_authority_instead_of_review_creation_state() {
     let fixture = Fixture::new().await;
+    let control = fixture.state.device_control();
     let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
         .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
     let first_evidence = ValidatedEnrollmentEvidence::new(
@@ -1656,9 +1662,8 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
         "2.0.0".to_owned(),
         "2.0.0".to_owned(),
     );
-    let EnrollmentStartOutcome::Pending(first_review, first_activation) = fixture
-        .state
-        .device()
+    let EnrollmentStartOutcome::Pending(first_review, first_activation) = control
+        .device
         .start_enrollment(
             first_evidence,
             std::net::IpAddr::from([127, 0, 0, 1]),
@@ -1669,9 +1674,8 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
     else {
         panic!("the first authority unexpectedly replayed");
     };
-    let EnrollmentStartOutcome::Pending(second_review, second_activation) = fixture
-        .state
-        .device()
+    let EnrollmentStartOutcome::Pending(second_review, second_activation) = control
+        .device
         .start_enrollment(
             second_evidence,
             std::net::IpAddr::from([127, 0, 0, 1]),
@@ -1790,7 +1794,8 @@ async fn authority_change_after_precheck_is_rejected_after_attach() {
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x66; 32])).await;
     let authority = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .find_current_authority(machine_hardware_id)
         .await
         .unwrap_or_else(|error| panic!("authority lookup failed: {error:?}"))
@@ -1826,7 +1831,8 @@ async fn authority_change_after_precheck_is_rejected_after_attach() {
     .unwrap_or_else(|_| panic!("attach did not pass its authority precheck"));
     fixture
         .state
-        .device()
+        .device_control()
+        .device
         .disable(device_id, JournalContext::default())
         .await
         .unwrap_or_else(|error| panic!("Device disable failed: {error:?}"));
@@ -1959,7 +1965,8 @@ async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
     );
     let EnrollmentStartOutcome::Pending(review, mut activation) = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .start_enrollment(
             replacement,
             std::net::IpAddr::from([127, 0, 0, 1]),
@@ -2049,19 +2056,22 @@ async fn batch_and_single_active_device_status_have_the_same_convergence() {
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x70; 32])).await;
     fixture
         .state
-        .session()
+        .device_control()
+        .session
         .set_foreground(device_id, ForegroundTarget::Waiting)
         .await
         .unwrap_or_else(|error| panic!("Session target setup failed: {error}"));
     fixture
         .state
-        .session()
+        .device_control()
+        .session
         .terminate(device_id)
         .await
         .unwrap_or_else(|error| panic!("Session terminate setup failed: {error}"));
     fixture
         .state
-        .home()
+        .device_control()
+        .home
         .reset(device_id)
         .await
         .unwrap_or_else(|error| panic!("Home target setup failed: {error}"));
@@ -2137,7 +2147,8 @@ async fn closed_window_allows_manual_enrollment_and_a_complete_target() {
 
     let device_id = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .find_current_authority(
             MachineHardwareId::parse(MACHINE_HARDWARE_ID)
                 .unwrap_or_else(|| panic!("invalid machine")),
@@ -2148,7 +2159,8 @@ async fn closed_window_allows_manual_enrollment_and_a_complete_target() {
         .device_id();
     let network = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .find_device(device_id)
         .await
         .unwrap_or_else(|error| panic!("Device: {error}"))
@@ -2177,7 +2189,8 @@ async fn open_window_automatically_enrolls_without_operator_approval() {
     assert!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -2185,7 +2198,8 @@ async fn open_window_automatically_enrolls_without_operator_approval() {
     assert_eq!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .list_devices(crate::component::device::DeviceListFilter::All)
             .await
             .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
@@ -2234,7 +2248,8 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
     assert_eq!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .len(),
@@ -2243,7 +2258,8 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
     assert!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .list_devices(crate::component::device::DeviceListFilter::All)
             .await
             .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
@@ -2255,7 +2271,8 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
     assert!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -2293,7 +2310,8 @@ async fn automatic_key_replacement_evicts_the_old_lease_before_activation_delive
     ));
     let devices = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .list_devices(crate::component::device::DeviceListFilter::All)
         .await
         .unwrap_or_else(|error| panic!("Device lookup failed: {error}"));
@@ -2341,7 +2359,8 @@ async fn silent_active_connection_becomes_offline_after_the_client_deadline() {
         .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
     let device_id = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .find_current_authority(machine_hardware_id)
         .await
         .unwrap_or_else(|error| panic!("authority lookup failed: {error:?}"))
@@ -2392,7 +2411,8 @@ async fn full_actor_mailbox_cannot_starve_the_client_deadline() {
         .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
     let device_id = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .find_current_authority(machine_hardware_id)
         .await
         .unwrap_or_else(|error| panic!("authority lookup failed: {error:?}"))
@@ -2446,12 +2466,18 @@ async fn enrollment_denial_is_delivered_to_the_originating_connection() {
     let (mut socket, server) = connect(fixture).await;
     submit_enrollment_proof(&mut socket).await;
 
-    let reviews = fixture.state.device().pending_enrollment_reviews().await;
+    let reviews = fixture
+        .state
+        .device_control()
+        .device
+        .pending_enrollment_reviews()
+        .await;
     assert_eq!(reviews.len(), 1);
     assert!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .deny_enrollment_review(reviews[0].review_id(), JournalContext::default())
             .await
     );
@@ -2493,7 +2519,12 @@ async fn pending_enrollment_heartbeat_keeps_the_review_attached() {
     let (mut socket, server) = connect(&fixture).await;
     submit_enrollment_proof(&mut socket).await;
 
-    let reviews = fixture.state.device().pending_enrollment_reviews().await;
+    let reviews = fixture
+        .state
+        .device_control()
+        .device
+        .pending_enrollment_reviews()
+        .await;
     assert_eq!(reviews.len(), 1);
     socket
         .send(ClientMessage::Ping(Vec::new().into()))
@@ -2504,7 +2535,12 @@ async fn pending_enrollment_heartbeat_keeps_the_review_attached() {
         result => panic!("Server did not answer the pending heartbeat: {result:?}"),
     }
 
-    let after_heartbeat = fixture.state.device().pending_enrollment_reviews().await;
+    let after_heartbeat = fixture
+        .state
+        .device_control()
+        .device
+        .pending_enrollment_reviews()
+        .await;
     assert_eq!(after_heartbeat.len(), 1);
     assert_eq!(after_heartbeat[0].review_id(), reviews[0].review_id());
 
@@ -2521,7 +2557,8 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
     assert_eq!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .len(),
@@ -2533,7 +2570,8 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
     for _ in 0..10 {
         if fixture
             .state
-            .device()
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -2545,7 +2583,8 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
     assert!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -2620,7 +2659,8 @@ async fn full_manual_review_capacity_does_not_block_resume_or_existing_control()
         reviews.push(
             fixture
                 .state
-                .device()
+                .device_control()
+                .device
                 .start_enrollment(
                     evidence.clone(),
                     std::net::IpAddr::from([127, 0, 0, 1]),
@@ -2633,7 +2673,8 @@ async fn full_manual_review_capacity_does_not_block_resume_or_existing_control()
     assert!(matches!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .start_enrollment(
                 evidence,
                 std::net::IpAddr::from([127, 0, 0, 1]),
@@ -2772,7 +2813,12 @@ async fn connect(fixture: &Fixture) -> (TestSocket, tokio::task::JoinHandle<()>)
 async fn enroll(fixture: &Fixture, socket: &mut TestSocket) -> Vec<u8> {
     submit_enrollment_proof(socket).await;
 
-    let reviews = fixture.state.device().pending_enrollment_reviews().await;
+    let reviews = fixture
+        .state
+        .device_control()
+        .device
+        .pending_enrollment_reviews()
+        .await;
     assert_eq!(reviews.len(), 1);
     let authority = fixture
         .state
@@ -3003,7 +3049,8 @@ async fn shutdown_closes_all_registry_leases_including_awaiting_actual_and_rejec
         MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("machine"));
     let authority = fixture
         .state
-        .device()
+        .device_control()
+        .device
         .find_current_authority(machine)
         .await
         .unwrap_or_else(|error| panic!("authority: {error}"))
@@ -3075,7 +3122,8 @@ async fn pending_enrollment_is_interrupted_by_shutdown_and_releases_its_admissio
     assert!(
         fixture
             .state
-            .device()
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -3482,7 +3530,8 @@ impl Fixture {
         );
         let (review, activation) = match self
             .state
-            .device()
+            .device_control()
+            .device
             .start_enrollment(
                 evidence,
                 std::net::IpAddr::from([127, 0, 0, 1]),
@@ -3496,7 +3545,8 @@ impl Fixture {
         };
         let approval = self
             .state
-            .device()
+            .device_control()
+            .device
             .approve_enrollment(
                 review.review_id(),
                 crate::component::device::EnrollmentApprovalMode::Manual,

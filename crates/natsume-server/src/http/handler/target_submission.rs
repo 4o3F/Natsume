@@ -8,7 +8,10 @@ use axum::{
     routing::post,
 };
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use uuid::Uuid;
 
 use crate::component::{
@@ -16,21 +19,29 @@ use crate::component::{
     operator::OperatorIdentity,
     session::ForegroundTarget,
     target_submission::{
-        TargetAction, TargetRejection, TargetScope, TargetSubmissionError, TargetSubmissionRequest,
-        TargetSubmissionResult,
+        TargetAction, TargetRejection, TargetScope, TargetSubmissionComponent,
+        TargetSubmissionError, TargetSubmissionRequest, TargetSubmissionResult,
     },
 };
 
 use super::{
-    super::{AppState, error::ApiError, middleware},
+    super::{error::ApiError, middleware},
     device::session::ForegroundTargetResponse,
 };
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<TargetSubmissionState> {
     vec![(
         "/target-submissions",
         middleware::require_admin(post(submit_targets)),
     )]
+}
+
+#[derive(Clone)]
+pub(crate) struct TargetSubmissionState {
+    /// Shared target submission transactions and receipts.
+    pub(crate) target_submission: Arc<TargetSubmissionComponent>,
+    /// Shared coordinator for online scope and committed change publication.
+    pub(crate) device_control: Arc<crate::device_control::DeviceControl>,
 }
 
 /// One durable, replayable Server target submission. No Client execution is awaited.
@@ -191,14 +202,14 @@ impl From<TargetSubmissionResult> for TargetSubmissionResponse {
 
 pub(in crate::http) async fn submit_targets(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<TargetSubmissionState>,
     Extension(identity): Extension<OperatorIdentity>,
     body: Result<Json<TargetSubmissionBody>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("target_submission_body_rejected").into_response();
     };
-    let active_devices = state.device_control().active_device_ids().await;
+    let active_devices = state.device_control.active_device_ids().await;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -211,7 +222,7 @@ pub(in crate::http) async fn submit_targets(
     };
     audit.record_operation(request.operation_id);
     match state
-        .target_submission()
+        .target_submission
         .submit(identity.operator_id(), request, audit.context())
         .await
     {
@@ -221,7 +232,7 @@ pub(in crate::http) async fn submit_targets(
                     row.device_id,
                 ));
             }
-            state.device_control().publish(outcome.change).await;
+            state.device_control.publish(outcome.change).await;
             Json(TargetSubmissionResponse::from(outcome.result)).into_response()
         }
         Err(TargetSubmissionError::OperationIdConflict) => {

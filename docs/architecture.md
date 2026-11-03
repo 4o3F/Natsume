@@ -751,11 +751,7 @@ pub(crate) struct ServerState {
     // Step 10 删除的过渡句柄，仅供两个 Import candidate 路由使用。
     contest: Arc<ContestComponent>,
     import: ImportComponent,
-    device: Arc<DeviceComponent>,
-    binding: Arc<BindingComponent>,
-    session: Arc<SessionControlComponent>,
-    home: Arc<HomeComponent>,
-    target_submission: TargetSubmissionComponent,
+    // Step 10/11 删除的过渡句柄，供 Import 路由与测试使用。
     device_control: Arc<DeviceControl>,
     journal: Journal,
     lifecycle: ServerLifecycle,
@@ -782,9 +778,11 @@ Operator 由 `feature::operator::OperatorFeature` 构造唯一的 `Arc<OperatorC
 
 Contest 由 `feature::contest::ContestFeature` 构造唯一的 `Arc<ContestComponent>`，绑定 public 和 operator 路由；`PhotoFeature::load` 显式接收该 Arc，并将唯一的 Photo 实例与 Contest 句柄交给 `PreparePhotoInitialization`，作为 Photo 的 operator 和 enrollment 路由状态。两个 `/imports/{import_id}/organizations` 候选组织与 logo 接口保留在旧路由中，继续通过 `AppState` 读取 Import，并使用 `ServerState.contest` 的同一共享句柄；该过渡字段在 Step 10 迁移 Import 时删除。
 
+Device 由 `feature::device::DeviceFeature::load(&infra, gateway, provisioning)` 构造 Device、Binding、SessionControl、Home、Power、RuntimeConfig、DeviceControl 和 TargetSubmission；Gateway 由 `ServerState::load` 加载后传入，Provisioning 使用 `ProvisioningFeature::component()` 的同一 Arc。Device feature 将各 handler 的路由分别绑定状态后合并为 public 和 operator 分组：Home、SessionControl、Convergence 和 WSS 直接使用对应组件或协调器的 Arc；lifecycle 与 enrollment 共用 `DeviceRecordState { device, device_control }`，Binding 使用 `DeviceBindingState { binding, device_control }`，TargetSubmission 使用 `TargetSubmissionState { target_submission, device_control }`，各字段均为共享 Arc。`ServerState.device_control` 仅供 Import 路由与测试过渡使用，在 Step 10/11 删除。
+
 `DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件，以及`Journal` emit句柄和`ServerLifecycle`，并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。它只负责跨组件编排或需要Registry、fence、actor等运行时状态的用例，不为单组件mutation增加一对一转发。HTTP也使用的Provisioning、Device、Binding、Session、Home共享同一`Arc`实例；Gateway、Runtime Config和Power目前只有协调器消费，构造时将Power句柄交给它，`ServerState`不保留无消费者的副本或accessor。分层、调用路径和事件归属统一遵循§10.6。
 
-生产构造入口统一为`ServerState::load(database, &config, utc_offset)`，返回 `LoadedServer`：加载一次`VaultSession`，调用组件自己的concrete constructor，构造 `ServerLifecycle` 并启动唯一的 `JournalComponent`。组合层 `feature::Infra` 持有 `Database`、`Arc<VaultSession>`、该 Journal writer 的 emit 句柄和 `ServerLifecycle`；`from_parts(infra, journal, &print_feature, &contest_feature, &photo_feature, gateway, utc_offset)` 从中取得共享基础设施，通过 `DeviceControlDependencies` 把具体依赖注入 `DeviceControl::new`，再把 Journal writer 所有者交给 `ServerRuntime`。启动错误由 `feature::StartupError` 保留 source，统一通过 `CommandFailure::Startup` 包装一次，顶层错误文案保持不变。完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
+生产构造入口统一为`ServerState::load(database, &config, utc_offset)`，返回 `LoadedServer`：加载一次`VaultSession`，调用组件自己的concrete constructor，构造 `ServerLifecycle` 并启动唯一的 `JournalComponent`。组合层 `feature::Infra` 持有 `Database`、`Arc<VaultSession>`、该 Journal writer 的 emit 句柄和 `ServerLifecycle`；`from_parts(infra, journal, &print_feature, &contest_feature, &photo_feature, gateway, utc_offset)` 先加载 Operator 和 Provisioning，再调用 `DeviceFeature::load`，由该 feature 通过 `DeviceControlDependencies` 把具体依赖注入 `DeviceControl::new`；JournalFeature 取得该协调器的 `live_lease_view()`，`ServerRuntime` 和过渡字段克隆同一 `Arc<DeviceControl>`，Journal writer 所有者交给 `ServerRuntime`。启动错误由 `feature::StartupError` 保留 source，统一通过 `CommandFailure::Startup` 包装一次，顶层错误文案保持不变。完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过窄状态中的组件句柄处理单组件业务，通过共享的 `DeviceControl` 处理设备跨组件用例；Operator Target 提交由 `TargetSubmissionState.target_submission` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
 
 设备应用用例集中在`device_control/application.rs`的`impl DeviceControl`分片，准入和关闭原语位于`device_control.rs`。当前共有十二个有实际消费者的用例／运行时入口，不计构造函数和私有实现方法：
 
@@ -796,7 +794,7 @@ Contest 由 `feature::contest::ContestFeature` 构造唯一的 `Arc<ContestCompo
 - `try_reserve_handshake`在upgrade前检查生命周期准入并预留短期认证容量；`reject_admission`记录带封闭stage的运行时拒绝事实。
 - `shutdown`关闭Registry并等待所有actor确认结束lease，包括等待首个Actual的lease。
 
-单资源mutation仍直接调用owning component：Binding解绑调用`state.binding().unbind`，Device启用和review否决调用`state.device()`，Target提交调用`state.target_submission().submit`；有`TargetChange`时，成功后交给`publish`。这些操作不经协调器的一对一包装。组件在自己提交后发出对应事实，入口显式传入`JournalContext`，详见§10.6。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。 Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade， 不建立协调器、Registry与Actor之间的长期强引用环。
+单资源mutation仍直接调用owning component：Binding解绑调用 `DeviceBindingState.binding.unbind`，Device启用和review否决调用 `DeviceRecordState.device`，Target提交调用 `TargetSubmissionState.target_submission.submit`；有`TargetChange`时，成功后交给`publish`。这些操作不经协调器的一对一包装。组件在自己提交后发出对应事实，入口显式传入`JournalContext`，详见§10.6。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。 Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade， 不建立协调器、Registry与Actor之间的长期强引用环。
 
 ### 10.5 组件内部数据库
 
@@ -874,13 +872,14 @@ Database + ServerConfig + startup UtcOffset
       → JournalComponent::start { writer + ServerStarted }
       → Infra { Database + Arc<VaultSession> + Journal emit + lifecycle }
       → ServerState::from_parts
-          → OperatorFeature + ProvisioningFeature + remaining concrete business components { Database / Vault / Journal }
-          → Arc<DeviceControl> { concrete dependencies, DeviceRegistry, Journal, lifecycle }
+          → OperatorFeature + ProvisioningFeature { Database / Journal }
+          → DeviceFeature { shared components + Arc<DeviceControl> { concrete dependencies, DeviceRegistry, Journal, lifecycle } }
           → JournalFeature { JournalQuery { journal reader, Arc<OperatorComponent>, LiveLeaseView, startup UtcOffset } }
+          → ImportComponent { Database / Vault }
   → LoadedServer
       → Arc<ServerState> { shared handles + Journal emit + lifecycle }
       → ServerRuntime { shared lifecycle + Arc<DeviceControl> + JournalComponent writer }
-      → AccessRoutes { Journal routes bound to JournalQuery + Print / Operator / Provisioning / Contest routes bound to their shared Arc + Photo routes bound to PreparePhotoInitialization }
+      → AccessRoutes { Journal routes bound to JournalQuery + Print / Operator / Provisioning / Contest routes bound to their shared Arc + Photo routes bound to PreparePhotoInitialization + Device routes bound to per-handler narrow states }
   → TLS listener
   → background::start_background_tasks(&PrintComponent) { Print attempt expiry }
       → BackgroundTasks { cancellation + JoinSet }
@@ -889,7 +888,7 @@ Database + ServerConfig + startup UtcOffset
           → Device WSS { Arc<DeviceControl> }
 ```
 
-Journal HTTP handler直接持有JournalQuery，Print、Operator（含登录 session）、Provisioning 和 Contest HTTP handler直接持有各自组件的共享Arc，Photo HTTP handler直接持有共享句柄协调器 `PreparePhotoInitialization`，尚未迁移的HTTP handler通过组合对象取得各自依赖；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
+Journal HTTP handler直接持有JournalQuery，Print、Operator（含登录 session）、Provisioning 和 Contest HTTP handler直接持有各自组件的共享Arc，Photo HTTP handler直接持有共享句柄协调器 `PreparePhotoInitialization`，Device HTTP handler直接提取各自的窄状态，Import及其两个候选组织接口继续通过组合对象取得依赖；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
 
 `ServerRuntime::serve_until`在收到关闭信号或HTTP服务结束后，按以下顺序关闭：
 

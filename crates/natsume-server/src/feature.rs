@@ -1,6 +1,7 @@
 //! Server composition layer; future `<Name>Feature` types belong in `feature/` submodules.
 
 pub(crate) mod contest;
+pub(crate) mod device;
 pub(crate) mod journal;
 pub(crate) mod operator;
 pub(crate) mod photo;
