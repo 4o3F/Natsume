@@ -228,6 +228,7 @@ async function build(): Promise<void> {
         "tools/entry.ts",
         "tools/native-deps.ts",
         "tools/release.ts",
+        "bench/analyze/",
       ]);
       await run(Deno.execPath(), ["fmt", "--check"]);
       await run(Deno.execPath(), ["lint"]);

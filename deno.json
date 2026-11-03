@@ -1,10 +1,18 @@
 {
   "nodeModulesDir": "manual",
   "fmt": {
-    "include": ["deno.json", "packaging/manifest.json", "tools/*.ts"]
+    "include": [
+      "deno.json",
+      "packaging/manifest.json",
+      "tools/*.ts",
+      "bench/analyze/*.ts"
+    ]
   },
   "lint": {
-    "include": ["tools/*.ts"]
+    "include": [
+      "tools/*.ts",
+      "bench/analyze/*.ts"
+    ]
   },
   "tasks": {
     "prepare": "deno run --frozen --no-prompt --allow-read --allow-write=target --allow-env --allow-run tools/assets.ts",
