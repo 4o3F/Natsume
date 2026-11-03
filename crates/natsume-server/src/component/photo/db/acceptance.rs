@@ -1,6 +1,6 @@
 //! Photo persistence only; acceptance policy lives in the parent component.
 use super::super::acceptance::{CurrentPhoto, PendingPhoto, SavedResult, SubmissionState};
-use super::{PersistenceError, now};
+use super::{PersistenceError, UuidSnafu, ValueSnafu, now};
 use crate::{
     db::Transaction,
     diesel_schema::{
@@ -11,14 +11,18 @@ use diesel::{
     BoolExpressionMethods as _, ExpressionMethods as _, JoinOnDsl as _,
     NullableExpressionMethods as _, OptionalExtension as _, QueryDsl as _, RunQueryDsl as _,
 };
-use natsume_photo_protocol::results::{SignedResults, TeamResult};
+use natsume_photo_protocol::{
+    SourceId,
+    results::{SignedResults, SubmissionId, TeamResult},
+};
+use snafu::ResultExt as _;
 use uuid::Uuid;
 
 type PackageRow = (String, Option<String>, Option<String>);
 
 pub(in crate::component::photo) fn pending(
     tx: &mut Transaction<'_>,
-    after: Option<(&str, &str)>,
+    after: Option<(&SourceId, &SubmissionId)>,
     limit: i64,
 ) -> Result<Vec<PendingPhoto>, PersistenceError> {
     type Row = (String, String, String, String, String, String, String, i64);
@@ -42,6 +46,7 @@ pub(in crate::component::photo) fn pending(
             .limit(limit)
             .into_boxed();
         if let Some((source, submission)) = after {
+            let (source, submission) = (source.as_str(), submission.as_str());
             query = query.filter(
                 submissions::source_id.gt(source).or(submissions::source_id
                     .eq(source)
@@ -67,14 +72,20 @@ pub(in crate::component::photo) fn pending(
                 revision,
             )| {
                 Ok(PendingPhoto {
-                    source_id,
-                    submission_id,
-                    import_id: import_id
-                        .parse()
-                        .map_err(|_| PersistenceError::invalid("Photo pending import ID"))?,
+                    source_id: source_id.parse().context(ValueSnafu {
+                        field: "Photo source_id",
+                    })?,
+                    submission_id: submission_id.parse().context(ValueSnafu {
+                        field: "Photo submission_id",
+                    })?,
+                    import_id: import_id.parse().context(UuidSnafu {
+                        field: "Photo pending import ID",
+                    })?,
                     account_id,
                     account,
-                    image_sha256,
+                    image_sha256: image_sha256.parse().context(ValueSnafu {
+                        field: "Photo image_sha256",
+                    })?,
                     state: state_value(&state)?,
                     revision,
                 })
@@ -85,12 +96,12 @@ pub(in crate::component::photo) fn pending(
 
 pub(in crate::component::photo) fn active_account(
     tx: &mut Transaction<'_>,
-    source: &str,
-    submission: &str,
+    source: &SourceId,
+    submission: &SubmissionId,
 ) -> Result<Option<String>, PersistenceError> {
     current::table
-        .filter(current::source_id.eq(source))
-        .filter(current::submission_id.eq(submission))
+        .filter(current::source_id.eq(source.as_str()))
+        .filter(current::submission_id.eq(submission.as_str()))
         .select(current::account_id)
         .first(tx.connection())
         .optional()
@@ -157,16 +168,27 @@ pub(in crate::component::photo) fn matching(
                 initialization_id,
             )| {
                 Ok(SavedResult {
-                    submission_id,
-                    result_id,
+                    submission_id: submission_id.parse().context(ValueSnafu {
+                        field: "Photo submission_id",
+                    })?,
+                    result_id: result_id.parse().context(ValueSnafu {
+                        field: "Photo result_id",
+                    })?,
                     account_id,
                     account,
-                    image_sha256,
+                    image_sha256: image_sha256.parse().context(ValueSnafu {
+                        field: "Photo image_sha256",
+                    })?,
                     state: state_value(&state)?,
                     revision,
-                    initialization_id: initialization_id.ok_or_else(|| {
-                        PersistenceError::invalid("Photo submission initialization")
-                    })?,
+                    initialization_id: initialization_id
+                        .ok_or_else(|| {
+                            PersistenceError::invalid("Photo submission initialization")
+                        })?
+                        .parse()
+                        .context(ValueSnafu {
+                            field: "Photo submission initialization",
+                        })?,
                 })
             },
         )
@@ -205,15 +227,24 @@ pub(in crate::component::photo) fn current(
         ))
         .first(tx.connection())
         .optional()?;
-    Ok(row.map(
-        |(account, source_id, submission_id, revision, image_sha256)| CurrentPhoto {
-            account,
-            source_id,
-            submission_id,
-            revision,
-            image_sha256,
+    row.map(
+        |(account, source_id, submission_id, revision, image_sha256)| {
+            Ok(CurrentPhoto {
+                account,
+                source_id: source_id.parse().context(ValueSnafu {
+                    field: "Photo current source",
+                })?,
+                submission_id: submission_id.parse().context(ValueSnafu {
+                    field: "Photo current submission",
+                })?,
+                revision,
+                image_sha256: image_sha256.parse().context(ValueSnafu {
+                    field: "Photo current hash",
+                })?,
+            })
         },
-    ))
+    )
+    .transpose()
 }
 
 pub(in crate::component::photo) fn insert(
@@ -241,8 +272,8 @@ pub(in crate::component::photo) fn insert(
 
 pub(in crate::component::photo) fn state(
     tx: &mut Transaction<'_>,
-    source: &str,
-    submission: &str,
+    source: &SourceId,
+    submission: &SubmissionId,
     expected: i64,
     state: SubmissionState,
 ) -> Result<(), PersistenceError> {
@@ -251,7 +282,7 @@ pub(in crate::component::photo) fn state(
         .ok_or_else(|| PersistenceError::invalid("Photo submission revision"))?;
     let count = diesel::update(
         submissions::table
-            .find((source, submission))
+            .find((source.as_str(), submission.as_str()))
             .filter(submissions::revision.eq(expected)),
     )
     .set((
@@ -269,24 +300,24 @@ pub(in crate::component::photo) fn set_current(
     tx: &mut Transaction<'_>,
     account_id: &str,
     account: &str,
-    source: &str,
-    submission: &str,
+    source: &SourceId,
+    submission: &SubmissionId,
     revision: i64,
 ) -> Result<(), PersistenceError> {
     diesel::insert_into(current::table)
         .values((
             current::account_id.eq(account_id),
             current::account.eq(account),
-            current::source_id.eq(source),
-            current::submission_id.eq(submission),
+            current::source_id.eq(source.as_str()),
+            current::submission_id.eq(submission.as_str()),
             current::revision.eq(revision),
         ))
         .on_conflict(current::account_id)
         .do_update()
         .set((
             current::account.eq(account),
-            current::source_id.eq(source),
-            current::submission_id.eq(submission),
+            current::source_id.eq(source.as_str()),
+            current::submission_id.eq(submission.as_str()),
             current::revision.eq(revision),
         ))
         .execute(tx.connection())?;
@@ -326,11 +357,11 @@ pub(in crate::component::photo) fn clear_current(
 
 pub(in crate::component::photo) fn submission_state(
     tx: &mut Transaction<'_>,
-    source: &str,
-    submission: &str,
+    source: &SourceId,
+    submission: &SubmissionId,
 ) -> Result<(SubmissionState, i64), PersistenceError> {
     let (state, revision): (String, i64) = submissions::table
-        .find((source, submission))
+        .find((source.as_str(), submission.as_str()))
         .select((submissions::state, submissions::revision))
         .first(tx.connection())?;
     Ok((state_value(&state)?, revision))

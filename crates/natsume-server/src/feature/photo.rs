@@ -30,7 +30,9 @@ impl PhotoFeature {
             PhotoComponent::load(database, &directory, &results_directory)
         })
         .await
-        .map_err(|source| PhotoStorageError::Worker { source })??;
+        .map_err(|source| PhotoStorageError::Worker {
+            source: source.into(),
+        })??;
         let photo = Arc::new(photo);
         Ok(Self {
             delivery: crate::photo_delivery::DeliverPhotoResults::new(

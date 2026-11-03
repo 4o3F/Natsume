@@ -12,7 +12,7 @@ use natsume_photo_protocol::{
     Sha256Digest,
     results::{ManifestId, ResultId, SignedResults, SubmissionId},
 };
-use std::io::Cursor;
+use std::{error::Error as _, io::Cursor};
 use zip::CompressionMethod;
 
 pub(super) async fn call(
@@ -128,6 +128,30 @@ async fn preview_is_read_only_and_reuploads_and_commits_preserve_submission_iden
         })
         .await?;
     assert_eq!(count, 1);
+    f.database
+        .database
+        .write(|tx| {
+            diesel::update(submissions::table)
+                .set(submissions::result_id.eq("invalid-result"))
+                .execute(tx.connection())
+                .map_err(PersistenceError::from)
+        })
+        .await?;
+    let error = crate::photo_acceptance::AcceptPhotoResults::new(f.database.database.clone())
+        .preview(id)
+        .await
+        .err()
+        .ok_or_else(|| TestError::missing("persisted result ID error"))?;
+    let mut source = error.source();
+    let mut found = false;
+    while let Some(error) = source {
+        found |= error.is::<natsume_photo_protocol::ValueError>();
+        source = error.source();
+    }
+    assert!(
+        found,
+        "persisted result IDs must retain their protocol validation source"
+    );
     running.shutdown().await?;
     Ok(())
 }
@@ -640,5 +664,82 @@ async fn acceptance_routes_require_admin_and_canonical_ids_and_closed_decision_b
         StatusCode::NOT_FOUND
     );
     assert_eq!(call(&f, &cookie, Method::POST, &format!("{id}/decisions"), json!({"submission_id":"x","expected_submission_revision":1,"decision":{"action":"reject","unexpected":true}})).await?.status, StatusCode::BAD_REQUEST);
+    let submission = SubmissionId::generate();
+    for body in [
+        json!({"submission_id":"invalid", "expected_submission_revision":1,"decision":{"action":"reject"}}),
+        json!({"submission_id":"550e8400-e29b-41d4-a716-446655440000", "expected_submission_revision":1,"decision":{"action":"reject"}}),
+        json!({"submission_id":submission, "expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-a","account":"account-a","expected_current":{"source_id":"invalid","submission_id":submission,"revision":1}}}),
+    ] {
+        let response = call(&f, &cookie, Method::POST, &format!("{id}/decisions"), body).await?;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        let error: Value = serde_json::from_slice(&response.body)?;
+        assert_eq!(error["code"], "INVALID_REQUEST");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_preview_agrees_after_roster_change() -> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let (mut f, cookie) = admin().await?;
+    let (signed, image) = fixture_package(&f).await?;
+    let running = background(&mut f).await?;
+    let first = ready(&f, &cookie, &signed, &image).await?;
+    commit(&f, &cookie, first).await?;
+    let (retake, bytes) = different(&signed, 91)?;
+    let second = ready(&f, &cookie, &retake, &bytes).await?;
+    commit(&f, &cookie, second).await?;
+    f.database
+        .database
+        .write(|tx| -> Result<(), crate::db::PersistenceError> {
+            diesel::update(accounts::table.find("account-a"))
+                .set(accounts::domjudge_username.eq("renamed-a"))
+                .execute(tx.connection())?;
+            Ok(())
+        })
+        .await?;
+    let pending = visible_pending(&f, &cookie, String::new()).await?;
+    let target = retake.manifest.results[0].submission_id.as_str();
+    let listed = pending["entries"]
+        .as_array()
+        .and_then(|entries| entries.iter().find(|row| row["submission_id"] == target))
+        .ok_or_else(|| TestError::missing("pending retake"))?;
+    let preview = value(
+        call(
+            &f,
+            &cookie,
+            Method::GET,
+            &format!("{second}/preview"),
+            Value::Null,
+        )
+        .await?,
+    )?;
+    running.shutdown().await?;
+    assert_eq!(
+        preview["entries"][0]["state"], listed["state"],
+        "same submission must have one current state projection"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn upload_and_startup_worker_errors_do_not_include_panic_payload() -> TestResult {
+    let source = tokio::spawn(async { panic!("review-panic-payload-canary") })
+        .await
+        .err()
+        .ok_or_else(|| TestError::missing("panic join error"))?;
+    let source = crate::task::TaskFailure::from(source);
+    let upload = crate::component::photo::ImportError::Worker { source };
+    let startup = crate::component::photo::PhotoStorageError::Worker { source };
+    for report in [
+        snafu::Report::from_error(upload).to_string(),
+        snafu::Report::from_error(startup).to_string(),
+    ] {
+        assert!(
+            !report.contains("review-panic-payload-canary"),
+            "Report must not contain panic payload"
+        );
+        assert!(report.contains("the task panicked"));
+    }
     Ok(())
 }

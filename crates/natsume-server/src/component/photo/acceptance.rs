@@ -2,8 +2,8 @@
 use super::{PhotoComponent, db, validation};
 use crate::{component::contest::PhotoTeam, db::Transaction};
 use natsume_photo_protocol::{
-    Sha256Digest,
-    results::{SignedResults, TeamResult},
+    InitializationId, Sha256Digest, SourceId,
+    results::{ResultId, SignedResults, SubmissionId, TeamResult},
 };
 use snafu::{OptionExt as _, ResultExt as _, Snafu, ensure};
 use uuid::Uuid;
@@ -60,12 +60,12 @@ impl SubmissionState {
 }
 
 pub(super) struct SavedResult {
-    pub submission_id: String,
-    pub result_id: String,
+    pub submission_id: SubmissionId,
+    pub result_id: ResultId,
     pub account_id: String,
     pub account: String,
-    pub image_sha256: String,
-    pub initialization_id: String,
+    pub image_sha256: Sha256Digest,
+    pub initialization_id: InitializationId,
     pub state: SubmissionState,
     pub revision: i64,
 }
@@ -73,19 +73,19 @@ pub(super) struct SavedResult {
 #[derive(serde::Serialize, specta::Type)]
 pub(crate) struct CurrentPhoto {
     pub account: String,
-    pub source_id: String,
-    pub submission_id: String,
+    pub source_id: SourceId,
+    pub submission_id: SubmissionId,
     #[specta(type = specta_typescript::Number)]
     pub revision: i64,
-    pub image_sha256: String,
+    pub image_sha256: Sha256Digest,
 }
 #[derive(serde::Serialize, specta::Type)]
 pub(crate) struct PhotoPreviewEntry {
-    pub submission_id: String,
-    pub result_id: String,
+    pub submission_id: SubmissionId,
+    pub result_id: ResultId,
     pub account_id: String,
     pub account: String,
-    pub image_sha256: String,
+    pub image_sha256: Sha256Digest,
     pub state: SubmissionState,
     #[specta(type = specta_typescript::Number)]
     pub submission_revision: i64,
@@ -102,19 +102,19 @@ pub(crate) struct ImportPreview {
 #[derive(Default, serde::Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PendingPhotoQuery {
-    pub after_source_id: Option<natsume_photo_protocol::SourceId>,
-    pub after_submission_id: Option<natsume_photo_protocol::results::SubmissionId>,
+    pub after_source_id: Option<SourceId>,
+    pub after_submission_id: Option<SubmissionId>,
     pub limit: Option<u16>,
 }
 
 #[derive(serde::Serialize, specta::Type)]
 pub(crate) struct PendingPhoto {
-    pub source_id: String,
-    pub submission_id: String,
+    pub source_id: SourceId,
+    pub submission_id: SubmissionId,
     pub import_id: Uuid,
     pub account_id: String,
     pub account: String,
-    pub image_sha256: String,
+    pub image_sha256: Sha256Digest,
     pub state: SubmissionState,
     #[specta(type = specta_typescript::Number)]
     pub revision: i64,
@@ -122,8 +122,8 @@ pub(crate) struct PendingPhoto {
 
 #[derive(serde::Serialize, specta::Type)]
 pub(crate) struct PendingPhotoCursor {
-    pub after_source_id: String,
-    pub after_submission_id: String,
+    pub after_source_id: SourceId,
+    pub after_submission_id: SubmissionId,
 }
 
 #[derive(serde::Serialize, specta::Type)]
@@ -135,8 +135,8 @@ pub(crate) struct PendingPhotoPage {
 #[derive(serde::Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExpectedPhoto {
-    pub source_id: String,
-    pub submission_id: String,
+    pub source_id: SourceId,
+    pub submission_id: SubmissionId,
     #[specta(type = specta_typescript::Number)]
     pub revision: i64,
 }
@@ -153,7 +153,7 @@ pub(crate) enum PhotoAction {
 #[derive(serde::Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PhotoDecision {
-    pub submission_id: String,
+    pub submission_id: SubmissionId,
     #[specta(type = specta_typescript::Number)]
     pub expected_submission_revision: i64,
     pub decision: PhotoAction,
@@ -195,12 +195,12 @@ fn existing(
     let row = rows.into_iter().next();
     if let Some(row) = &row {
         ensure!(
-            row.submission_id == image.submission_id.as_str()
-                && row.result_id == image.result_id.as_str()
+            row.submission_id == image.submission_id
+                && row.result_id == image.result_id
                 && row.account_id == image.account_id
                 && row.account == image.account
-                && row.image_sha256 == image.image_sha256.as_str()
-                && row.initialization_id == signed.manifest.context.initialization_id.as_str(),
+                && row.image_sha256 == image.image_sha256
+                && row.initialization_id == signed.manifest.context.initialization_id,
             ConflictSnafu
         );
     }
@@ -218,7 +218,7 @@ fn proposed(
     {
         SubmissionState::NeedsAssociation
     } else if let Some(current) = current {
-        if current.account == image.account && current.image_sha256 == image.image_sha256.as_str() {
+        if current.account == image.account && current.image_sha256 == image.image_sha256 {
             SubmissionState::Superseded
         } else {
             SubmissionState::PendingReview
@@ -230,8 +230,8 @@ fn proposed(
 
 fn association(
     tx: &mut Transaction<'_>,
-    source: &str,
-    submission: &str,
+    source: &SourceId,
+    submission: &SubmissionId,
     roster: &[PhotoTeam],
 ) -> Result<Option<(String, bool)>> {
     let Some(account_id) =
@@ -258,14 +258,14 @@ impl PhotoComponent {
         ensure!((1..=100).contains(&limit), InvalidSnafu);
         let after = match (query.after_source_id, query.after_submission_id) {
             (None, None) => None,
-            (Some(source), Some(submission)) => Some((source.to_string(), submission.to_string())),
+            (Some(source), Some(submission)) => Some((source, submission)),
             _ => return InvalidSnafu.fail(),
         };
         let mut entries = db::acceptance::pending(
             tx,
             after
                 .as_ref()
-                .map(|(source, submission)| (source.as_str(), submission.as_str())),
+                .map(|(source, submission)| (source, submission)),
             i64::from(limit) + 1,
         )
         .context(PersistenceSnafu)?;
@@ -333,8 +333,8 @@ impl PhotoComponent {
                         tx,
                         &image.account_id,
                         &image.account,
-                        signed.manifest.context.source_id.as_str(),
-                        image.submission_id.as_str(),
+                        &signed.manifest.context.source_id,
+                        &image.submission_id,
                         revision,
                     )
                     .context(PersistenceSnafu)?;
@@ -364,20 +364,25 @@ fn preview(
         );
         let associated = association(
             tx,
-            signed.manifest.context.source_id.as_str(),
-            image.submission_id.as_str(),
+            &signed.manifest.context.source_id,
+            &image.submission_id,
             roster,
         )?;
-        if state == SubmissionState::Active && associated.as_ref().is_some_and(|(_, valid)| !valid)
+        if (state == SubmissionState::Active
+            && associated.as_ref().is_some_and(|(_, valid)| !valid))
+            || (state == SubmissionState::PendingReview
+                && !roster.iter().any(|team| {
+                    team.account_id == image.account_id && team.account == image.account
+                }))
         {
             state = SubmissionState::NeedsAssociation;
         }
         entries.push(PhotoPreviewEntry {
-            submission_id: image.submission_id.to_string(),
-            result_id: image.result_id.to_string(),
+            submission_id: image.submission_id.clone(),
+            result_id: image.result_id.clone(),
             account_id: image.account_id.clone(),
             account: image.account.clone(),
-            image_sha256: image.image_sha256.to_string(),
+            image_sha256: image.image_sha256.clone(),
             state,
             submission_revision,
             current,
@@ -405,10 +410,10 @@ impl PhotoComponent {
             .manifest
             .results
             .iter()
-            .find(|image| image.submission_id.as_str() == decision.submission_id)
+            .find(|image| image.submission_id == decision.submission_id)
             .context(NotFoundSnafu)?;
         let saved = existing(tx, &signed, image)?.context(CorruptSnafu)?;
-        let source = signed.manifest.context.source_id.as_str();
+        let source = &signed.manifest.context.source_id;
         let associated = association(tx, source, &saved.submission_id, roster)?;
         let stale_active = saved.state == SubmissionState::Active
             && associated.as_ref().is_some_and(|(_, valid)| !valid);
@@ -474,7 +479,7 @@ impl PhotoComponent {
                     }
                 }
                 if let Some(old) = current.filter(|old| {
-                    old.source_id != source || old.submission_id != saved.submission_id
+                    &old.source_id != source || old.submission_id != saved.submission_id
                 }) {
                     retire_current(tx, &old)?;
                 }

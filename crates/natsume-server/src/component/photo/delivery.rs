@@ -2,8 +2,8 @@
 use super::{PhotoComponent, db, results_storage};
 use crate::{component::contest::PhotoTeam, db::Transaction, lifecycle::Admission};
 use natsume_photo_protocol::{
-    Sha256Digest,
-    results::{PACKAGE_LIMIT, PhotoFormat, RESULT_IMAGES_LIMIT},
+    Sha256Digest, SourceId,
+    results::{PACKAGE_LIMIT, PhotoFormat, RESULT_IMAGES_LIMIT, SubmissionId},
 };
 use sha2::{Digest as _, Sha256};
 use snafu::{ResultExt as _, Snafu, ensure};
@@ -60,8 +60,8 @@ type Result<T> = std::result::Result<T, DeliveryError>;
 pub(crate) struct PhotoRecord {
     pub account_id: String,
     pub account: String,
-    pub source_id: String,
-    pub submission_id: String,
+    pub source_id: SourceId,
+    pub submission_id: SubmissionId,
     #[specta(type = specta_typescript::Number)]
     pub revision: i64,
     pub image_sha256: Sha256Digest,
@@ -115,6 +115,7 @@ impl PhotoComponent {
             tx,
             query.after_account_id.as_deref(),
             None,
+            None,
             i64::from(limit) + 1,
         )
         .context(PersistenceSnafu)?;
@@ -134,7 +135,7 @@ impl PhotoComponent {
         roster: &[PhotoTeam],
     ) -> Result<PhotoRecord> {
         ensure!(!id.is_empty() && id.len() <= 512, InvalidSnafu);
-        db::delivery::read(tx, None, Some(id), 1)
+        db::delivery::read(tx, None, Some(id), None, 1)
             .context(PersistenceSnafu)?
             .pop()
             .filter(|entry| entry.valid(roster))
@@ -145,21 +146,21 @@ impl PhotoComponent {
         tx: &mut Transaction<'_>,
         roster: &[PhotoTeam],
     ) -> Result<Vec<PhotoRecord>> {
-        let entries = db::delivery::read(
-            tx,
-            None,
-            None,
-            i64::try_from(natsume_photo_protocol::TEAM_LIMIT).map_err(|_| LimitSnafu.build())? + 1,
-        )
-        .context(PersistenceSnafu)?;
-        ensure!(
-            entries.len() <= natsume_photo_protocol::TEAM_LIMIT,
-            LimitSnafu
-        );
-        Ok(entries
-            .into_iter()
-            .filter(|entry| entry.valid(roster))
-            .collect())
+        let mut entries = Vec::new();
+        // Bound SQLite parameters and query only current roster candidates.
+        // Historical invalid bindings must not consume the export budget.
+        for teams in roster.chunks(500) {
+            let ids: Vec<_> = teams.iter().map(|team| team.account_id.as_str()).collect();
+            let page =
+                db::delivery::read(tx, None, None, Some(&ids), 500).context(PersistenceSnafu)?;
+            entries.extend(page.into_iter().filter(|entry| entry.valid(teams)));
+            ensure!(
+                entries.len() <= natsume_photo_protocol::TEAM_LIMIT,
+                LimitSnafu
+            );
+        }
+        entries.sort_unstable_by(|a, b| a.account_id.cmp(&b.account_id));
+        Ok(entries)
     }
 
     pub(crate) fn reserve_export(&self) -> Result<OwnedSemaphorePermit> {

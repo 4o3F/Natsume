@@ -64,7 +64,10 @@ pub(crate) enum ImportError {
     #[snafu(display("Photo import persistence failed"))]
     Persistence { source: db::PersistenceError },
     #[snafu(display("Photo upload worker failed"))]
-    Worker { source: tokio::task::JoinError },
+    Worker {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
 }
 
 impl PhotoComponent {

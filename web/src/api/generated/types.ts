@@ -494,7 +494,7 @@ export type CurrentPhoto = {
   source_id: string;
   submission_id: string;
   revision: number;
-  image_sha256: string;
+  image_sha256: Sha256Digest;
 };
 
 /**  Current durable targets and latest validated Actual for one Device. */
@@ -1233,7 +1233,7 @@ export type PendingPhoto = {
   import_id: string;
   account_id: string;
   account: string;
-  image_sha256: string;
+  image_sha256: Sha256Digest;
   state: SubmissionState;
   revision: number;
 };
@@ -1331,7 +1331,7 @@ export type PhotoPreviewEntry = {
   result_id: string;
   account_id: string;
   account: string;
-  image_sha256: string;
+  image_sha256: Sha256Digest;
   state: SubmissionState;
   submission_revision: number;
   current: CurrentPhoto | null;

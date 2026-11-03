@@ -23,6 +23,11 @@ use snafu::{IntoError as _, ResultExt as _, Snafu};
 
 #[derive(Debug, Snafu)]
 pub(crate) enum PersistenceError {
+    #[snafu(display("Photo persisted UUID is invalid ({field})"))]
+    Uuid {
+        field: &'static str,
+        source: uuid::Error,
+    },
     #[snafu(display("Photo database operation failed"))]
     Database { source: SharedPersistenceError },
     #[snafu(display("Photo persisted value is invalid ({field})"))]

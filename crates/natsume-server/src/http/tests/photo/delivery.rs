@@ -349,7 +349,7 @@ async fn export_payload_budget_rejects_before_reading_image_data_and_releases_it
                 .execute(tx.connection())?;
             for n in 0..165 {
                 let account = format!("budget-{n}");
-                let submission = format!("budget-submission-{n}");
+                let submission = SubmissionId::generate().to_string();
                 diesel::insert_into(accounts::table)
                     .values((
                         accounts::account_id.eq(&account),
@@ -676,5 +676,68 @@ async fn stalled_and_cancelled_downloads_hold_capacity_until_the_tracked_produce
     })
     .await?;
     running.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn export_ignores_historical_invalid_associations() -> TestResult {
+    use crate::diesel_schema::{photo_submissions as history, team_photos as current};
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let (mut f, cookie) = admin().await?;
+    let (signed, image) = fixture_package(&f).await?;
+    let running = background(&mut f).await?;
+    let id = ready(&f, &cookie, &signed, &image).await?;
+    commit(&f, &cookie, id).await?;
+    let source = signed.manifest.context.source_id.to_string();
+    let hash = signed.manifest.results[0].image_sha256.to_string();
+    f.database
+        .database
+        .write(move |tx| -> Result<(), crate::db::PersistenceError> {
+            for index in 0..natsume_photo_protocol::TEAM_LIMIT {
+                let account = format!("removed-{index}");
+                let submission = SubmissionId::generate().to_string();
+                diesel::insert_into(history::table)
+                    .values((
+                        history::source_id.eq(&source),
+                        history::submission_id.eq(&submission),
+                        history::result_id.eq(ResultId::generate().to_string()),
+                        history::import_id.eq(id.to_string()),
+                        history::account_id.eq(&account),
+                        history::account.eq(&account),
+                        history::image_sha256.eq(&hash),
+                        history::state.eq("active"),
+                        history::revision.eq(1_i64),
+                    ))
+                    .execute(tx.connection())?;
+                diesel::insert_into(current::table)
+                    .values((
+                        current::account_id.eq(&account),
+                        current::account.eq(&account),
+                        current::source_id.eq(&source),
+                        current::submission_id.eq(&submission),
+                        current::revision.eq(1_i64),
+                    ))
+                    .execute(tx.connection())?;
+            }
+            Ok(())
+        })
+        .await?;
+    let response = drive(
+        &f.app,
+        Request::post("/api/v2/photo/exports")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())?,
+    )
+    .await?;
+    running.shutdown().await?;
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "one current valid photo must export despite removed-team history"
+    );
+    assert_eq!(
+        archive(response.body)?,
+        vec![("account-a.png".into(), image)]
+    );
     Ok(())
 }

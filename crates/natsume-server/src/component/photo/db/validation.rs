@@ -1,5 +1,5 @@
 //! Typed verification-task persistence and immutable object metadata.
-use super::{PersistenceError, now};
+use super::{PersistenceError, UuidSnafu, now};
 use crate::{
     db::Transaction,
     diesel_schema::{photo_import_jobs as jobs, photo_objects as objects},
@@ -9,6 +9,7 @@ use natsume_photo_protocol::{
     Sha256Digest,
     results::{SignedResults, TeamResult},
 };
+use snafu::ResultExt as _;
 use uuid::Uuid;
 
 pub(in crate::component::photo) fn uploading(
@@ -22,8 +23,9 @@ pub(in crate::component::photo) fn uploading(
         .load::<String>(tx.connection())?
         .into_iter()
         .map(|id| {
-            id.parse()
-                .map_err(|_| PersistenceError::invalid("Photo import ID"))
+            id.parse().context(UuidSnafu {
+                field: "Photo import ID",
+            })
         })
         .collect()
 }
@@ -39,8 +41,9 @@ pub(in crate::component::photo) fn pending(
         .optional()?
         .map(|(id, size)| {
             Ok((
-                id.parse()
-                    .map_err(|_| PersistenceError::invalid("Photo import ID"))?,
+                id.parse().context(UuidSnafu {
+                    field: "Photo import ID",
+                })?,
                 u64::try_from(size).map_err(|_| PersistenceError::invalid("Photo upload size"))?,
             ))
         })

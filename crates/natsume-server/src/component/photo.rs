@@ -35,7 +35,10 @@ pub(crate) enum PhotoStorageError {
         source: results_storage::ResultsStorageError,
     },
     #[snafu(display("Photo storage startup task failed"))]
-    Worker { source: tokio::task::JoinError },
+    Worker {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
 }
 
 pub(crate) struct PhotoComponent {
