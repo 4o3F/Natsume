@@ -44,6 +44,12 @@ impl Connected<IncomingStream<'_, TlsListener>> for PeerAddress {
     }
 }
 
+impl Connected<SocketAddr> for PeerAddress {
+    fn connect_info(address: SocketAddr) -> Self {
+        Self(address.ip().to_canonical())
+    }
+}
+
 /// A concrete TLS adapter for Axum's HTTP/1.1 server.
 pub(crate) struct TlsListener {
     tcp_listener: TcpListener,
@@ -832,13 +838,11 @@ pub(crate) mod tests {
                     },
                 ),
             );
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                application.into_make_service_with_connect_info::<super::PeerAddress>(),
-            )
-            .await
-        });
+        let server = tokio::spawn(crate::server_runtime::serve_http(
+            listener,
+            application,
+            std::future::pending(),
+        ));
         let tls = connect_client(
             address,
             identity.ca_certificate(),
@@ -857,6 +861,9 @@ pub(crate) mod tests {
         let (mut socket, response) =
             tokio_tungstenite::client_async(format!("wss://{address}/echo"), tls).await?;
         assert_eq!(response.status(), 101);
+        assert_eq!(capacity.available_permits(), 0);
+        elapse_http_time(crate::server_runtime::HTTP_HEADER_READ_TIMEOUT + Duration::from_secs(5))
+            .await;
         assert_eq!(capacity.available_permits(), 0);
         socket
             .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -965,6 +972,376 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    struct HttpFixture {
+        identity: TestIdentity,
+        address: SocketAddr,
+        capacity: Arc<tokio::sync::Semaphore>,
+        shutdown: Option<oneshot::Sender<()>>,
+        server: tokio_util::task::AbortOnDropHandle<std::io::Result<()>>,
+    }
+
+    impl HttpFixture {
+        async fn start(
+            permits: usize,
+            router: axum::Router,
+        ) -> Result<Self, crate::test_error::TestError> {
+            let identity = TestIdentity::new(LOCALHOST)?;
+            let mut listener = bind_identity(&identity).await?;
+            listener.connections = Arc::new(tokio::sync::Semaphore::new(permits));
+            let capacity = Arc::clone(&listener.connections);
+            let address = listener.local_addr()?;
+            let (shutdown, stopped) = oneshot::channel();
+            let server = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
+                crate::server_runtime::serve_http(listener, router, async move {
+                    let _shutdown_result = stopped.await;
+                }),
+            ));
+            Ok(Self {
+                identity,
+                address,
+                capacity,
+                shutdown: Some(shutdown),
+                server,
+            })
+        }
+
+        async fn connect(&self) -> Result<TlsStream<TcpStream>, crate::test_error::TestError> {
+            Ok(connect_client(
+                self.address,
+                self.identity.ca_certificate(),
+                IpAddr::V4(LOCALHOST),
+                &[&rustls::version::TLS13],
+                vec![ALPN_HTTP_1_1.to_vec()],
+            )
+            .await?)
+        }
+
+        fn stop(&mut self) {
+            if let Some(shutdown) = self.shutdown.take() {
+                shutdown
+                    .send(())
+                    .unwrap_or_else(|()| panic!("HTTP test server stopped early"));
+            }
+        }
+
+        async fn finish(mut self) -> Result<(), crate::test_error::TestError> {
+            self.stop();
+            timeout(TEST_TIMEOUT, self.server).await???;
+            Ok(())
+        }
+    }
+
+    // Resume before socket I/O so Tokio cannot auto-advance past another deadline
+    // while the operating system is delivering loopback TLS records.
+    async fn elapse_http_time(duration: Duration) {
+        tokio::time::pause();
+        tokio::time::advance(duration).await;
+        tokio::time::resume();
+        tokio::task::yield_now().await;
+    }
+
+    async fn wait_for_permits(
+        capacity: &tokio::sync::Semaphore,
+        expected: usize,
+    ) -> Result<(), crate::test_error::TestError> {
+        timeout(TEST_TIMEOUT, async {
+            while capacity.available_permits() != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        Ok(())
+    }
+
+    async fn read_head(
+        stream: &mut TlsStream<TcpStream>,
+    ) -> Result<String, crate::test_error::TestError> {
+        let mut head = Vec::new();
+        timeout(TEST_TIMEOUT, async {
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).await?;
+                head.push(byte[0]);
+                assert!(
+                    head.len() < 8192,
+                    "HTTP test response head exceeded its bound"
+                );
+            }
+            Ok::<_, std::io::Error>(())
+        })
+        .await??;
+        Ok(std::str::from_utf8(&head)?.to_owned())
+    }
+
+    async fn read_response(
+        stream: &mut TlsStream<TcpStream>,
+    ) -> Result<Vec<u8>, crate::test_error::TestError> {
+        let head = read_head(stream).await?;
+        assert!(
+            head.starts_with("HTTP/1.1 200 OK\r\n"),
+            "unexpected response: {head}"
+        );
+        let length = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or_else(|| panic!("missing content length: {head}"));
+        let mut body = vec![0; length];
+        timeout(TEST_TIMEOUT, stream.read_exact(&mut body)).await??;
+        Ok(body)
+    }
+
+    async fn assert_http_closed(
+        client: &mut TlsStream<TcpStream>,
+    ) -> Result<(), crate::test_error::TestError> {
+        let mut remaining = Vec::new();
+        let result = timeout(TEST_TIMEOUT, client.read_to_end(&mut remaining)).await?;
+        assert!(
+            result.is_ok()
+                || result.as_ref().is_err_and(|error| matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                )),
+            "unexpected TLS closure result: {result:?}"
+        );
+        assert!(remaining.is_empty() || remaining.starts_with(b"HTTP/1.1 408"));
+        Ok(())
+    }
+
+    async fn keep_alive_health(
+        stream: &mut TlsStream<TcpStream>,
+    ) -> Result<(), crate::test_error::TestError> {
+        stream
+            .write_all(b"GET /api/v2/health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await?;
+        assert_eq!(read_response(stream).await?, br#"{"status":"ok"}"#);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn idle_http_keep_alive_closes_and_returns_all_permits()
+    -> Result<(), crate::test_error::TestError> {
+        let fixture =
+            HttpFixture::start(super::MAX_CONNECTIONS, http::tests::health_router()).await?;
+        let mut client = fixture.connect().await?;
+        keep_alive_health(&mut client).await?;
+        assert_eq!(
+            fixture.capacity.available_permits(),
+            super::MAX_CONNECTIONS - 1
+        );
+        elapse_http_time(Duration::from_secs(29)).await;
+        assert_eq!(
+            fixture.capacity.available_permits(),
+            super::MAX_CONNECTIONS - 1
+        );
+        elapse_http_time(Duration::from_secs(2)).await;
+        wait_for_permits(&fixture.capacity, super::MAX_CONNECTIONS).await?;
+        assert_http_closed(&mut client).await?;
+        fixture.finish().await
+    }
+
+    #[tokio::test]
+    async fn repeated_http_requests_within_deadline_keep_the_same_connection()
+    -> Result<(), crate::test_error::TestError> {
+        use axum::extract::ConnectInfo;
+        let router = http::tests::health_router().route(
+            "/peer",
+            axum::routing::get(
+                |ConnectInfo(peer): ConnectInfo<super::PeerAddress>| async move {
+                    assert_eq!(peer.0, IpAddr::V4(LOCALHOST));
+                    "peer verified"
+                },
+            ),
+        );
+        let fixture = HttpFixture::start(1, router).await?;
+        let mut client = fixture.connect().await?;
+        keep_alive_health(&mut client).await?;
+        for _ in 0..4 {
+            elapse_http_time(Duration::from_secs(20)).await;
+            client
+                .write_all(b"GET /peer HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await?;
+            assert_eq!(read_response(&mut client).await?, b"peer verified");
+            assert_eq!(fixture.capacity.available_permits(), 0);
+        }
+        fixture.finish().await
+    }
+
+    #[tokio::test]
+    async fn partial_next_request_head_does_not_extend_the_deadline()
+    -> Result<(), crate::test_error::TestError> {
+        let fixture = HttpFixture::start(1, http::tests::health_router()).await?;
+        let mut client = fixture.connect().await?;
+        keep_alive_health(&mut client).await?;
+        client.write_all(b"G").await?;
+        elapse_http_time(Duration::from_secs(20)).await;
+        client.write_all(b"ET /api/v2/health HTTP/1.1\r\n").await?;
+        elapse_http_time(Duration::from_secs(11)).await;
+        wait_for_permits(&fixture.capacity, 1).await?;
+        assert_http_closed(&mut client).await?;
+        fixture.finish().await
+    }
+
+    #[tokio::test]
+    async fn expired_idle_http_connections_restore_capacity_for_new_clients()
+    -> Result<(), crate::test_error::TestError> {
+        let fixture = HttpFixture::start(2, http::tests::health_router()).await?;
+        let mut first = fixture.connect().await?;
+        let mut second = fixture.connect().await?;
+        keep_alive_health(&mut first).await?;
+        keep_alive_health(&mut second).await?;
+        assert_eq!(fixture.capacity.available_permits(), 0);
+        let mut excess = TcpStream::connect(fixture.address).await?;
+        assert!(matches!(
+            timeout(TEST_TIMEOUT, excess.read(&mut [0])).await?,
+            Ok(0) | Err(_)
+        ));
+        elapse_http_time(Duration::from_secs(31)).await;
+        wait_for_permits(&fixture.capacity, 2).await?;
+        let mut fresh = fixture.connect().await?;
+        keep_alive_health(&mut fresh).await?;
+        assert_eq!(fixture.capacity.available_permits(), 1);
+        fixture.finish().await
+    }
+
+    #[tokio::test]
+    async fn slow_upload_and_request_processing_outlive_the_header_deadline()
+    -> Result<(), crate::test_error::TestError> {
+        use futures_util::StreamExt as _;
+        let (received, mut chunks) = tokio::sync::mpsc::channel(4);
+        let release = Arc::new(tokio::sync::Notify::new());
+        let handler_release = Arc::clone(&release);
+        let router = axum::Router::new().route(
+            "/upload",
+            axum::routing::post(move |body: axum::body::Body| {
+                let received = received.clone();
+                let release = Arc::clone(&handler_release);
+                async move {
+                    let mut stream = body.into_data_stream();
+                    let mut size = 0;
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk.unwrap_or_else(|error| panic!("upload failed: {error}"));
+                        size += chunk.len();
+                        received
+                            .send(size)
+                            .await
+                            .unwrap_or_else(|error| panic!("upload receiver dropped: {error}"));
+                    }
+                    release.notified().await;
+                    size.to_string()
+                }
+            }),
+        );
+        let fixture = HttpFixture::start(1, router).await?;
+        let mut client = fixture.connect().await?;
+        client
+            .write_all(b"POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\n")
+            .await?;
+        for size in 1..=4 {
+            client.write_all(b"x").await?;
+            assert_eq!(timeout(TEST_TIMEOUT, chunks.recv()).await?, Some(size));
+            elapse_http_time(Duration::from_secs(35)).await;
+            assert_eq!(fixture.capacity.available_permits(), 0);
+        }
+        release.notify_one();
+        assert_eq!(read_response(&mut client).await?, b"4");
+        fixture.finish().await
+    }
+
+    #[tokio::test]
+    async fn slow_streaming_download_outlives_the_header_deadline()
+    -> Result<(), crate::test_error::TestError> {
+        let router = http::tests::health_router().route(
+            "/download",
+            axum::routing::get(|| async {
+                axum::body::Body::from_stream(futures_util::stream::unfold(0, |index| async move {
+                    if index == 3 {
+                        return None;
+                    }
+                    if index > 0 {
+                        tokio::time::sleep(Duration::from_secs(35)).await;
+                    }
+                    Some((
+                        Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(b"chunk")),
+                        index + 1,
+                    ))
+                }))
+            }),
+        );
+        let fixture = HttpFixture::start(1, router).await?;
+        let mut client = fixture.connect().await?;
+        client
+            .write_all(b"GET /download HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await?;
+        assert!(read_head(&mut client).await?.starts_with("HTTP/1.1 200 OK"));
+        for index in 0..3 {
+            if index > 0 {
+                elapse_http_time(Duration::from_secs(35)).await;
+            }
+            let mut chunk = [0; 10];
+            timeout(TEST_TIMEOUT, client.read_exact(&mut chunk)).await??;
+            assert_eq!(&chunk, b"5\r\nchunk\r\n");
+            assert_eq!(fixture.capacity.available_permits(), 0);
+        }
+        let mut end = [0; 5];
+        timeout(TEST_TIMEOUT, client.read_exact(&mut end)).await??;
+        assert_eq!(&end, b"0\r\n\r\n");
+        keep_alive_health(&mut client).await?;
+        fixture.finish().await
+    }
+
+    #[tokio::test]
+    async fn http_shutdown_closes_idle_connections_and_drains_an_in_flight_request()
+    -> Result<(), crate::test_error::TestError> {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let handler_entered = Arc::clone(&entered);
+        let handler_release = Arc::clone(&release);
+        let router = http::tests::health_router().route(
+            "/slow",
+            axum::routing::get(move || {
+                let entered = Arc::clone(&handler_entered);
+                let release = Arc::clone(&handler_release);
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    "drained"
+                }
+            }),
+        );
+        let mut fixture = HttpFixture::start(2, router).await?;
+        let mut idle = fixture.connect().await?;
+        keep_alive_health(&mut idle).await?;
+        let mut active = fixture.connect().await?;
+        active
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await?;
+        timeout(TEST_TIMEOUT, entered.notified()).await?;
+        fixture.stop();
+        wait_for_permits(&fixture.capacity, 1).await?;
+        assert!(
+            TcpStream::connect(fixture.address).await.is_err(),
+            "listener remained open during HTTP drain"
+        );
+        assert!(
+            !fixture.server.is_finished(),
+            "HTTP shutdown abandoned the active request"
+        );
+        elapse_http_time(Duration::from_secs(35)).await;
+        assert!(
+            !fixture.server.is_finished(),
+            "header timeout cut the active request during shutdown"
+        );
+        release.notify_one();
+        assert_eq!(read_response(&mut active).await?, b"drained");
+        wait_for_permits(&fixture.capacity, 2).await?;
+        fixture.finish().await
+    }
+
     async fn bind_identity(identity: &TestIdentity) -> Result<TlsListener, TestFailure> {
         TlsListener::bind(
             SocketAddr::from((LOCALHOST, 0)),
@@ -996,11 +1373,10 @@ pub(crate) mod tests {
     ) -> (oneshot::Sender<()>, JoinHandle<std::io::Result<()>>) {
         let (shutdown_sender, shutdown_receiver) = oneshot::channel();
         let server = tokio::spawn(async move {
-            axum::serve(listener, http::tests::health_router())
-                .with_graceful_shutdown(async move {
-                    let _shutdown_result = shutdown_receiver.await;
-                })
-                .await
+            crate::server_runtime::serve_http(listener, http::tests::health_router(), async move {
+                let _shutdown_result = shutdown_receiver.await;
+            })
+            .await
         });
         (shutdown_sender, server)
     }

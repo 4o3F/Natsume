@@ -1,11 +1,17 @@
-use std::{
-    future::{Future, IntoFuture},
-    sync::Arc,
-    time::Duration,
-};
+use std::{future::Future, sync::Arc, time::Duration};
 
+use axum::serve::Listener as _;
+use hyper::server::conn::http1;
+use hyper_util::{
+    rt::{TokioIo, TokioTimer},
+    service::TowerToHyperService,
+};
 use snafu::{ResultExt as _, Snafu};
-use tokio_util::task::AbortOnDropHandle;
+use tokio_util::{
+    sync::CancellationToken,
+    task::{AbortOnDropHandle, TaskTracker},
+};
+use tower::Service as _;
 use tracing::instrument::WithSubscriber as _;
 
 use crate::{
@@ -18,6 +24,59 @@ use crate::{
 };
 
 const PRODUCER_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Release idle HTTP slots before the workstation's 60-second logo poll.
+pub(crate) const HTTP_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Serves HTTP/1 with a deadline only while waiting for a complete request head.
+pub(crate) async fn serve_http(
+    mut listener: TlsListener,
+    router: axum::Router,
+    shutdown: impl Future<Output = ()>,
+) -> std::io::Result<()> {
+    let mut services = router.into_make_service_with_connect_info::<PeerAddress>();
+    let connections = TaskTracker::new();
+    let stop = CancellationToken::new();
+    let _stop_on_drop = stop.drop_guard_ref();
+    tokio::pin!(shutdown);
+    loop {
+        let (io, address) = tokio::select! {
+            biased;
+            () = &mut shutdown => break,
+            accepted = listener.accept() => accepted,
+        };
+        let service = services
+            .call(address)
+            .await
+            .unwrap_or_else(|error| match error {});
+        let stopped = stop.clone();
+        connections.spawn(async move {
+            let mut builder = http1::Builder::new();
+            builder
+                .timer(TokioTimer::new())
+                .header_read_timeout(HTTP_HEADER_READ_TIMEOUT);
+            let connection = builder
+                .serve_connection(TokioIo::new(io), TowerToHyperService::new(service))
+                .with_upgrades();
+            tokio::pin!(connection);
+            let result = tokio::select! {
+                result = &mut connection => result,
+                () = stopped.cancelled() => {
+                    connection.as_mut().graceful_shutdown();
+                    connection.await
+                }
+            };
+            if let Err(error) = result {
+                tracing::trace!(error = %snafu::Report::from_error(error), "HTTP connection ended");
+            }
+        });
+    }
+    // Stop accepting and abort unfinished TLS handshakes before draining HTTP.
+    drop(listener);
+    stop.cancel();
+    connections.close();
+    connections.wait().await;
+    Ok(())
+}
 
 pub(crate) struct ServerRuntime {
     /// Shared admission and producer tracking, closed before waiting for producers.
@@ -70,13 +129,8 @@ impl ServerRuntime {
         let http_stop = tokio_util::sync::CancellationToken::new();
         let stopped = http_stop.clone();
         let mut serving = spawn_serving(
-            axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<PeerAddress>(),
-            )
-            .with_graceful_shutdown(stopped.cancelled_owned())
-            .into_future()
-            .with_subscriber(tracing::dispatcher::get_default(Clone::clone)),
+            serve_http(listener, router, stopped.cancelled_owned())
+                .with_subscriber(tracing::dispatcher::get_default(Clone::clone)),
         );
         tokio::pin!(shutdown);
         let completed = tokio::select! {

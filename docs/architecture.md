@@ -895,7 +895,7 @@ Journal HTTP handler直接持有JournalQuery，Print、Operator（含登录 sess
 
 ```text
 runtime.lifecycle.begin_shutdown()
-  → http_stop.cancel()，通知axum进入graceful shutdown，停止新HTTP
+  → http_stop.cancel()，通知HTTP服务进入graceful shutdown，停止新HTTP
   → lifecycle.wait()，最多10秒，超时记journal计数和tracing
   → DeviceControl::shutdown()，结束全部registry lease并等待actor确认
   → BackgroundTasks::shutdown()
@@ -920,6 +920,8 @@ Production WSS handler只把socket交给`device_control::serve_connection`。该
 - DeviceControl在HTTP upgrade前预留最多64个短期认证名额，满额返回503与`Retry-After: 1`；失败、断线或SessionReady后释放，active lease不占用短期名额；
 - Enrollment review registry在创建时原子检查640条上限；新review成功登记后释放短期认证名额，长期人工审核由registry条目约束，删除或认领即释放名额。exact committed replay和Resume不占用待审核容量；
 - 各容量由既有owner维护，不建立统一admission manager；上限限制资源积累，不承诺同一匿名网络入口在持续饱和时仍能保证新连接公平性。现场验收须测量RSS、FD、拒绝行为及已有控制连接延迟。
+
+HTTP 入口使用 Hyper 的 HTTP/1 builder、`TokioTimer` 和 `header_read_timeout`，等待首个或后续完整请求头的期限固定为30秒；收到部分请求头不重置期限。后续计时从上一请求正文读取和响应发送均完成、开始等待下一请求头时启动，因此空闲 keep-alive 会在下一次60秒 Logo 轮询前关闭并释放连接许可。该期限不覆盖请求正文读取、handler 执行、响应正文发送或已升级的 WebSocket。HTTP 服务循环继续通过 Axum 的 `ConnectInfo<PeerAddress>` 提供 socket 对端地址；关闭时先释放 Listener 和未完成的 TLS 握手，再通知 HTTP 连接优雅关闭并等待在途请求及响应排空。WebSocket 的关闭由现有 DeviceControl 生命周期管理。
 
 ### 11.2 Registry
 
@@ -1480,8 +1482,6 @@ Session foreground、terminate、Home reset 的单台/批量写入口统一为 `
 HTTP 方法表达资源语义，不为动词机械创建伪资源，也不把实际状态转换伪装成普通字段覆盖。`/api/v2` 根层在认证和路由处理前统一拒绝 `HEAD`。Panel API 不设置路由正文大小覆盖，JSON 和 Bytes 提取器使用 Axum 默认的 2 MiB 上限。JSON 提取失败沿用 400 错误映射，包括正文超限、格式错误和不支持的媒体类型；名单上传的 Bytes 提取超限返回 413。解析组件继续执行自己的格式、解压和解码限制；Import 内部的 XLSX 原始文件上限为 8 MiB，但不覆盖 HTTP 提取器的 2 MiB 上限。
 
 当前 Operator API 尚未设置统一请求处理期限，也不对正文读取独立计时；慢速名单上传可长期占用Import名额，直到正文读取结束或传输失败；仅取消外层请求future不会释放仍在读取正文的进程任务所持名额。
-
-当前 `axum::serve` 入口未安装 Hyper 计时器，默认 HTTP/1 请求头读取超时不生效，慢请求头仍可占用连接容量。补齐请求头保护需独立调整服务入口，并验证 TLS、WebSocket upgrade 与优雅关闭。
 
 Operator Target提交成功后返回成功设备集合的`TargetChange`，HTTP任务通过`DeviceControl::publish`通知已有Actor。receipt重放也只触发从当前数据库重新读取，不恢复旧Target。HTTP请求取消不影响该提交与通知序列；周期刷新和重连仍为独立反熵路径。通知不在数据库事务内，也不等待终端执行。HTTP handler不直接访问组件表。
 
