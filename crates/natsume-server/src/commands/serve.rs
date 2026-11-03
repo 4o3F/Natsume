@@ -77,7 +77,11 @@ async fn run_until<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let LoadedServer { state, runtime } = load_state(&config, utc_offset).await?;
+    let LoadedServer {
+        state,
+        runtime,
+        routes,
+    } = load_state(&config, utc_offset).await?;
     let state = Arc::new(state);
     tracing::info!("server state ready");
     let listener = TlsListener::bind(
@@ -93,7 +97,7 @@ where
         .await
         .context(crate::server_runtime::BackgroundSnafu)
         .context(super::error::RuntimeSnafu)?;
-    let router = http::router(Arc::clone(&state), Path::new(WEB_ASSETS_PATH));
+    let router = http::router(Arc::clone(&state), routes, Path::new(WEB_ASSETS_PATH));
 
     runtime
         .serve_until(listener, router, background, shutdown)

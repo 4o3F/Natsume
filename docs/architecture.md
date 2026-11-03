@@ -738,14 +738,13 @@ WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过 `
 
 ### 10.4 `ServerState`
 
-`ServerState::load/from_parts`是进程依赖的组装入口，返回 `LoadedServer { state: ServerState, runtime: ServerRuntime }`。`ServerState`是组装后的共享组件句柄集合，不执行设备应用用例、不驱动 HTTP 服务，也不持有后台任务句柄。`background` 与 `server_state` 是平级模块，分别负责后台任务的生命周期和共享组件的构造。组合层通过 `background::start_background_tasks(&state)` 显式启动当前需要的后台工作，并将返回的 `BackgroundTasks` 交给 `ServerRuntime::serve_until` 持有；目前只有 Print 到期检查任务。该对象持有取消信号和统一任务集合，只负责后台任务的取消、等待及异常回收；具体任务的启动、初始化条件和业务错误映射仍在组合层显式编写，不接受外部服务 future，不提供动态注册接口。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名；WSS 连接处理和 Actor 只取得设备协调器，不依赖整个组合对象。
+`ServerState::load/from_parts`是进程依赖的组装入口，返回 `LoadedServer { state: ServerState, runtime: ServerRuntime, routes: AccessRoutes }`。`ServerState`是组装后的共享组件句柄集合，不执行设备应用用例、不驱动 HTTP 服务，也不持有后台任务句柄。`background` 与 `server_state` 是平级模块，分别负责后台任务的生命周期和共享组件的构造。组合层通过 `background::start_background_tasks(&state)` 显式启动当前需要的后台工作，并将返回的 `BackgroundTasks` 交给 `ServerRuntime::serve_until` 持有；目前只有 Print 到期检查任务。该对象持有取消信号和统一任务集合，只负责后台任务的取消、等待及异常回收；具体任务的启动、初始化条件和业务错误映射仍在组合层显式编写，不接受外部服务 future，不提供动态注册接口。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名；WSS 连接处理和 Actor 只取得设备协调器，不依赖整个组合对象。
 
 当前已实现的组成是：
 
 ```rust
 pub(crate) struct ServerState {
     operator: Arc<OperatorComponent>,
-    journal_query: JournalQuery,
     print: PrintComponent,
     photo: PhotoComponent,
     contest: ContestComponent,
@@ -764,6 +763,7 @@ pub(crate) struct ServerState {
 pub(crate) struct LoadedServer {
     pub(crate) state: ServerState,
     pub(crate) runtime: ServerRuntime,
+    pub(crate) routes: AccessRoutes,
 }
 
 pub(crate) struct ServerRuntime {
@@ -773,7 +773,7 @@ pub(crate) struct ServerRuntime {
 }
 ```
 
-`ServerRuntime` 持有同一 `ServerLifecycle` 的克隆、同一 `Arc<DeviceControl>` 和唯一的 `JournalComponent` writer 所有者，统一执行关闭顺序。HTTP 状态只持有 `Journal` emit 句柄，并通过 `JournalQuery` 使用 reader。
+`ServerRuntime` 持有同一 `ServerLifecycle` 的克隆、同一 `Arc<DeviceControl>` 和唯一的 `JournalComponent` writer 所有者，统一执行关闭顺序。HTTP 状态只持有 `Journal` emit 句柄，并通过 `JournalQuery` 使用 reader。Journal 查询由 `feature::journal::JournalFeature` 接收 reader、共享 Operator、`LiveLeaseView` 和时区偏移后组装，handler 直接提取 `State<JournalQuery>`。已绑定查询状态的 operator 路由经 `LoadedServer.routes` 传入 HTTP 组装入口，与旧路由合并后交给 `http::mount`。
 
 `DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件，以及`Journal` emit句柄和`ServerLifecycle`，并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。它只负责跨组件编排或需要Registry、fence、actor等运行时状态的用例，不为单组件mutation增加一对一转发。HTTP也使用的Provisioning、Device、Binding、Session、Home共享同一`Arc`实例；Gateway、Runtime Config和Power目前只有协调器消费，构造时将Power句柄交给它，`ServerState`不保留无消费者的副本或accessor。分层、调用路径和事件归属统一遵循§10.6。
 
@@ -834,9 +834,9 @@ Server按调用职责分成四层，依赖只向下：
 基础设施层：Database / Journal emit句柄 / ServerLifecycle / Vault
 ```
 
-`ServerState`是组合入口构造后交给入口层的共享句柄容器，不是额外一层。HTTP从容器取得具体组件或协调器；WSS处理取得显式传入的`Arc<DeviceControl>`，后台任务只保留自己需要的依赖，不重新组装组件，也不让协调器反向依赖`ServerState`。
+`ServerState`是组合入口构造后交给入口层的共享句柄容器，不是额外一层。尚未迁移到feature的HTTP handler从容器取得具体组件或协调器；WSS处理取得显式传入的`Arc<DeviceControl>`，后台任务只保留自己需要的依赖，不重新组装组件，也不让协调器反向依赖`ServerState`。
 
-协调层按具体用例划分：`DeviceControl`负责设备mutation与运行时编排，`JournalQuery`负责只读日志查询、时间线重建、概要、导出和状态。`JournalQuery`只持有`JournalComponent::reader()`、共享`Arc<OperatorComponent>`和构造时注入的`LiveLeaseView`；该view只弱引用Registry目录、读取actor维护的当前session cell，不持有整个DeviceControl、不发送actor消息、不延长协调器或actor生命周期。另一协调器所需的运行时事实必须通过这种窄只读视图注入，不能互持协调器句柄。Operator通过自己的只读DB方法批量解析当前显示名；失败时保留ID，显示名未知。handler只解析／校验输入、检查权限、调用`state.journal_query()`并序列化，不实现重建或跨组件业务规则。
+协调层按具体用例划分：`DeviceControl`负责设备mutation与运行时编排，`JournalQuery`负责只读日志查询、时间线重建、概要、导出和状态。`JournalQuery`只持有`JournalComponent::reader()`、共享`Arc<OperatorComponent>`和构造时注入的`LiveLeaseView`；该view只弱引用Registry目录、读取actor维护的当前session cell，不持有整个DeviceControl、不发送actor消息、不延长协调器或actor生命周期。另一协调器所需的运行时事实必须通过这种窄只读视图注入，不能互持协调器句柄。Operator通过自己的只读DB方法批量解析当前显示名；失败时保留ID，显示名未知。handler只解析／校验输入、检查权限、调用注入的`JournalQuery`并序列化，不实现重建或跨组件业务规则。
 
 Photo 初始化使用 `PreparePhotoInitialization`，显式借用 Contest 和 Photo；它只组织事实读取与发布，草稿校验、资源预算和存储仍由 Photo 独占。
 
@@ -868,10 +868,11 @@ Database + ServerConfig + startup UtcOffset
       → ServerState::from_parts
           → concrete business components { Database / Vault / Journal }
           → Arc<DeviceControl> { concrete dependencies, DeviceRegistry, Journal, lifecycle }
-          → JournalQuery { journal reader, Arc<OperatorComponent>, LiveLeaseView, startup UtcOffset }
+          → JournalFeature { JournalQuery { journal reader, Arc<OperatorComponent>, LiveLeaseView, startup UtcOffset } }
   → LoadedServer
-      → Arc<ServerState> { shared handles + Journal emit/reader + lifecycle }
+      → Arc<ServerState> { shared handles + Journal emit + lifecycle }
       → ServerRuntime { shared lifecycle + Arc<DeviceControl> + JournalComponent writer }
+      → AccessRoutes { Journal operator routes bound to JournalQuery }
   → TLS listener
   → background::start_background_tasks { Print attempt expiry }
       → BackgroundTasks { cancellation + JoinSet }
@@ -880,7 +881,7 @@ Database + ServerConfig + startup UtcOffset
           → Device WSS { Arc<DeviceControl> }
 ```
 
-HTTP持有组合对象，按用例取得DeviceControl或JournalQuery；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
+Journal HTTP handler直接持有JournalQuery，其他HTTP handler通过组合对象取得各自依赖；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
 
 `ServerRuntime::serve_until`在收到关闭信号或HTTP服务结束后，按以下顺序关闭：
 

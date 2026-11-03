@@ -36,7 +36,7 @@ async fn json_extraction_rejections_remain_bad_requests() -> TestResult {
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
@@ -112,7 +112,7 @@ async fn json_routes_use_default_body_limit_for_declared_and_streamed_requests()
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
@@ -207,7 +207,7 @@ async fn fully_escaped_six_hundred_device_submission_is_accepted() -> TestResult
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
@@ -271,7 +271,7 @@ async fn workbook_uploads_use_default_two_mib_limit() -> TestResult {
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')

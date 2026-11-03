@@ -54,14 +54,17 @@ impl Fixture {
         let admin_id = seed_operator(&database.database, ADMIN, PASSWORD).await?;
         let viewer_id = seed_operator(&database.database, VIEWER, PASSWORD).await?;
         let (journal, mut events) = JournalComponent::channel(crate::journal::CAPACITY);
-        let crate::server_state::LoadedServer { state, runtime } =
-            crate::server_state::tests::ServerStateFixture::new(
-                database.database.clone(),
-                database.documents_path(),
-            )
-            .logos(database.path.with_extension("logos"))
-            .journal(journal)
-            .build()?;
+        let crate::server_state::LoadedServer {
+            state,
+            runtime,
+            routes,
+        } = crate::server_state::tests::ServerStateFixture::new(
+            database.database.clone(),
+            database.documents_path(),
+        )
+        .logos(database.path.with_extension("logos"))
+        .journal(journal)
+        .build()?;
         let state = Arc::new(state);
         state
             .operator()
@@ -83,7 +86,7 @@ impl Fixture {
             "__Secure-natsume_session={}",
             viewer.wire_credential().expose()
         );
-        let app = http::router(state.clone(), unused_web_root());
+        let app = http::router(state.clone(), routes, unused_web_root());
         drain_events(&mut events);
         Ok(Self {
             _runtime: runtime,

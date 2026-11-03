@@ -177,6 +177,7 @@ async fn unavailable_journal_does_not_change_http_statuses_or_business_writes()
     let crate::server_state::LoadedServer {
         state: degraded,
         runtime: degraded_runtime,
+        routes: degraded_routes,
     } = crate::server_state::tests::ServerStateFixture::new(
         database.clone(),
         root.path().join("documents"),
@@ -188,14 +189,15 @@ async fn unavailable_journal_does_not_change_http_statuses_or_business_writes()
     let crate::server_state::LoadedServer {
         state: normal,
         runtime: _normal_runtime,
+        routes: normal_routes,
     } = crate::server_state::tests::ServerStateFixture::new(
         database.clone(),
         root.path().join("normal-documents"),
     )
     .build()?;
     let normal = Arc::new(normal);
-    let first = crate::http::router(Arc::clone(&degraded), root.path());
-    let second = crate::http::router(normal, root.path());
+    let first = crate::http::router(Arc::clone(&degraded), degraded_routes, root.path());
+    let second = crate::http::router(normal, normal_routes, root.path());
     for path in [
         "/api/v2/health",
         "/api/v2/operator/session",

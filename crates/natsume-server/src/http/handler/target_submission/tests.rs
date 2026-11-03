@@ -93,7 +93,7 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
     }).await.map_err(crate::test_error::TestError::from)?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let path = "/api/v2/target-submissions";
     assert_eq!(
         drive(&application, request(Method::POST, path, "")?)
@@ -172,7 +172,7 @@ async fn old_target_write_routes_are_removed() -> TestResult {
     let fixture = TestDatabase::new().await?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     for (method, old_path, status) in [
         (
             Method::PUT,
@@ -214,7 +214,7 @@ async fn submission_infrastructure_failure_reports_its_chain_with_the_same_respo
     seed_operator(&fixture.database, "report-admin", "report-password1!").await?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let login = drive(
         &application,
         login_request("report-admin", "report-password1!")?,

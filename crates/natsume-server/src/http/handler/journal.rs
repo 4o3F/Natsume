@@ -4,9 +4,9 @@ use crate::{
         device::DeviceId,
         operator::{OperatorIdentity, OperatorRole},
     },
-    http::{AppState, Routes, error::ApiError, middleware},
+    http::{Routes, error::ApiError, middleware},
     journal::read::ReadRequest,
-    journal_query::{QueryError, Visibility},
+    journal_query::{JournalQuery, QueryError, Visibility},
 };
 use axum::{
     Extension, Json,
@@ -20,7 +20,7 @@ use tokio::io::AsyncWriteExt as _;
 use tokio_util::codec::{BytesCodec, FramedRead};
 mod query;
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<JournalQuery> {
     vec![
         ("/journal/events", get(events)),
         ("/journal/devices/{device_id}/timeline", get(timeline)),
@@ -50,7 +50,7 @@ fn failure(error: QueryError) -> Response {
     }
 }
 async fn events(
-    State(state): State<AppState>,
+    State(state): State<JournalQuery>,
     Extension(identity): Extension<OperatorIdentity>,
     RawQuery(raw): RawQuery,
 ) -> Response {
@@ -62,10 +62,10 @@ async fn events(
         OperatorRole::Admin => Visibility::All,
         OperatorRole::Viewer => Visibility::DeviceOnly,
     };
-    response(state.journal_query().events(request, visibility).await)
+    response(state.events(request, visibility).await)
 }
 async fn timeline(
-    State(state): State<AppState>,
+    State(state): State<JournalQuery>,
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     RawQuery(raw): RawQuery,
 ) -> Response {
@@ -79,32 +79,27 @@ async fn timeline(
         Ok(window) => window,
         Err(error) => return failure(error),
     };
-    response(
-        state
-            .journal_query()
-            .timeline(device_id, window.from, window.to)
-            .await,
-    )
+    response(state.timeline(device_id, window.from, window.to).await)
 }
-async fn summaries(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Response {
+async fn summaries(State(state): State<JournalQuery>, RawQuery(raw): RawQuery) -> Response {
     let window = match query::summary_window(raw.as_deref()) {
         Ok(window) => window,
         Err(error) => return failure(error),
     };
-    response(state.journal_query().summaries(window).await)
+    response(state.summaries(window).await)
 }
-async fn status(State(state): State<AppState>) -> Response {
-    response(state.journal_query().status().await)
+async fn status(State(state): State<JournalQuery>) -> Response {
+    response(state.status().await)
 }
 
 /// Bounded in-memory transfer buffer; body backpressure suspends only this read-only export.
 const EXPORT_BUFFER_BYTES: usize = 64 * 1024;
-async fn export(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Response {
+async fn export(State(state): State<JournalQuery>, RawQuery(raw): RawQuery) -> Response {
     let request: ReadRequest = match query::events(raw.as_deref()) {
         Ok(request) => request,
         Err(error) => return failure(error),
     };
-    let mut export = match state.journal_query().export(request).await {
+    let mut export = match state.export(request).await {
         Ok(export) => export,
         Err(error) => return failure(error),
     };

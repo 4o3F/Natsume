@@ -580,7 +580,7 @@ impl Fixture {
                 .await
                 .unwrap_or_else(|_| panic!("fixture database could not be created"));
         let vault = Arc::new(vault);
-        let crate::server_state::LoadedServer { state, runtime } = checked(
+        let crate::server_state::LoadedServer { state, runtime, .. } = checked(
             crate::server_state::tests::ServerStateFixture::new(
                 database.clone(),
                 root.join("documents"),

@@ -146,7 +146,7 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
         .map_err(crate::test_error::TestError::from)?;
     let loaded = server_state(&database)?;
     let state = loaded.state;
-    let application = router(Arc::new(state), unused_web_root());
+    let application = router(Arc::new(state), loaded.routes, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
@@ -310,10 +310,11 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     let crate::server_state::LoadedServer {
         state: restarted_state,
         runtime: _restarted_state_runtime,
+        routes,
     } = crate::server_state::tests::ServerStateFixture::new(reopened, database.documents_path())
         .build()?;
     let restarted_state = Arc::new(restarted_state);
-    let restarted_application = router(restarted_state, unused_web_root());
+    let restarted_application = router(restarted_state, routes, unused_web_root());
     let (_restarted_server, origin) = listen(restarted_application, &identity).await?;
     config.server_url = origin;
     let after_reopen = run(&config, &unavailable_runtime, &input).await?;

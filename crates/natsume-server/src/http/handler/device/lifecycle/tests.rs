@@ -34,7 +34,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
     ).map_err(PersistenceError::from)).await.map_err(crate::test_error::TestError::from)?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let login = drive(
         &application,
         login_request("list-admin", "device-filter-test-password1!")?,

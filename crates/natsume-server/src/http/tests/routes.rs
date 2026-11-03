@@ -604,7 +604,7 @@ async fn inventory_exactly_matches_every_group_path_and_method() -> TestResult {
         operator,
         source,
         client,
-    } = legacy_routes(&state);
+    } = legacy_routes(&state).merge(loaded.routes);
     for (principal, routes) in [
         (Principal::Public, public),
         (Principal::Operator, operator),
@@ -671,7 +671,7 @@ async fn every_principal_and_admin_boundary_is_enforced() -> TestResult {
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
     let state = std::sync::Arc::new(state);
-    let application = router(state.clone(), unused_web_root());
+    let application = router(state.clone(), loaded.routes, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     assert_eq!(login.status, StatusCode::OK);
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
@@ -853,7 +853,11 @@ async fn new_methods_inherit_each_groups_authentication_without_an_opt_in_wrappe
 async fn shared_session_path_keeps_public_methods_and_allow_header() -> TestResult {
     let fixture = TestDatabase::new().await?;
     let loaded = server_state(&fixture)?;
-    let application = router(std::sync::Arc::new(loaded.state), unused_web_root());
+    let application = router(
+        std::sync::Arc::new(loaded.state),
+        loaded.routes,
+        unused_web_root(),
+    );
     for (method, expected) in [
         (Method::GET, StatusCode::UNAUTHORIZED),
         (Method::POST, StatusCode::BAD_REQUEST),
@@ -879,7 +883,7 @@ async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication
     let fixture = TestDatabase::new().await?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let inventory = server_state(&fixture)?;
     let state = inventory.state;
     let state = std::sync::Arc::new(state);
@@ -888,7 +892,7 @@ async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication
         operator,
         source,
         client,
-    } = legacy_routes(&state);
+    } = legacy_routes(&state).merge(inventory.routes);
     for (principal, routes) in [
         (Principal::Public, public),
         (Principal::Operator, operator),

@@ -20,6 +20,7 @@ async fn request(f: &Fixture, path: &str, cookie: Option<&str>) -> Result<Respon
     }
     Ok(crate::http::router(
         f.state.clone(),
+        f.routes(),
         std::path::Path::new("/nonexistent/journal-web"),
     )
     .oneshot(request.body(Body::empty())?)
@@ -62,8 +63,8 @@ async fn every_endpoint_has_operator_permissions_no_store_and_no_get_audit() -> 
         body(response).await?;
     }
     let audit = f
-        .state
-        .journal_query()
+        .feature
+        .query()
         .events(
             ReadRequest {
                 filter: Filter {

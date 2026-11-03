@@ -20,6 +20,8 @@ pub(crate) struct Fixture {
     pub(crate) directory: tempfile::TempDir,
     /// Shared production composition with a real journal writer and read side.
     pub(crate) state: Arc<crate::server_state::ServerState>,
+    /// Production journal feature over the fixture's writer; routes and direct queries share it.
+    pub(crate) feature: crate::feature::journal::JournalFeature,
     /// Known admin session for endpoint permission checks.
     pub(crate) admin_cookie: String,
     /// Known viewer session for endpoint permission checks.
@@ -58,7 +60,7 @@ impl Fixture {
             },
         );
         ready(&journal).await?;
-        let crate::server_state::LoadedServer { state, runtime } =
+        let crate::server_state::LoadedServer { state, runtime, .. } =
             crate::server_state::tests::ServerStateFixture::new(
                 database,
                 directory.path().join("documents"),
@@ -67,6 +69,12 @@ impl Fixture {
             .journal(journal)
             .build()?;
         let state = Arc::new(state);
+        let feature = crate::feature::journal::JournalFeature::load(
+            runtime.journal().reader(),
+            Arc::clone(state.operator()),
+            state.device_control().live_lease_view(),
+            time::UtcOffset::UTC,
+        );
         state
             .operator()
             .change_role(viewer_id, OperatorRole::Viewer)
@@ -92,6 +100,7 @@ impl Fixture {
             runtime,
             directory,
             state,
+            feature,
             admin_cookie: format!(
                 "__Secure-natsume_session={}",
                 admin.wire_credential().expose()
@@ -104,6 +113,9 @@ impl Fixture {
             device_id: DeviceId::parse(&Uuid::now_v7().to_string())
                 .ok_or(TestError::missing("device id"))?,
         })
+    }
+    pub(crate) fn routes(&self) -> crate::http::AccessRoutes {
+        self.feature.routes()
     }
     pub(crate) fn row(&self, at: i64, event: Event) -> SeedEvent {
         SeedEvent {
@@ -158,7 +170,7 @@ async fn cursors_filters_page_caps_names_and_restricted_queries() -> Result<(), 
         rows.push(row);
     }
     f.seed(rows).await?;
-    let q = f.state.journal_query();
+    let q = f.feature.query();
     let page = q
         .events(
             ReadRequest {
@@ -286,7 +298,7 @@ async fn export_fixes_high_water_and_describes_rows_pruned_between_pages() -> Re
             .collect(),
     )
     .await?;
-    let q = f.state.journal_query();
+    let q = f.feature.query();
     let high = q
         .events(
             ReadRequest {
@@ -349,8 +361,8 @@ async fn unreadable_details_and_unknown_kind_never_return_raw_canaries() -> Resu
     .await?;
     corrupt_latest(f.runtime.journal(), "password_token_login_secret_canary").await?;
     let page = f
-        .state
-        .journal_query()
+        .feature
+        .query()
         .events(
             ReadRequest {
                 filter: f.filter(),
@@ -383,11 +395,7 @@ async fn timeline_looks_back_without_reviving_pre_restart_sessions_and_handles_c
         ),
     ])
     .await?;
-    let result = f
-        .state
-        .journal_query()
-        .timeline(f.device_id, 30, 40)
-        .await?;
+    let result = f.feature.query().timeline(f.device_id, 30, 40).await?;
     assert!(result.sessions.is_empty());
     let next = Fixture::session();
     f.seed(vec![
@@ -404,11 +412,7 @@ async fn timeline_looks_back_without_reviving_pre_restart_sessions_and_handles_c
         ),
     ])
     .await?;
-    let result = f
-        .state
-        .journal_query()
-        .timeline(f.device_id, 90, 150)
-        .await?;
+    let result = f.feature.query().timeline(f.device_id, 90, 150).await?;
     assert_eq!(result.sessions.len(), 1);
     assert!(result.sessions[0].imprecise);
     assert_eq!(result.sessions[0].duration_ms, Some(0));
@@ -456,7 +460,7 @@ async fn summaries_count_terminals_inside_the_window_and_names_fail_without_losi
         ),
     ])
     .await?;
-    let summaries = f.state.journal_query().summaries(1000).await?;
+    let summaries = f.feature.query().summaries(1000).await?;
     assert_eq!(summaries.devices.len(), 1);
     assert_eq!(summaries.devices[0].disconnects, 1);
     assert_eq!(
@@ -472,8 +476,8 @@ async fn summaries_count_terminals_inside_the_window_and_names_fail_without_losi
     )?;
     connection.batch_execute("PRAGMA foreign_keys = OFF; DROP TABLE operator_accounts")?;
     let page = f
-        .state
-        .journal_query()
+        .feature
+        .query()
         .events(
             ReadRequest {
                 filter: f.filter(),
@@ -513,11 +517,7 @@ async fn timeline_restores_binding_and_pause_snapshots_before_the_window_anchor(
         f.row(20, Event::JournalResumed(JournalResumed {})),
     ])
     .await?;
-    let result = f
-        .state
-        .journal_query()
-        .timeline(f.device_id, 15, 30)
-        .await?;
+    let result = f.feature.query().timeline(f.device_id, 15, 30).await?;
     assert_eq!(
         result.sessions[0].seat_code.as_ref().map(SeatCode::as_str),
         Some("A7")
@@ -540,7 +540,7 @@ async fn injected_startup_offset_is_used_inside_the_multithreaded_runtime() -> R
 {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = Fixture::new().await?;
-    let existing = fixture.state.journal_query();
+    let existing = fixture.feature.query();
     let offset = time::UtcOffset::from_hms(5, 45, 0)
         .unwrap_or_else(|error| panic!("fixture offset: {error}"));
     let query = JournalQuery::new(
@@ -582,7 +582,7 @@ async fn maximum_pages_distinguish_an_exact_boundary_from_one_more_row() -> Resu
                 .collect(),
         )
         .await?;
-    let query = fixture.state.journal_query();
+    let query = fixture.feature.query();
     let exact = query
         .events(
             ReadRequest {
@@ -726,8 +726,8 @@ async fn timeline_regression_keeps_a_session_covering_the_window_before_a_clock_
         ])
         .await?;
     let timeline = fixture
-        .state
-        .journal_query()
+        .feature
+        .query()
         .timeline(fixture.device_id, 35, 45)
         .await?;
     assert_eq!(timeline.sessions.len(), 1);
@@ -767,7 +767,7 @@ async fn summaries_bound_payload_reads_to_connection_kinds_and_the_count_window(
     }));
     fixture.seed(rows).await?;
     let queries = crate::journal::tests::capture_queries(fixture.runtime.journal())?;
-    let summaries = fixture.state.journal_query().summaries(1000).await?;
+    let summaries = fixture.feature.query().summaries(1000).await?;
     assert_eq!(summaries.devices.len(), 1);
     assert_eq!(summaries.devices[0].last_connected_at, Some(now - 10000));
     assert_eq!(summaries.devices[0].last_disconnected_at, Some(now - 9000));

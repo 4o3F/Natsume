@@ -54,7 +54,7 @@ async fn import_rejects_busy_requests_before_buffering_and_recovers_after_body_d
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
     let state = std::sync::Arc::new(state);
-    let application = router(state.clone(), unused_web_root());
+    let application = router(state.clone(), loaded.routes, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')

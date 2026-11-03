@@ -599,6 +599,7 @@ async fn background_initialization_reports_snapshot_failure_instead_of_becoming_
     let crate::server_state::LoadedServer {
         state,
         runtime: _runtime,
+        ..
     } = must(
         crate::server_state::tests::ServerStateFixture::new(f.database.clone(), f.documents_path())
             .build(),
@@ -669,6 +670,7 @@ async fn cancelling_background_initialization_releases_the_owned_task() {
     let crate::server_state::LoadedServer {
         state,
         runtime: _runtime,
+        ..
     } = must(
         crate::server_state::tests::ServerStateFixture::new(f.database.clone(), f.documents_path())
             .build(),

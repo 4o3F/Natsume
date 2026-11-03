@@ -20,9 +20,9 @@ use crate::{
     config::ServerConfig,
     db::Database,
     device_control::{DeviceControl, DeviceControlDependencies},
-    feature::{Infra, StartupError},
+    feature::{Infra, StartupError, journal::JournalFeature},
+    http::AccessRoutes,
     journal::{Journal, JournalComponent},
-    journal_query::JournalQuery,
     lifecycle::ServerLifecycle,
     server_runtime::ServerRuntime,
     vault,
@@ -36,8 +36,6 @@ use crate::{
 pub(crate) struct ServerState {
     /// Shared authentication owner also serving bounded display-name reads.
     operator: Arc<OperatorComponent>,
-    /// Read-only journal coordinator with bounded storage, names and narrow lease dependencies.
-    journal_query: JournalQuery,
     print: Arc<PrintComponent>,
     photo: PhotoComponent,
     contest: ContestComponent,
@@ -61,6 +59,8 @@ pub(crate) struct LoadedServer {
     pub(crate) state: ServerState,
     /// Owns runtime resources and coordinates shutdown.
     pub(crate) runtime: ServerRuntime,
+    /// Migrated feature routes merged with legacy routes by `http::mount`.
+    pub(crate) routes: AccessRoutes,
 }
 
 impl ServerState {
@@ -164,16 +164,16 @@ impl ServerState {
             lifecycle: lifecycle.clone(),
         }));
         let operator = Arc::new(OperatorComponent::new(database.clone(), emitter.clone()));
-        let journal_query = JournalQuery::new(
+        let journal_feature = JournalFeature::load(
             journal.reader(),
             Arc::clone(&operator),
             device_control.live_lease_view(),
             utc_offset,
         );
+        let routes = AccessRoutes::new().merge(journal_feature.routes());
         let runtime = ServerRuntime::new(lifecycle.clone(), Arc::clone(&device_control), journal);
         let state = Self {
             operator,
-            journal_query,
             print: Arc::new(print),
             photo,
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
@@ -188,7 +188,11 @@ impl ServerState {
             journal: emitter,
             lifecycle,
         };
-        LoadedServer { state, runtime }
+        LoadedServer {
+            state,
+            runtime,
+            routes,
+        }
     }
 
     pub(crate) const fn journal(&self) -> &Journal {
@@ -215,10 +219,6 @@ impl ServerState {
     }
     pub(crate) const fn photo(&self) -> &PhotoComponent {
         &self.photo
-    }
-
-    pub(crate) const fn journal_query(&self) -> &JournalQuery {
-        &self.journal_query
     }
 
     pub(crate) fn operator(&self) -> &Arc<OperatorComponent> {

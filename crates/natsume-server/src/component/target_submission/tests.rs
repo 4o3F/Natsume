@@ -58,7 +58,7 @@ impl Fixture {
             })
             .await
             .unwrap_or_else(|error| panic!("fixtures: {error:?}"));
-        let crate::server_state::LoadedServer { state, runtime } =
+        let crate::server_state::LoadedServer { state, runtime, .. } =
             crate::server_state::tests::ServerStateFixture::new(
                 database.clone(),
                 root.path().join("documents"),

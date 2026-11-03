@@ -606,6 +606,7 @@ async fn background_tasks_expire_attempts_and_shutdown_stops_maintenance() {
     let crate::server_state::LoadedServer {
         state,
         runtime: _runtime,
+        ..
     } = must(
         crate::server_state::tests::ServerStateFixture::new(f.database.clone(), f.documents_path())
             .build(),
@@ -668,6 +669,7 @@ async fn background_shutdown_does_not_end_active_print_attempts() {
     let crate::server_state::LoadedServer {
         state,
         runtime: _runtime,
+        ..
     } = must(
         crate::server_state::tests::ServerStateFixture::new(f.database.clone(), f.documents_path())
             .build(),

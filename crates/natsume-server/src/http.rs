@@ -29,7 +29,7 @@ use self::error::ApiError;
 
 pub(crate) type AppState = Arc<ServerState>;
 
-type Routes<S = AppState> = Vec<(&'static str, MethodRouter<S>)>;
+pub(crate) type Routes<S = AppState> = Vec<(&'static str, MethodRouter<S>)>;
 
 pub(crate) struct AccessRoutes {
     /// Mounted without principal authentication.
@@ -62,8 +62,8 @@ impl AccessRoutes {
 }
 
 /// Assembles legacy routes during migration; removed in Step 11.
-pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
-    let routes = AccessRoutes::new().merge(legacy_routes(&state));
+pub(crate) fn router(state: AppState, routes: AccessRoutes, web_root: &Path) -> Router {
+    let routes = legacy_routes(&state).merge(routes);
     let application = mount(
         routes,
         state.operator().clone(),
@@ -153,7 +153,6 @@ fn legacy_routes(state: &AppState) -> AccessRoutes {
     .collect();
     let operator = [
         handler::contest::operator_routes(),
-        handler::journal::operator_routes(),
         handler::device::operator_routes(),
         handler::enrollment::operator_routes(),
         handler::import::operator_routes(),

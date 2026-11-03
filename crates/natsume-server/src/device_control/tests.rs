@@ -567,6 +567,7 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
     let crate::server_state::LoadedServer {
         state: composition,
         runtime,
+        ..
     } = server_state::tests::ServerStateFixture::new(
         fixture.database.clone(),
         fixture.path.with_extension("print-documents"),
@@ -1217,6 +1218,7 @@ async fn cancelled_http_mutation_commits_and_publishes_the_complete_target()
     .await?;
     let application = crate::http::router(
         Arc::clone(&fixture.state),
+        crate::http::AccessRoutes::new(),
         std::path::Path::new("/nonexistent/completion-web"),
     );
     let login = application.clone().oneshot(Request::builder().method("POST").uri("/api/v2/session").header(header::CONTENT_TYPE, "application/json").body(Body::from(serde_json::json!({"login_name":"completion-admin", "password":"completion-password1!"}).to_string()))?).await?;
@@ -2741,6 +2743,7 @@ async fn connect(fixture: &Fixture) -> (TestSocket, tokio::task::JoinHandle<()>)
         .unwrap_or_else(|error| panic!("test listener address failed: {error}"));
     let application = crate::http::router(
         Arc::clone(&fixture.state),
+        crate::http::AccessRoutes::new(),
         std::path::Path::new("/natsume-wss-test-unused-web-root"),
     );
     let server = tokio::spawn(async move {
@@ -3441,7 +3444,7 @@ impl Fixture {
             Some(journal) => fixture.journal(journal),
             None => fixture,
         };
-        let crate::server_state::LoadedServer { state, runtime } = fixture
+        let crate::server_state::LoadedServer { state, runtime, .. } = fixture
             .build()
             .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}"));
         let state = Arc::new(state);

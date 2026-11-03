@@ -74,8 +74,12 @@ impl Fixture {
             })
             .await
             .map_err(crate::test_error::TestError::from)?;
-        let crate::server_state::LoadedServer { state, runtime } = server_state(&database)?;
-        let router = router(std::sync::Arc::new(state), unused_web_root());
+        let crate::server_state::LoadedServer {
+            state,
+            runtime,
+            routes,
+        } = server_state(&database)?;
+        let router = router(std::sync::Arc::new(state), routes, unused_web_root());
         let login = drive(&router, login_request(LOGIN_NAME, PASSWORD)?).await?;
         let cookie = header_text(&login.headers, &header::SET_COOKIE)?
             .split(';')

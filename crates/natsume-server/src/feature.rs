@@ -1,5 +1,7 @@
 //! Server composition layer; future `<Name>Feature` types belong in `feature/` submodules.
 
+pub(crate) mod journal;
+
 use std::sync::Arc;
 
 use snafu::Snafu;

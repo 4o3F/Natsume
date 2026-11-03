@@ -307,8 +307,8 @@ async fn timeline_regression_anchor_never_reads_past_the_captured_high_water()
         )])
         .await?;
     let baseline = fixture
-        .state
-        .journal_query()
+        .feature
+        .query()
         .timeline_baseline(fixture.device_id, 25, Some(ceiling))
         .await?;
     assert!(baseline.first_id.is_none_or(|id| id <= ceiling));

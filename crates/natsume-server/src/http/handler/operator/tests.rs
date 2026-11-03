@@ -30,10 +30,13 @@ impl Fixture {
     async fn new() -> Result<Self, crate::test_error::TestError> {
         let database = TestDatabase::new().await?;
         let admin_id = seed_operator(&database.database, "admin", PASSWORD).await?;
-        let crate::server_state::LoadedServer { state, runtime } =
-            support::server_state(&database)?;
+        let crate::server_state::LoadedServer {
+            state,
+            runtime,
+            routes,
+        } = support::server_state(&database)?;
         let state = std::sync::Arc::new(state);
-        let app = http::router(state.clone(), support::unused_web_root());
+        let app = http::router(state.clone(), routes, support::unused_web_root());
         let admin_cookie = login(&app, "admin", PASSWORD).await?;
         Ok(Self {
             _runtime: runtime,
@@ -157,7 +160,11 @@ async fn namespace_cache_policy_covers_outer_rejections_and_unmounted_paths() ->
     let database = TestDatabase::new().await?;
     let loaded = support::server_state(&database)?;
     let state = loaded.state;
-    let app = http::router(std::sync::Arc::new(state), support::unused_web_root());
+    let app = http::router(
+        std::sync::Arc::new(state),
+        loaded.routes,
+        support::unused_web_root(),
+    );
     for (method, path, status) in [
         (
             Method::POST,

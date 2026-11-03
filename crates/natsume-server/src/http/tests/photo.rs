@@ -312,13 +312,16 @@ impl Fixture {
             })
             .await
             .map_err(crate::db::TransactionError::into_error)?;
-        let crate::server_state::LoadedServer { state, runtime } =
-            server_state::tests::ServerStateFixture::new(
-                database.database.clone(),
-                database.documents_path(),
-            )
-            .logos(logos.path().to_path_buf())
-            .build()?;
+        let crate::server_state::LoadedServer {
+            state,
+            runtime,
+            routes,
+        } = server_state::tests::ServerStateFixture::new(
+            database.database.clone(),
+            database.documents_path(),
+        )
+        .logos(logos.path().to_path_buf())
+        .build()?;
         let state = Arc::new(state);
         let source = state
             .photo()
@@ -344,7 +347,7 @@ impl Fixture {
                 client_version: "2.11.0".into(),
             })
             .await?;
-        let app = router(state.clone(), unused_web_root());
+        let app = router(state.clone(), routes, unused_web_root());
         Ok(Self {
             runtime,
             database,
@@ -451,16 +454,19 @@ async fn immutable_roster_and_logo_survive_restart() -> TestResult {
         })
         .await
         .map_err(crate::db::TransactionError::into_error)?;
-    let crate::server_state::LoadedServer { state, runtime } =
-        server_state::tests::ServerStateFixture::new(
-            f.database.database.clone(),
-            f.database.documents_path(),
-        )
-        .logos(f.logos.path().to_path_buf())
-        .build()?;
+    let crate::server_state::LoadedServer {
+        state,
+        runtime,
+        routes,
+    } = server_state::tests::ServerStateFixture::new(
+        f.database.database.clone(),
+        f.database.documents_path(),
+    )
+    .logos(f.logos.path().to_path_buf())
+    .build()?;
     f.state = Arc::new(state);
     f.runtime = runtime;
-    f.app = router(f.state.clone(), unused_web_root());
+    f.app = router(f.state.clone(), routes, unused_web_root());
     assert_eq!(
         f.send(Method::POST, "client/initialization", Value::Null)
             .await?
@@ -780,16 +786,19 @@ async fn failed_storage_does_not_publish_a_snapshot() -> TestResult {
     std::fs::remove_file(root)?;
     // The store pins the validated directory handle. Restore it through the
     // normal startup boundary, never by following a replacement pathname.
-    let crate::server_state::LoadedServer { state, runtime } =
-        server_state::tests::ServerStateFixture::new(
-            f.database.database.clone(),
-            f.database.documents_path(),
-        )
-        .logos(f.logos.path().to_path_buf())
-        .build()?;
+    let crate::server_state::LoadedServer {
+        state,
+        runtime,
+        routes,
+    } = server_state::tests::ServerStateFixture::new(
+        f.database.database.clone(),
+        f.database.documents_path(),
+    )
+    .logos(f.logos.path().to_path_buf())
+    .build()?;
     f.state = Arc::new(state);
     f.runtime = runtime;
-    f.app = router(f.state.clone(), unused_web_root());
+    f.app = router(f.state.clone(), routes, unused_web_root());
     assert_eq!(
         f.send(Method::POST, "client/initialization", Value::Null)
             .await?

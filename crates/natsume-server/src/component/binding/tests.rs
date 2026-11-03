@@ -449,7 +449,7 @@ impl Fixture {
         let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
         let component =
             BindingComponent::new(database.clone(), Arc::clone(&vault), journal.emitter());
-        let crate::server_state::LoadedServer { state, runtime } =
+        let crate::server_state::LoadedServer { state, runtime, .. } =
             crate::server_state::tests::ServerStateFixture::new(
                 database.clone(),
                 root.join("documents"),
