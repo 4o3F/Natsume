@@ -155,10 +155,13 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
     let crate::server_state::LoadedServer {
         state,
         runtime: _runtime,
-    } = checked(crate::server_state::tests::for_test(
-        database.clone(),
-        root.path().join("documents"),
-    ));
+    } = checked(
+        crate::server_state::tests::ServerStateFixture::new(
+            database.clone(),
+            root.path().join("documents"),
+        )
+        .build(),
+    );
     let contest = ContestComponent::new(database, vault, root.path().join("absent-logos"));
     assert!(matches!(
         contest.export_domjudge().await,

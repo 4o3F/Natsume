@@ -59,12 +59,13 @@ impl Fixture {
         );
         ready(&journal).await?;
         let crate::server_state::LoadedServer { state, runtime } =
-            crate::server_state::tests::for_test_with_journal(
+            crate::server_state::tests::ServerStateFixture::new(
                 database,
                 directory.path().join("documents"),
-                directory.path().join("logos"),
-                journal,
-            )?;
+            )
+            .logos(directory.path().join("logos"))
+            .journal(journal)
+            .build()?;
         let state = Arc::new(state);
         state
             .operator()

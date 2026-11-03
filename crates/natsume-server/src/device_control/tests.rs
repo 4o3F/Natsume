@@ -567,10 +567,11 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
     let crate::server_state::LoadedServer {
         state: composition,
         runtime,
-    } = server_state::tests::for_test(
+    } = server_state::tests::ServerStateFixture::new(
         fixture.database.clone(),
         fixture.path.with_extension("print-documents"),
     )
+    .build()
     .unwrap_or_else(|error| panic!("independent composition failed: {error}"));
     let composition = Arc::new(composition);
     let composition_lifetime = Arc::downgrade(&composition);
@@ -3432,19 +3433,17 @@ impl Fixture {
             })
             .await
             .unwrap_or_else(|error| panic!("Runtime Config fixture failed: {error:?}"));
-        let crate::server_state::LoadedServer { state, runtime } = match journal {
-            None => server_state::tests::for_test(
-                database.clone(),
-                path.with_extension("print-documents"),
-            ),
-            Some(journal) => server_state::tests::for_test_with_journal(
-                database.clone(),
-                path.with_extension("print-documents"),
-                PathBuf::from("/nonexistent/natsume-test-logos"),
-                journal,
-            ),
-        }
-        .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}"));
+        let fixture = server_state::tests::ServerStateFixture::new(
+            database.clone(),
+            path.with_extension("print-documents"),
+        );
+        let fixture = match journal {
+            Some(journal) => fixture.journal(journal),
+            None => fixture,
+        };
+        let crate::server_state::LoadedServer { state, runtime } = fixture
+            .build()
+            .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}"));
         let state = Arc::new(state);
         Self {
             path,

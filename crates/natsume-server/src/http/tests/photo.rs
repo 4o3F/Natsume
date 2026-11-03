@@ -313,11 +313,12 @@ impl Fixture {
             .await
             .map_err(crate::db::TransactionError::into_error)?;
         let crate::server_state::LoadedServer { state, runtime } =
-            server_state::tests::for_test_with_logos(
+            server_state::tests::ServerStateFixture::new(
                 database.database.clone(),
                 database.documents_path(),
-                logos.path().to_path_buf(),
-            )?;
+            )
+            .logos(logos.path().to_path_buf())
+            .build()?;
         let state = Arc::new(state);
         let source = state
             .photo()
@@ -451,11 +452,12 @@ async fn immutable_roster_and_logo_survive_restart() -> TestResult {
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     let crate::server_state::LoadedServer { state, runtime } =
-        server_state::tests::for_test_with_logos(
+        server_state::tests::ServerStateFixture::new(
             f.database.database.clone(),
             f.database.documents_path(),
-            f.logos.path().to_path_buf(),
-        )?;
+        )
+        .logos(f.logos.path().to_path_buf())
+        .build()?;
     f.state = Arc::new(state);
     f.runtime = runtime;
     f.app = router(f.state.clone(), unused_web_root());
@@ -779,11 +781,12 @@ async fn failed_storage_does_not_publish_a_snapshot() -> TestResult {
     // The store pins the validated directory handle. Restore it through the
     // normal startup boundary, never by following a replacement pathname.
     let crate::server_state::LoadedServer { state, runtime } =
-        server_state::tests::for_test_with_logos(
+        server_state::tests::ServerStateFixture::new(
             f.database.database.clone(),
             f.database.documents_path(),
-            f.logos.path().to_path_buf(),
-        )?;
+        )
+        .logos(f.logos.path().to_path_buf())
+        .build()?;
     f.state = Arc::new(state);
     f.runtime = runtime;
     f.app = router(f.state.clone(), unused_web_root());

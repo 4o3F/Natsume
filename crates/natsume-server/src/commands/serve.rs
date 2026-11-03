@@ -38,7 +38,7 @@ async fn load_state(
     tracing::info!("database ready");
     let state = ServerState::load(database.clone(), config, utc_offset)
         .await
-        .map_err(CommandError::from)?;
+        .context(super::error::StartupSnafu)?;
     configure_runtime(&database, config.domjudge_origin()).await?;
     Ok(state)
 }

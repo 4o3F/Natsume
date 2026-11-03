@@ -13,6 +13,7 @@ mod deployment;
 pub(crate) mod device_control;
 #[path = "../diesel/business/schema.rs"]
 pub(crate) mod diesel_schema;
+pub(crate) mod feature;
 pub(crate) mod http;
 pub(crate) mod journal;
 pub(crate) mod journal_query;

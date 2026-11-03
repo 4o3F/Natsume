@@ -55,12 +55,13 @@ impl Fixture {
         let viewer_id = seed_operator(&database.database, VIEWER, PASSWORD).await?;
         let (journal, mut events) = JournalComponent::channel(crate::journal::CAPACITY);
         let crate::server_state::LoadedServer { state, runtime } =
-            crate::server_state::tests::for_test_with_journal(
+            crate::server_state::tests::ServerStateFixture::new(
                 database.database.clone(),
                 database.documents_path(),
-                database.path.with_extension("logos"),
-                journal,
-            )?;
+            )
+            .logos(database.path.with_extension("logos"))
+            .journal(journal)
+            .build()?;
         let state = Arc::new(state);
         state
             .operator()

@@ -450,8 +450,12 @@ impl Fixture {
         let component =
             BindingComponent::new(database.clone(), Arc::clone(&vault), journal.emitter());
         let crate::server_state::LoadedServer { state, runtime } =
-            crate::server_state::tests::for_test(database.clone(), root.join("documents"))
-                .unwrap_or_else(|error| panic!("state: {error}"));
+            crate::server_state::tests::ServerStateFixture::new(
+                database.clone(),
+                root.join("documents"),
+            )
+            .build()
+            .unwrap_or_else(|error| panic!("state: {error}"));
         let control = Arc::clone(state.device_control());
         Self {
             _runtime: runtime,

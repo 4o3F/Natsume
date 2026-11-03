@@ -122,24 +122,47 @@ pub(crate) struct DeviceControl {
     journal: crate::journal::Journal,
 }
 
+pub(crate) struct DeviceControlDependencies {
+    /// Shared provisioning policy.
+    pub(crate) provisioning: Arc<ProvisioningComponent>,
+    /// Shared durable device authority and enrollment operations.
+    pub(crate) device: Arc<DeviceComponent>,
+    /// Gateway materialization dependency.
+    pub(crate) gateway: GatewayComponent,
+    /// Shared committed binding operations.
+    pub(crate) binding: Arc<BindingComponent>,
+    /// Runtime configuration dependency.
+    pub(crate) runtime: RuntimeConfigComponent,
+    /// Shared session target operations.
+    pub(crate) session: Arc<SessionControlComponent>,
+    /// Shared home target operations.
+    pub(crate) home: Arc<HomeComponent>,
+    /// Shared power target operations.
+    pub(crate) power: Arc<PowerControlComponent>,
+    /// Emit handle for device events.
+    pub(crate) journal: crate::journal::Journal,
+    /// Shared admission tracking and shutdown notification.
+    pub(crate) lifecycle: crate::lifecycle::ServerLifecycle,
+}
+
 impl DeviceControl {
     pub(crate) fn live_lease_view(&self) -> LiveLeaseView {
         self.registry.live_view()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        provisioning: Arc<ProvisioningComponent>,
-        device: Arc<DeviceComponent>,
-        gateway: GatewayComponent,
-        binding: Arc<BindingComponent>,
-        runtime: RuntimeConfigComponent,
-        session: Arc<SessionControlComponent>,
-        home: Arc<HomeComponent>,
-        power: Arc<PowerControlComponent>,
-        journal: crate::journal::Journal,
-        lifecycle: crate::lifecycle::ServerLifecycle,
-    ) -> Self {
+    pub(crate) fn new(dependencies: DeviceControlDependencies) -> Self {
+        let DeviceControlDependencies {
+            provisioning,
+            device,
+            gateway,
+            binding,
+            runtime,
+            session,
+            home,
+            power,
+            journal,
+            lifecycle,
+        } = dependencies;
         Self {
             provisioning,
             device,

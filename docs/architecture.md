@@ -777,7 +777,7 @@ pub(crate) struct ServerRuntime {
 
 `DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件，以及`Journal` emit句柄和`ServerLifecycle`，并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。它只负责跨组件编排或需要Registry、fence、actor等运行时状态的用例，不为单组件mutation增加一对一转发。HTTP也使用的Provisioning、Device、Binding、Session、Home共享同一`Arc`实例；Gateway、Runtime Config和Power目前只有协调器消费，构造时将Power句柄交给它，`ServerState`不保留无消费者的副本或accessor。分层、调用路径和事件归属统一遵循§10.6。
 
-生产构造入口统一为`ServerState::load(database, &config, utc_offset)`，返回 `LoadedServer`：加载一次`VaultSession`， 调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。 完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
+生产构造入口统一为`ServerState::load(database, &config, utc_offset)`，返回 `LoadedServer`：加载一次`VaultSession`，调用组件自己的concrete constructor，构造 `ServerLifecycle` 并启动唯一的 `JournalComponent`。组合层 `feature::Infra` 持有 `Database`、`Arc<VaultSession>`、该 Journal writer 的 emit 句柄和 `ServerLifecycle`；`from_parts(infra, journal, print, photo, gateway, logos, utc_offset)` 从中取得共享基础设施，通过 `DeviceControlDependencies` 把具体依赖注入 `DeviceControl::new`，再把 Journal writer 所有者交给 `ServerRuntime`。启动错误由 `feature::StartupError` 保留 source，统一通过 `CommandFailure::Startup` 包装一次，顶层错误文案保持不变。完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
 
 设备应用用例集中在`device_control/application.rs`的`impl DeviceControl`分片，准入和关闭原语位于`device_control.rs`。当前共有十二个有实际消费者的用例／运行时入口，不计构造函数和私有实现方法：
 
@@ -861,9 +861,11 @@ Database + ServerConfig + startup UtcOffset
       → VaultSession
       → GatewayComponent { Origin CA }
       → PrintComponent { document storage }
+      → PhotoComponent { initialization storage }
+      → ServerLifecycle { admission + TaskTracker + shutdown signal }
       → JournalComponent::start { writer + ServerStarted }
+      → Infra { Database + Arc<VaultSession> + Journal emit + lifecycle }
       → ServerState::from_parts
-          → ServerLifecycle { admission + TaskTracker + shutdown signal }
           → concrete business components { Database / Vault / Journal }
           → Arc<DeviceControl> { concrete dependencies, DeviceRegistry, Journal, lifecycle }
           → JournalQuery { journal reader, Arc<OperatorComponent>, LiveLeaseView, startup UtcOffset }

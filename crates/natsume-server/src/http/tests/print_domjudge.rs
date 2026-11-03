@@ -310,7 +310,8 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     let crate::server_state::LoadedServer {
         state: restarted_state,
         runtime: _restarted_state_runtime,
-    } = crate::server_state::tests::for_test(reopened, database.documents_path())?;
+    } = crate::server_state::tests::ServerStateFixture::new(reopened, database.documents_path())
+        .build()?;
     let restarted_state = Arc::new(restarted_state);
     let restarted_application = router(restarted_state, unused_web_root());
     let (_restarted_server, origin) = listen(restarted_application, &identity).await?;

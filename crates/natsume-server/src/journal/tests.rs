@@ -177,20 +177,22 @@ async fn unavailable_journal_does_not_change_http_statuses_or_business_writes()
     let crate::server_state::LoadedServer {
         state: degraded,
         runtime: degraded_runtime,
-    } = crate::server_state::tests::for_test_with_journal(
+    } = crate::server_state::tests::ServerStateFixture::new(
         database.clone(),
         root.path().join("documents"),
-        root.path().join("logos"),
-        component,
-    )?;
+    )
+    .logos(root.path().join("logos"))
+    .journal(component)
+    .build()?;
     let degraded = Arc::new(degraded);
     let crate::server_state::LoadedServer {
         state: normal,
         runtime: _normal_runtime,
-    } = crate::server_state::tests::for_test(
+    } = crate::server_state::tests::ServerStateFixture::new(
         database.clone(),
         root.path().join("normal-documents"),
-    )?;
+    )
+    .build()?;
     let normal = Arc::new(normal);
     let first = crate::http::router(Arc::clone(&degraded), root.path());
     let second = crate::http::router(normal, root.path());

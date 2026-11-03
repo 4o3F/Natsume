@@ -400,7 +400,8 @@ pub(crate) fn unused_web_root() -> &'static Path {
 pub(super) fn server_state(
     fixture: &TestDatabase,
 ) -> Result<server_state::LoadedServer, SupportFailure> {
-    server_state::tests::for_test(fixture.database.clone(), fixture.documents_path())
+    server_state::tests::ServerStateFixture::new(fixture.database.clone(), fixture.documents_path())
+        .build()
         .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
@@ -1220,11 +1221,12 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     let crate::server_state::LoadedServer {
         state,
         runtime: _state_runtime,
-    } = server_state::tests::for_test_with_logos(
+    } = server_state::tests::ServerStateFixture::new(
         fixture.database.clone(),
         fixture.documents_path(),
-        logos.path().to_path_buf(),
-    )?;
+    )
+    .logos(logos.path().to_path_buf())
+    .build()?;
     let state = Arc::new(state);
     let application = router(state.clone(), unused_web_root());
     let xlsx = include_bytes!("../component/import/examples/roster.xlsx");

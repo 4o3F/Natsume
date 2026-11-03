@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use snafu::Snafu;
+use std::{path::PathBuf, sync::Arc};
 
 use crate::{
     component::{
@@ -21,12 +19,13 @@ use crate::{
     },
     config::ServerConfig,
     db::Database,
-    device_control::DeviceControl,
+    device_control::{DeviceControl, DeviceControlDependencies},
+    feature::{Infra, StartupError},
     journal::{Journal, JournalComponent},
     journal_query::JournalQuery,
     lifecycle::ServerLifecycle,
     server_runtime::ServerRuntime,
-    vault::{self, VaultSession},
+    vault,
 };
 
 /// Process-wide business composition shared by every transport.
@@ -74,15 +73,15 @@ impl ServerState {
         database: Database,
         config: &ServerConfig,
         utc_offset: time::UtcOffset,
-    ) -> Result<LoadedServer, ServerStateError> {
+    ) -> Result<LoadedServer, StartupError> {
         let vault = vault::load(config.vault_master_key_path())
-            .map_err(|source| ServerStateError::Vault { source })?;
+            .map_err(|source| StartupError::Vault { source })?;
         let ca_certificate_path = config
             .origin_ca_certificate_path()
-            .map_err(|source| ServerStateError::Configuration { source })?;
+            .map_err(|source| StartupError::Configuration { source })?;
         let ca_private_key_path = config
             .origin_ca_private_key_path()
-            .map_err(|source| ServerStateError::Configuration { source })?;
+            .map_err(|source| StartupError::Configuration { source })?;
         let gateway = GatewayComponent::load(
             database.clone(),
             &ca_certificate_path,
@@ -97,70 +96,80 @@ impl ServerState {
             config.print_documents_path().to_path_buf(),
         )
         .await
-        .map_err(|source| ServerStateError::PrintStorage { source })?;
+        .map_err(|source| StartupError::PrintStorage { source })?;
         let photo_database = database.clone();
         let photo_path = config.photo_initializations_path().to_path_buf();
         let photo =
             tokio::task::spawn_blocking(move || PhotoComponent::new(photo_database, &photo_path))
                 .await
-                .map_err(|source| ServerStateError::PhotoStorage {
+                .map_err(|source| StartupError::PhotoStorage {
                     source: crate::component::photo::InitializationError::Worker { source },
                 })?
-                .map_err(|source| ServerStateError::PhotoStorage { source })?;
+                .map_err(|source| StartupError::PhotoStorage { source })?;
+        let lifecycle = ServerLifecycle::new();
         let journal =
             JournalComponent::start(config.journal_path().to_owned(), config.journal().clone());
-        Ok(Self::from_parts(
+        let infra = Infra {
             database,
-            print,
-            vault,
-            gateway,
-            (config.organization_logos_path().to_path_buf(), photo),
+            vault: Arc::new(vault),
+            journal: journal.emitter(),
+            lifecycle,
+        };
+        Ok(Self::from_parts(
+            infra,
             journal,
+            print,
+            photo,
+            gateway,
+            config.organization_logos_path().to_path_buf(),
             utc_offset,
         ))
     }
 
     fn from_parts(
-        database: Database,
-        print: PrintComponent,
-        vault: VaultSession,
-        gateway: GatewayComponent,
-        (logos, photo): (std::path::PathBuf, PhotoComponent),
+        infra: Infra,
         journal: JournalComponent,
+        print: PrintComponent,
+        photo: PhotoComponent,
+        gateway: GatewayComponent,
+        logos: PathBuf,
         utc_offset: time::UtcOffset,
     ) -> LoadedServer {
-        let lifecycle = ServerLifecycle::new();
-        let vault = Arc::new(vault);
+        let Infra {
+            database,
+            vault,
+            journal: emitter,
+            lifecycle,
+        } = infra;
         let provisioning = Arc::new(ProvisioningComponent::new());
-        let device = Arc::new(DeviceComponent::new(database.clone(), journal.emitter()));
+        let device = Arc::new(DeviceComponent::new(database.clone(), emitter.clone()));
         let binding = Arc::new(BindingComponent::new(
             database.clone(),
             Arc::clone(&vault),
-            journal.emitter(),
+            emitter.clone(),
         ));
         let session = Arc::new(SessionControlComponent::new(database.clone()));
         let home = Arc::new(HomeComponent::new(database.clone()));
         let power = Arc::new(PowerControlComponent::new(database.clone()));
-        let device_control = Arc::new(DeviceControl::new(
-            Arc::clone(&provisioning),
-            Arc::clone(&device),
+        let device_control = Arc::new(DeviceControl::new(DeviceControlDependencies {
+            provisioning: Arc::clone(&provisioning),
+            device: Arc::clone(&device),
             gateway,
-            Arc::clone(&binding),
-            RuntimeConfigComponent::new(database.clone()),
-            Arc::clone(&session),
-            Arc::clone(&home),
-            Arc::clone(&power),
-            journal.emitter(),
-            lifecycle.clone(),
-        ));
-        let operator = Arc::new(OperatorComponent::new(database.clone(), journal.emitter()));
+            binding: Arc::clone(&binding),
+            runtime: RuntimeConfigComponent::new(database.clone()),
+            session: Arc::clone(&session),
+            home: Arc::clone(&home),
+            power: Arc::clone(&power),
+            journal: emitter.clone(),
+            lifecycle: lifecycle.clone(),
+        }));
+        let operator = Arc::new(OperatorComponent::new(database.clone(), emitter.clone()));
         let journal_query = JournalQuery::new(
             journal.reader(),
             Arc::clone(&operator),
             device_control.live_lease_view(),
             utc_offset,
         );
-        let emitter = journal.emitter();
         let runtime = ServerRuntime::new(lifecycle.clone(), Arc::clone(&device_control), journal);
         let state = Self {
             operator,
@@ -249,103 +258,106 @@ impl ServerState {
     }
 }
 
-fn map_gateway_load_error(error: GatewayLoadError) -> ServerStateError {
+fn map_gateway_load_error(error: GatewayLoadError) -> StartupError {
     match error {
-        GatewayLoadError::TrustRootMismatch => ServerStateError::OriginCaTrustRootMismatch,
-        GatewayLoadError::OriginCa { .. } => ServerStateError::OriginCa { source: error },
+        GatewayLoadError::TrustRootMismatch => StartupError::OriginCaTrustRootMismatch,
+        GatewayLoadError::OriginCa { .. } => StartupError::OriginCa { source: error },
     }
-}
-
-#[derive(Debug, Snafu)]
-pub(crate) enum ServerStateError {
-    #[snafu(display("Photo storage initialization failed"))]
-    PhotoStorage {
-        source: crate::component::photo::InitializationError,
-    },
-    #[snafu(display("server configuration failed"))]
-    Configuration { source: crate::config::ConfigError },
-    #[snafu(display("vault startup failed"))]
-    Vault { source: crate::vault::VaultError },
-    #[snafu(display("print document storage initialization failed"))]
-    PrintStorage {
-        source: crate::component::print::PrintError,
-    },
-    #[snafu(display("Origin CA startup failed"))]
-    OriginCa { source: GatewayLoadError },
-    #[snafu(display("Origin CA issuing certificate and packaged trust root differ"))]
-    OriginCaTrustRootMismatch,
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt as _};
+    use std::{fs, os::unix::fs::PermissionsExt as _, path::PathBuf, sync::Arc};
 
     use uuid::Uuid;
 
-    use super::{LoadedServer, ServerState, ServerStateError, map_gateway_load_error};
-    use crate::{component::gateway::GatewayComponent, db::Database, vault};
+    use super::{LoadedServer, ServerState, map_gateway_load_error};
+    use crate::{
+        component::{gateway::GatewayComponent, photo::PhotoComponent, print::PrintComponent},
+        db::Database,
+        feature::{Infra, StartupError},
+        journal::{CAPACITY, JournalComponent},
+        lifecycle::ServerLifecycle,
+        vault,
+    };
 
-    pub(crate) fn for_test(
+    pub(crate) struct ServerStateFixture {
+        /// Shared business database used by the test components.
         database: Database,
-        documents: std::path::PathBuf,
-    ) -> Result<LoadedServer, ServerStateError> {
-        for_test_with_logos(
-            database,
-            documents,
-            std::path::PathBuf::from("/nonexistent/natsume-test-logos"),
-        )
+        /// Root directory for test print documents.
+        documents: PathBuf,
+        /// Root directory for test organization logos.
+        logos: PathBuf,
+        /// Optional journal owner supplied by the test.
+        journal: Option<JournalComponent>,
     }
 
-    pub(crate) fn for_test_with_logos(
-        database: Database,
-        documents: std::path::PathBuf,
-        logos: std::path::PathBuf,
-    ) -> Result<LoadedServer, ServerStateError> {
-        for_test_with_journal(
-            database,
-            documents,
-            logos,
-            crate::journal::JournalComponent::channel(crate::journal::CAPACITY).0,
-        )
-    }
-
-    pub(crate) fn for_test_with_journal(
-        database: Database,
-        documents: std::path::PathBuf,
-        logos: std::path::PathBuf,
-        journal: crate::journal::JournalComponent,
-    ) -> Result<LoadedServer, ServerStateError> {
-        let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
-        fs::create_dir(&root).map_err(|source| ServerStateError::Vault {
-            source: vault::VaultError::Read { source },
-        })?;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|source| {
-            ServerStateError::Vault {
-                source: vault::VaultError::Read { source },
+    impl ServerStateFixture {
+        pub(crate) fn new(database: Database, documents: PathBuf) -> Self {
+            Self {
+                database,
+                documents,
+                logos: PathBuf::from("/nonexistent/natsume-test-logos"),
+                journal: None,
             }
-        })?;
-        let key_path = root.join("master.key");
-        vault::ensure_master_key(&key_path).map_err(|source| ServerStateError::Vault { source })?;
-        let vault = vault::load(&key_path).map_err(|source| ServerStateError::Vault { source })?;
-        fs::remove_dir_all(root).map_err(|source| ServerStateError::Vault {
-            source: vault::VaultError::Read { source },
-        })?;
-        let gateway =
-            GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
-        let photo_directory = documents.with_extension("photo-initializations");
-        let print = crate::component::print::PrintComponent::for_test(database.clone(), documents)
-            .map_err(|source| ServerStateError::PrintStorage { source })?;
-        let photo =
-            crate::component::photo::PhotoComponent::new(database.clone(), &photo_directory)
-                .map_err(|source| ServerStateError::PhotoStorage { source })?;
-        Ok(ServerState::from_parts(
-            database,
-            print,
-            vault,
-            gateway,
-            (logos, photo),
-            journal,
-            time::UtcOffset::UTC,
-        ))
+        }
+
+        pub(crate) fn logos(mut self, logos: PathBuf) -> Self {
+            self.logos = logos;
+            self
+        }
+
+        pub(crate) fn journal(mut self, journal: JournalComponent) -> Self {
+            self.journal = Some(journal);
+            self
+        }
+
+        pub(crate) fn build(self) -> Result<LoadedServer, StartupError> {
+            let Self {
+                database,
+                documents,
+                logos,
+                journal,
+            } = self;
+            let journal = journal.unwrap_or_else(|| JournalComponent::channel(CAPACITY).0);
+            let root =
+                std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
+            fs::create_dir(&root).map_err(|source| StartupError::Vault {
+                source: vault::VaultError::Read { source },
+            })?;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|source| {
+                StartupError::Vault {
+                    source: vault::VaultError::Read { source },
+                }
+            })?;
+            let key_path = root.join("master.key");
+            vault::ensure_master_key(&key_path).map_err(|source| StartupError::Vault { source })?;
+            let vault = vault::load(&key_path).map_err(|source| StartupError::Vault { source })?;
+            fs::remove_dir_all(root).map_err(|source| StartupError::Vault {
+                source: vault::VaultError::Read { source },
+            })?;
+            let gateway =
+                GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
+            let photo_directory = documents.with_extension("photo-initializations");
+            let print = PrintComponent::for_test(database.clone(), documents)
+                .map_err(|source| StartupError::PrintStorage { source })?;
+            let photo = PhotoComponent::new(database.clone(), &photo_directory)
+                .map_err(|source| StartupError::PhotoStorage { source })?;
+            let infra = Infra {
+                database,
+                vault: Arc::new(vault),
+                journal: journal.emitter(),
+                lifecycle: ServerLifecycle::new(),
+            };
+            Ok(ServerState::from_parts(
+                infra,
+                journal,
+                print,
+                photo,
+                gateway,
+                logos,
+                time::UtcOffset::UTC,
+            ))
+        }
     }
 }
