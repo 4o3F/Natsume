@@ -8,6 +8,7 @@
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
   "prConcurrentLimit": 30,
+  "addLabels": ["bot:renovate"],
   "automergeType": "pr",
   "platformAutomerge": true,
   "automergeStrategy": "squash"
