@@ -1,5 +1,4 @@
 use natsume_photo_protocol::{PhotoConfirmation, PhotoPairRequest};
-use std::sync::Arc;
 
 use axum::{
     body::Body,
@@ -11,7 +10,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
-use super::{Captured, TestDatabase, drive, router, unused_web_root};
+use super::{Captured, TestDatabase, drive, unused_web_root};
 use crate::{
     component::photo::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState},
     db::PersistenceError,
@@ -19,8 +18,9 @@ use crate::{
         account_mappings, accounts, organizations, photo_initializations, photo_sources, seats,
         teams,
     },
-    http::AppState,
-    server_state,
+    feature,
+    feature::photo::PhotoFeature,
+    lifecycle::ServerLifecycle,
     test_error::TestError,
     tls::PeerAddress,
 };
@@ -44,7 +44,7 @@ async fn source_path_rejections_use_json_errors_without_changing_authority() -> 
         .split(';')
         .next()
         .ok_or(TestError::missing("administrator cookie"))?;
-    let before = serde_json::to_value(f.state.photo().list_sources().await?)?;
+    let before = serde_json::to_value(f.photo.component().list_sources().await?)?;
     for (action, body) in [
         ("pairing-code", json!({})),
         ("reset-enrollment", json!({})),
@@ -98,11 +98,11 @@ async fn source_path_rejections_use_json_errors_without_changing_authority() -> 
         );
     }
     assert_eq!(
-        serde_json::to_value(f.state.photo().list_sources().await?)?,
+        serde_json::to_value(f.photo.component().list_sources().await?)?,
         before
     );
-    f.state
-        .photo()
+    f.photo
+        .component()
         .check_token(&f.token, CredentialUse::Initialization)
         .await?;
     Ok(())
@@ -126,8 +126,8 @@ async fn malformed_resource_paths_use_json_errors_before_bearer_validation() -> 
             json!({"title":"Bad Request", "status":400, "code":"INVALID_REQUEST"})
         );
     }
-    f.state
-        .photo()
+    f.photo
+        .component()
         .check_token(&f.token, CredentialUse::Initialization)
         .await?;
     Ok(())
@@ -196,8 +196,8 @@ async fn invalid_persisted_source_state_cannot_be_silently_reenabled() -> TestRe
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     assert!(matches!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .set_state(f.source, SourceState::Enabled)
             .await,
         Err(EnrollmentError::Persistence { .. })
@@ -231,8 +231,8 @@ async fn invalid_persisted_confirmation_is_rejected_before_authentication() -> T
             .await
             .map_err(crate::db::TransactionError::into_error)?;
         assert!(matches!(
-            f.state
-                .photo()
+            f.photo
+                .component()
                 .check_token(&f.token, CredentialUse::Initialization)
                 .await,
             Err(EnrollmentError::Persistence { .. })
@@ -254,12 +254,14 @@ async fn invalid_persisted_confirmation_is_rejected_before_authentication() -> T
 struct Fixture {
     database: TestDatabase,
     logos: tempfile::TempDir,
-    state: AppState,
+    lifecycle: ServerLifecycle,
+    photo: PhotoFeature,
     app: axum::Router,
     source: natsume_photo_protocol::SourceId,
     token: String,
     enrollment: String,
     key: natsume_photo_protocol::SigningPublicKey,
+    runtime: crate::server_runtime::ServerRuntime,
 }
 
 impl Fixture {
@@ -311,18 +313,20 @@ impl Fixture {
             })
             .await
             .map_err(crate::db::TransactionError::into_error)?;
-        let state = Arc::new(server_state::tests::for_test_with_logos(
+        let features = feature::tests::ServerFixture::new(
             database.database.clone(),
             database.documents_path(),
-            logos.path().to_path_buf(),
-        )?);
-        let source = state
-            .photo()
+        )
+        .logos(logos.path().to_path_buf())
+        .build_with_features()?;
+        let photo = features.photo;
+        let source = photo
+            .component()
             .create_source("Photo desk".into())
             .await?
             .source_id;
-        let code = state
-            .photo()
+        let code = photo
+            .component()
             .issue_code(source.clone(), PendingEnrollment::Preserve)
             .await?;
         let key: natsume_photo_protocol::SigningPublicKey = hex::encode(
@@ -332,19 +336,21 @@ impl Fixture {
         )
         .parse()
         .unwrap_or_else(|error| panic!("generated non-weak public key: {error:?}"));
-        let issued = state
-            .photo()
+        let issued = photo
+            .component()
             .pair(PhotoPairRequest {
                 code: code.code,
                 signing_public_key: key.clone(),
                 client_version: "2.11.0".into(),
             })
             .await?;
-        let app = router(state.clone(), unused_web_root());
+        let app = features.loaded.http_router(unused_web_root());
         Ok(Self {
+            runtime: features.loaded.runtime,
             database,
             logos,
-            state,
+            lifecycle: features.loaded.lifecycle,
+            photo,
             app,
             source,
             token: issued.token.clone(),
@@ -446,12 +452,16 @@ async fn immutable_roster_and_logo_survive_restart() -> TestResult {
         })
         .await
         .map_err(crate::db::TransactionError::into_error)?;
-    f.state = Arc::new(server_state::tests::for_test_with_logos(
+    let features = feature::tests::ServerFixture::new(
         f.database.database.clone(),
         f.database.documents_path(),
-        f.logos.path().to_path_buf(),
-    )?);
-    f.app = router(f.state.clone(), unused_web_root());
+    )
+    .logos(f.logos.path().to_path_buf())
+    .build_with_features()?;
+    f.app = features.loaded.http_router(unused_web_root());
+    f.photo = features.photo;
+    f.runtime = features.loaded.runtime;
+    f.lifecycle = features.loaded.lifecycle;
     assert_eq!(
         f.send(Method::POST, "client/initialization", Value::Null)
             .await?
@@ -547,15 +557,15 @@ async fn completion_closes_downloads_and_only_replays_the_same_receipt() -> Test
 async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult {
     let f = Fixture::new().await?;
     assert!(matches!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .issue_code(f.source.clone(), PendingEnrollment::Preserve)
             .await,
         Err(EnrollmentError::Conflict)
     ));
     let replacement = f
-        .state
-        .photo()
+        .photo
+        .component()
         .issue_code(f.source.clone(), PendingEnrollment::Replace)
         .await?;
     assert_eq!(
@@ -565,12 +575,12 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
         StatusCode::UNAUTHORIZED
     );
     let (a, b) = tokio::join!(
-        f.state.photo().pair(PhotoPairRequest {
+        f.photo.component().pair(PhotoPairRequest {
             code: replacement.code.clone(),
             signing_public_key: f.key.clone(),
             client_version: "2.11.0".into()
         }),
-        f.state.photo().pair(PhotoPairRequest {
+        f.photo.component().pair(PhotoPairRequest {
             code: replacement.code,
             signing_public_key: f.key.clone(),
             client_version: "2.11.0".into()
@@ -578,8 +588,8 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
     );
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
     let issued = a.or(b)?;
-    f.state
-        .photo()
+    f.photo
+        .component()
         .confirm(
             &issued.token,
             PhotoConfirmation {
@@ -589,29 +599,29 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
         )
         .await?;
     assert!(matches!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .issue_code(f.source.clone(), PendingEnrollment::Preserve)
             .await,
         Err(EnrollmentError::Conflict)
     ));
-    f.state
-        .photo()
+    f.photo
+        .component()
         .set_state(f.source.clone(), SourceState::Disabled)
         .await?;
     assert!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .check_token(&issued.token.clone(), CredentialUse::Initialization)
             .await
             .is_err()
     );
-    f.state
-        .photo()
+    f.photo
+        .component()
         .set_state(f.source.clone(), SourceState::Enabled)
         .await?;
-    f.state
-        .photo()
+    f.photo
+        .component()
         .check_token(&issued.token.clone(), CredentialUse::Initialization)
         .await?;
     f.database
@@ -625,19 +635,19 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     assert!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .check_token(&issued.token.clone(), CredentialUse::Initialization)
             .await
             .is_err()
     );
-    f.state
-        .photo()
+    f.photo
+        .component()
         .set_state(f.source.clone(), SourceState::Revoked)
         .await?;
     assert!(matches!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .set_state(f.source.clone(), SourceState::Enabled)
             .await,
         Err(EnrollmentError::Conflict)
@@ -649,14 +659,14 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
 async fn expired_pairing_code_cannot_be_redeemed() -> TestResult {
     let f = Fixture::new().await?;
     let source = f
-        .state
-        .photo()
+        .photo
+        .component()
         .create_source("Expired".into())
         .await?
         .source_id;
     let code = f
-        .state
-        .photo()
+        .photo
+        .component()
         .issue_code(source.clone(), PendingEnrollment::Preserve)
         .await?;
     f.database
@@ -670,8 +680,8 @@ async fn expired_pairing_code_cannot_be_redeemed() -> TestResult {
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     assert!(matches!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .pair(PhotoPairRequest {
                 code: code.code,
                 signing_public_key: f.key,
@@ -702,10 +712,10 @@ async fn protected_routes_authenticate_before_body_and_reject_other_credentials(
     let response = drive(&f.app, Request::builder().method(Method::POST).uri("/api/v2/photo/enrollment/pair").extension(ConnectInfo(PeerAddress("192.0.2.1".parse()?))).header(header::CONTENT_TYPE, "application/json").body(Body::from(json!({"code":"ABCD-EFGH", "signing_public_key":"00".repeat(32), "client_version":"2.11.0"}).to_string()))?).await?;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
     for _ in 0..5 {
-        f.state.photo().admit_pairing("192.0.2.2".parse()?)?;
+        f.photo.component().admit_pairing("192.0.2.2".parse()?)?;
     }
     assert!(matches!(
-        f.state.photo().admit_pairing("192.0.2.2".parse()?),
+        f.photo.component().admit_pairing("192.0.2.2".parse()?),
         Err(EnrollmentError::RateLimited)
     ));
     Ok(())
@@ -771,12 +781,16 @@ async fn failed_storage_does_not_publish_a_snapshot() -> TestResult {
     std::fs::remove_file(root)?;
     // The store pins the validated directory handle. Restore it through the
     // normal startup boundary, never by following a replacement pathname.
-    f.state = Arc::new(server_state::tests::for_test_with_logos(
+    let features = feature::tests::ServerFixture::new(
         f.database.database.clone(),
         f.database.documents_path(),
-        f.logos.path().to_path_buf(),
-    )?);
-    f.app = router(f.state.clone(), unused_web_root());
+    )
+    .logos(f.logos.path().to_path_buf())
+    .build_with_features()?;
+    f.app = features.loaded.http_router(unused_web_root());
+    f.photo = features.photo;
+    f.runtime = features.loaded.runtime;
+    f.lifecycle = features.loaded.lifecycle;
     assert_eq!(
         f.send(Method::POST, "client/initialization", Value::Null)
             .await?
@@ -810,27 +824,27 @@ async fn secret_storage_and_resource_ownership_are_scoped() -> TestResult {
         .as_str()
         .ok_or(TestError::missing("hash"))?;
     let source = f
-        .state
-        .photo()
+        .photo
+        .component()
         .create_source("Other desk".into())
         .await?
         .source_id;
     let code = f
-        .state
-        .photo()
+        .photo
+        .component()
         .issue_code(source.clone(), PendingEnrollment::Preserve)
         .await?;
     let other = f
-        .state
-        .photo()
+        .photo
+        .component()
         .pair(PhotoPairRequest {
             code: code.code,
             signing_public_key: f.key.clone(),
             client_version: "2.11.0".into(),
         })
         .await?;
-    f.state
-        .photo()
+    f.photo
+        .component()
         .confirm(
             &other.token,
             PhotoConfirmation {
@@ -840,7 +854,7 @@ async fn secret_storage_and_resource_ownership_are_scoped() -> TestResult {
         )
         .await?;
     assert!(matches!(
-        f.state.photo().resource(&other.token, hash).await,
+        f.photo.component().resource(&other.token, hash).await,
         Err(crate::component::photo::InitializationError::NotFound)
     ));
     let id = manifest["initialization_id"]
@@ -965,12 +979,12 @@ async fn admin_routes_and_public_pairing_form_a_complete_boundary() -> TestResul
 async fn snapshot_publication_is_rejected_after_shutdown_admission_closes() -> TestResult {
     let f = Fixture::new().await?;
     f.confirm().await?;
-    f.state.lifecycle().begin_shutdown();
+    f.lifecycle.begin_shutdown();
     let response = f
         .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
-    f.state.lifecycle().wait().await;
+    f.lifecycle.wait().await;
     Ok(())
 }
 
@@ -1024,8 +1038,8 @@ async fn invalid_persisted_photo_identity_preserves_the_value_error() -> TestRes
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     let error = f
-        .state
-        .photo()
+        .photo
+        .component()
         .list_sources()
         .await
         .err()

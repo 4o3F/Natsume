@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 
 use axum::{
@@ -10,22 +12,25 @@ use axum::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{super::super::error::ApiError, AppState, middleware};
-use crate::component::contest::{LogoObservation, LogoStatus, OrganizationDetails};
+use super::{super::super::error::ApiError, middleware};
+use crate::component::contest::{
+    ContestComponent, LogoObservation, LogoStatus, OrganizationDetails,
+};
+use crate::component::import::ImportComponent;
 
-pub(super) fn operator_routes() -> Routes {
+#[derive(Clone)]
+pub(crate) struct ImportCandidateState {
+    /// Shared import authority supplying the pending candidate.
+    pub(crate) import: Arc<ImportComponent>,
+    /// Shared Contest instance used to observe and read organization logos.
+    pub(crate) contest: Arc<ContestComponent>,
+}
+
+pub(super) fn operator_routes() -> Routes<Arc<ContestComponent>> {
     vec![
         (
             "/organizations",
             middleware::require_admin(get(list_organizations)),
-        ),
-        (
-            "/imports/{import_id}/organizations",
-            middleware::require_admin(get(list_candidate_organizations)),
-        ),
-        (
-            "/imports/{import_id}/organizations/{organization_id}/logo",
-            middleware::require_admin(get(candidate_logo)),
         ),
         (
             "/exports/domjudge",
@@ -34,7 +39,20 @@ pub(super) fn operator_routes() -> Routes {
     ]
 }
 
-pub(super) fn public_routes() -> Routes {
+pub(crate) fn import_candidate_routes() -> Routes<ImportCandidateState> {
+    vec![
+        (
+            "/imports/{import_id}/organizations",
+            middleware::require_admin(get(list_candidate_organizations)),
+        ),
+        (
+            "/imports/{import_id}/organizations/{organization_id}/logo",
+            middleware::require_admin(get(candidate_logo)),
+        ),
+    ]
+}
+
+pub(super) fn public_routes() -> Routes<Arc<ContestComponent>> {
     vec![(
         "/organizations/{organization_id}/logo",
         get(organization_logo),
@@ -79,8 +97,8 @@ impl From<LogoObservation> for OrganizationLogoResponse {
     }
 }
 
-pub(crate) async fn list_organizations(State(state): State<AppState>) -> Response {
-    let schools = match state.contest().list_organizations().await {
+pub(crate) async fn list_organizations(State(state): State<Arc<ContestComponent>>) -> Response {
+    let schools = match state.list_organizations().await {
         Ok(schools) => schools,
         Err(error) => return ApiError::from_contest(error).into_response(),
     };
@@ -88,17 +106,17 @@ pub(crate) async fn list_organizations(State(state): State<AppState>) -> Respons
 }
 
 pub(crate) async fn list_candidate_organizations(
-    State(state): State<AppState>,
+    State(state): State<ImportCandidateState>,
     Path(id): Path<String>,
 ) -> Response {
-    match candidate_schools(&state, &id).await {
-        Ok(schools) => observations(&state, schools).await,
+    match candidate_schools(&state.import, &id).await {
+        Ok(schools) => observations(&state.contest, schools).await,
         Err(error) => error.into_response(),
     }
 }
 
-async fn observations(state: &AppState, schools: Vec<OrganizationDetails>) -> Response {
-    let response = match state.contest().observe_logos(schools).await {
+async fn observations(state: &ContestComponent, schools: Vec<OrganizationDetails>) -> Response {
+    let response = match state.observe_logos(schools).await {
         Ok(rows) => {
             let mut failures = rows.iter().filter_map(|row| row.failure.as_deref());
             if let Some(error) = failures.next() {
@@ -117,34 +135,33 @@ async fn observations(state: &AppState, schools: Vec<OrganizationDetails>) -> Re
 }
 
 pub(crate) async fn organization_logo(
-    State(state): State<AppState>,
+    State(state): State<Arc<ContestComponent>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    match state.contest().list_organizations().await {
+    match state.list_organizations().await {
         Ok(schools) => logo(&state, schools, &id, &headers, false).await,
         Err(error) => ApiError::from_contest(error).into_response(),
     }
 }
 
 pub(crate) async fn candidate_logo(
-    State(state): State<AppState>,
+    State(state): State<ImportCandidateState>,
     Path((import_id, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let response = match candidate_schools(&state, &import_id).await {
-        Ok(schools) => logo(&state, schools, &id, &headers, true).await,
+    let response = match candidate_schools(&state.import, &import_id).await {
+        Ok(schools) => logo(&state.contest, schools, &id, &headers, true).await,
         Err(error) => error.into_response(),
     };
     no_store(response)
 }
 
 async fn candidate_schools(
-    state: &AppState,
+    state: &ImportComponent,
     id: &str,
 ) -> Result<Vec<OrganizationDetails>, ApiError> {
     let candidate = state
-        .import()
         .read_pending()
         .await
         .map_err(ApiError::from_import)?
@@ -154,7 +171,7 @@ async fn candidate_schools(
 }
 
 async fn logo(
-    state: &AppState,
+    state: &ContestComponent,
     schools: Vec<OrganizationDetails>,
     id: &str,
     headers: &HeaderMap,
@@ -166,7 +183,7 @@ async fn logo(
     else {
         return no_store(ApiError::not_found("organization_not_found").into_response());
     };
-    match state.contest().organization_logo(school).await {
+    match state.organization_logo(school).await {
         Ok(image) => {
             let etag = format!("\"{}\"", hex::encode(Sha256::digest(&image.bytes)));
             let unchanged = !private
@@ -201,8 +218,8 @@ async fn logo(
     }
 }
 
-pub(crate) async fn export_domjudge(State(state): State<AppState>) -> Response {
-    no_store(match state.contest().export_domjudge().await {
+pub(crate) async fn export_domjudge(State(state): State<Arc<ContestComponent>>) -> Response {
+    no_store(match state.export_domjudge().await {
         Ok(bytes) => (
             [
                 (header::CONTENT_TYPE, "application/zip"),

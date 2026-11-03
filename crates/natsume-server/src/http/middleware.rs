@@ -16,7 +16,7 @@ use axum::{
 
 use crate::component::operator::OperatorIdentity;
 
-use super::{AppState, error::ApiError};
+use super::error::ApiError;
 
 pub(super) use authentication::{authenticate_client, authenticate_operator, authenticate_source};
 pub(super) use completion::{CompletionState, complete_mutation};
@@ -31,7 +31,10 @@ pub(super) async fn reject_head(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-pub(in crate::http) fn require_admin(routes: MethodRouter<AppState>) -> MethodRouter<AppState> {
+pub(in crate::http) fn require_admin<S>(routes: MethodRouter<S>) -> MethodRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     routes.route_layer(axum_middleware::from_fn(require_admin_role))
 }
 

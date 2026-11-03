@@ -40,11 +40,12 @@ use crate::{
     },
     component::session::ForegroundTarget,
     db::{Database, DatabaseConfig, PersistenceError},
+    device_control::DeviceControl,
     diesel_schema::{
         binding_negotiations, device_home_targets, device_session_targets, gateway_credentials,
         runtime_config,
     },
-    server_state::{self, ServerState},
+    feature,
 };
 
 use super::actor::{
@@ -78,7 +79,7 @@ async fn wait_for_failed_actor(handle: &DeviceHandle) {
 }
 
 async fn assert_supervised_reattach(fixture: &Fixture) {
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let machine =
         MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("machine ID"));
     let authority = control
@@ -121,7 +122,7 @@ async fn supervision_reports_panics_without_payload_and_recovers_attachment() {
         let fixture = Fixture::new().await;
         let device_id = fixture.activate(&SigningKey::from_bytes(&[0x78; 32])).await;
         let (_handle, supervisor) = super::actor::spawn_test_actor(
-            &fixture.state.device_control().registry,
+            &fixture.runtime.device_control().registry,
             device_id,
             async {
                 panic!("actor_panic_secret_canary");
@@ -138,7 +139,7 @@ async fn supervision_reports_panics_without_payload_and_recovers_attachment() {
         .unwrap_or_else(|error| panic!("supervisor: {error}"));
         assert!(
             fixture
-                .state
+                .runtime
                 .device_control()
                 .registry
                 .get(device_id)
@@ -174,7 +175,7 @@ async fn supervision_closed_entry_is_replaced_once_and_late_cleanup_preserves_re
     async {
         let fixture = Fixture::new().await;
         let device_id = fixture.activate(&SigningKey::from_bytes(&[0x79; 32])).await;
-        let registry = &fixture.state.device_control().registry;
+        let registry = &fixture.runtime.device_control().registry;
         let (stale, supervisor) = super::actor::spawn_test_actor(registry, device_id, async {
             panic!("late_actor_secret_canary");
         })
@@ -265,7 +266,7 @@ async fn supervision_respawn_waits_for_in_flight_disable_and_revoke_commits() {
 async fn assert_supervised_authority_commit(revoke: bool) {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x7a; 32])).await;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let machine =
         MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("machine ID"));
     let authority = control
@@ -283,22 +284,20 @@ async fn assert_supervised_authority_commit(revoke: bool) {
     .unwrap_or_else(|| panic!("registry closed"));
     let lock = crate::db::tests::test_lock_database(&fixture.path)
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
-    let composition = Arc::clone(&fixture.state);
+    let task_control = Arc::clone(fixture.runtime.device_control());
     let mutation = tokio::spawn(async move {
         if revoke {
-            composition
-                .device_control()
+            task_control
                 .revoke_device(
-                    &admission(composition.device_control()),
+                    &admission(&task_control),
                     device_id,
                     JournalContext::default(),
                 )
                 .await
         } else {
-            composition
-                .device_control()
+            task_control
                 .disable_device(
-                    &admission(composition.device_control()),
+                    &admission(&task_control),
                     device_id,
                     JournalContext::default(),
                 )
@@ -379,7 +378,7 @@ async fn assert_replacement_fence_is_current(supervised: bool, revoke: bool) {
     let mut recorded = journal::RecordedFixture::new().await;
     let fixture = &recorded.fixture;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x7b; 32])).await;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let accepted = admission(control);
     let (exit, exited) = tokio::sync::oneshot::channel();
     let (stale, supervisor) = super::actor::spawn_test_actor(&control.registry, device_id, async {
@@ -492,7 +491,7 @@ async fn network_addresses_ignore_replaced_leases_and_survive_disconnect()
     let mut recorded = journal::RecordedFixture::new().await;
     let fixture = &recorded.fixture;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x76; 32])).await;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let authority = control
         .device
         .find_current_authority(
@@ -502,9 +501,11 @@ async fn network_addresses_ignore_replaced_leases_and_survive_disconnect()
         .await?
         .ok_or(crate::test_error::TestError::missing("missing authority"))?;
     let (outbound, _first_receiver) = mpsc::channel(1);
-    let (old_session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (old_session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     let (outbound, _current_receiver) = mpsc::channel(1);
-    let (session, _) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session, _) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     handle
         .record_network_addresses(
             session,
@@ -564,15 +565,17 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x77; 32])).await;
     // The fixture keeps database files alive, independently of this composition.
+    // The whole assembly, including routes and the runtime owner, is released.
     let composition = Arc::new(
-        server_state::tests::for_test(
+        feature::tests::ServerFixture::new(
             fixture.database.clone(),
             fixture.path.with_extension("print-documents"),
         )
+        .build()
         .unwrap_or_else(|error| panic!("independent composition failed: {error}")),
     );
     let composition_lifetime = Arc::downgrade(&composition);
-    let control = Arc::clone(composition.device_control());
+    let control = Arc::clone(composition.runtime.device_control());
     drop(composition);
     assert!(composition_lifetime.upgrade().is_none());
 
@@ -594,7 +597,7 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
         )
         .await
         .unwrap_or_else(|error| panic!("attach admission: {error}"))
-        .unwrap_or_else(|| panic!("coordinator could not attach without ServerState"));
+        .unwrap_or_else(|| panic!("coordinator could not attach after releasing composition"));
     assert!(
         handle
             .enqueue_client_state(session_id, valid_snapshot())
@@ -603,7 +606,7 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
     );
     let snapshot = timeout(Duration::from_secs(5), outgoing.recv())
         .await
-        .unwrap_or_else(|_| panic!("coordinator did not reconcile without ServerState"))
+        .unwrap_or_else(|_| panic!("coordinator did not reconcile after releasing composition"))
         .unwrap_or_else(|| panic!("the current lease unexpectedly closed"));
     assert_complete_target(snapshot);
     assert!(matches!(
@@ -629,9 +632,11 @@ async fn actor_rejects_stale_and_invalid_frames_before_component_writes() {
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x61; 32])).await;
 
     let (outbound, mut first_outgoing) = mpsc::channel(1);
-    let (first_session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (first_session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     let (outbound, _second_outgoing) = mpsc::channel(1);
-    let (_second_session, _) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (_second_session, _) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     assert!(first_outgoing.recv().await.is_none());
 
     assert!(
@@ -641,7 +646,8 @@ async fn actor_rejects_stale_and_invalid_frames_before_component_writes() {
             .is_ok()
     );
     let (outbound, _third_outgoing) = mpsc::channel(1);
-    let (third_session, _) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (third_session, _) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
 
     assert!(
@@ -657,7 +663,8 @@ async fn actor_rejects_stale_and_invalid_frames_before_component_writes() {
             .is_ok()
     );
     let (outbound, mut current_outgoing) = mpsc::channel(1);
-    let (current_session, _) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (current_session, _) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
 
     assert!(
@@ -680,7 +687,8 @@ async fn full_outbound_queue_terminates_the_current_lease() {
     let fixture = &recorded.fixture;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x62; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
 
     assert!(
         handle
@@ -703,7 +711,12 @@ async fn full_outbound_queue_terminates_the_current_lease() {
     );
 
     let (replacement_outbound, _replacement_outgoing) = mpsc::channel(1);
-    let _ = replace_current_lease(&fixture.state, device_id, replacement_outbound).await;
+    let _ = replace_current_lease(
+        fixture.runtime.device_control(),
+        device_id,
+        replacement_outbound,
+    )
+    .await;
     assert!(outgoing.recv().await.is_some());
     assert!(outgoing.recv().await.is_none());
     journal::assert_terminal(
@@ -718,7 +731,8 @@ async fn failure_transient_client_state_keeps_the_lease_and_retries() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x81; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     let failures = fixture.query_failures();
     let lock = crate::db::tests::test_lock_database(&fixture.path)
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
@@ -729,7 +743,7 @@ async fn failure_transient_client_state_keeps_the_lease_and_retries() {
     await_query_failure(&failures).await;
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -752,7 +766,7 @@ async fn failure_transient_client_state_keeps_the_lease_and_retries() {
         received_at_unix_ms,
         ..
     } = fixture
-        .state
+        .runtime
         .device_control()
         .registry
         .read_connection_state(device_id)
@@ -769,7 +783,8 @@ async fn failure_invalid_csr_still_terminates_the_lease() {
     let fixture = &recorded.fixture;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x82; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     let mut snapshot = valid_snapshot();
     snapshot
         .input
@@ -805,7 +820,8 @@ async fn failure_transient_limit_is_shared_by_refresh_and_client_state() {
     let fixture = &recorded.fixture;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x83; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     handle
         .enqueue_client_state(session, valid_snapshot())
         .await
@@ -820,14 +836,14 @@ async fn failure_transient_limit_is_shared_by_refresh_and_client_state() {
     let _lock = crate::db::tests::test_lock_database(&fixture.path)
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
     fixture
-        .state
+        .runtime
         .device_control()
         .publish(super::TargetChange::device(device_id))
         .await;
     await_query_failure(&failures).await;
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -843,7 +859,7 @@ async fn failure_transient_limit_is_shared_by_refresh_and_client_state() {
             .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
         await_query_failure(&failures).await;
         let state = fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -877,7 +893,8 @@ async fn failure_fencing_evicts_a_lease_with_pending_transient_work() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x84; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     let failures = fixture.query_failures();
     let lock = crate::db::tests::test_lock_database(&fixture.path)
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
@@ -888,7 +905,7 @@ async fn failure_fencing_evicts_a_lease_with_pending_transient_work() {
     await_query_failure(&failures).await;
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -899,10 +916,10 @@ async fn failure_fencing_evicts_a_lease_with_pending_transient_work() {
 
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .disable_device(
-                &admission(fixture.state.device_control()),
+                &admission(fixture.runtime.device_control()),
                 device_id,
                 JournalContext::default()
             )
@@ -921,7 +938,7 @@ async fn failure_fencing_evicts_a_lease_with_pending_transient_work() {
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -937,7 +954,8 @@ async fn failure_newer_snapshot_replaces_pending_and_success_resets_the_limit() 
     let fixture = &recorded.fixture;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x85; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     let failures = fixture.query_failures();
     let lock = crate::db::tests::test_lock_database(&fixture.path)
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
@@ -949,7 +967,7 @@ async fn failure_newer_snapshot_replaces_pending_and_success_resets_the_limit() 
         await_query_failure(&failures).await;
         assert!(matches!(
             fixture
-                .state
+                .runtime
                 .device_control()
                 .registry
                 .read_connection_state(device_id)
@@ -985,7 +1003,7 @@ async fn failure_newer_snapshot_replaces_pending_and_success_resets_the_limit() 
             .unwrap_or_else(|| panic!("new complete state closed the lease")),
     );
     assert!(
-        matches!(fixture.state.device_control().registry.read_connection_state(device_id).await,
+        matches!(fixture.runtime.device_control().registry.read_connection_state(device_id).await,
         DeviceConnectionState::Active { actual, .. } if *actual == expected)
     );
 
@@ -998,7 +1016,7 @@ async fn failure_newer_snapshot_replaces_pending_and_success_resets_the_limit() 
     await_query_failure(&failures).await;
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -1022,7 +1040,8 @@ async fn failure_transient_refresh_retries_without_a_pending_client_snapshot() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x86; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     handle
         .enqueue_client_state(session, valid_snapshot())
         .await
@@ -1037,14 +1056,14 @@ async fn failure_transient_refresh_retries_without_a_pending_client_snapshot() {
     let lock = crate::db::tests::test_lock_database(&fixture.path)
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
     fixture
-        .state
+        .runtime
         .device_control()
         .publish(super::TargetChange::device(device_id))
         .await;
     await_query_failure(&failures).await;
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -1054,8 +1073,9 @@ async fn failure_transient_refresh_retries_without_a_pending_client_snapshot() {
     assert!(!outgoing.is_closed());
     drop(lock);
     fixture
-        .state
-        .session()
+        .runtime
+        .device_control()
+        .session
         .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
@@ -1187,7 +1207,8 @@ async fn cancelled_http_mutation_commits_and_publishes_the_complete_target()
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x77; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     assert!(
         handle
             .enqueue_client_state(session_id, valid_snapshot())
@@ -1211,10 +1232,7 @@ async fn cancelled_http_mutation_commits_and_publishes_the_complete_target()
         &credentials.hash_password()?,
     )
     .await?;
-    let application = crate::http::router(
-        Arc::clone(&fixture.state),
-        std::path::Path::new("/nonexistent/completion-web"),
-    );
+    let application = fixture.application.clone();
     let login = application.clone().oneshot(Request::builder().method("POST").uri("/api/v2/session").header(header::CONTENT_TYPE, "application/json").body(Body::from(serde_json::json!({"login_name":"completion-admin", "password":"completion-password1!"}).to_string()))?).await?;
     assert_eq!(login.status(), StatusCode::OK);
     let cookie = login.headers()[header::SET_COOKIE]
@@ -1256,8 +1274,9 @@ async fn cancelled_http_mutation_commits_and_publishes_the_complete_target()
     );
     assert_eq!(
         fixture
-            .state
-            .home()
+            .runtime
+            .device_control()
+            .home
             .read_current(device_id)
             .await
             .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error))),
@@ -1314,7 +1333,8 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x63; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
 
     assert!(
         handle
@@ -1328,13 +1348,14 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
         .unwrap_or_else(|| panic!("the active lease closed unexpectedly"));
 
     fixture
-        .state
-        .session()
+        .runtime
+        .device_control()
+        .session
         .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
     fixture
-        .state
+        .runtime
         .device_control()
         .publish(super::TargetChange::device(device_id))
         .await;
@@ -1360,7 +1381,8 @@ async fn periodic_refresh_recovers_the_current_target_without_dirty() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x73; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
 
     assert!(
         handle
@@ -1374,8 +1396,9 @@ async fn periodic_refresh_recovers_the_current_target_without_dirty() {
         .unwrap_or_else(|| panic!("the active lease closed unexpectedly"));
 
     fixture
-        .state
-        .session()
+        .runtime
+        .device_control()
+        .session
         .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
@@ -1403,11 +1426,12 @@ async fn connection_query_is_lease_scoped_and_evict_closes_the_outbound_path() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x64; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
 
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -1439,7 +1463,7 @@ async fn connection_query_is_lease_scoped_and_evict_closes_the_outbound_path() {
         .unwrap_or_else(|_| panic!("the initial target was not emitted"))
         .unwrap_or_else(|| panic!("the active lease closed unexpectedly"));
     match fixture
-        .state
+        .runtime
         .device_control()
         .registry
         .read_connection_state(device_id)
@@ -1456,7 +1480,7 @@ async fn connection_query_is_lease_scoped_and_evict_closes_the_outbound_path() {
     }
 
     fixture
-        .state
+        .runtime
         .device_control()
         .evict_current_lease(
             device_id,
@@ -1468,7 +1492,7 @@ async fn connection_query_is_lease_scoped_and_evict_closes_the_outbound_path() {
         .await;
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -1488,15 +1512,15 @@ async fn authority_commit_fences_a_waiting_old_client_state_before_component_wri
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x6b; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
 
     let gate = handle.authority_fence.lock().await;
-    let state = Arc::clone(&fixture.state);
+    let task_control = Arc::clone(fixture.runtime.device_control());
     let disable = tokio::spawn(async move {
-        state
-            .device_control()
+        task_control
             .disable_device(
-                &admission(state.device_control()),
+                &admission(&task_control),
                 device_id,
                 JournalContext::default(),
             )
@@ -1523,11 +1547,12 @@ async fn cancelled_request_does_not_cancel_authority_fence_completion() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x6c; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (_session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (_session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
 
     let gate = handle.authority_fence.lock().await;
-    let admitted = admission(fixture.state.device_control());
-    let mut disable = Box::pin(fixture.state.device_control().disable_device(
+    let admitted = admission(fixture.runtime.device_control());
+    let mut disable = Box::pin(fixture.runtime.device_control().disable_device(
         &admitted,
         device_id,
         JournalContext::default(),
@@ -1539,8 +1564,9 @@ async fn cancelled_request_does_not_cancel_authority_fence_completion() {
     timeout(Duration::from_secs(5), async {
         loop {
             let device = fixture
-                .state
-                .device()
+                .runtime
+                .device_control()
+                .device
                 .find_device(device_id)
                 .await
                 .unwrap_or_else(|error| panic!("Device lookup failed: {error:?}"))
@@ -1564,7 +1590,7 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
 
     assert!(
         fixture
-            .state
+            .runtime
             .device_control()
             .read_device_status(missing)
             .await
@@ -1572,21 +1598,21 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
             .is_none()
     );
     fixture
-        .state
+        .runtime
         .device_control()
         .publish(super::TargetChange::device(missing))
         .await;
     fixture
-        .state
+        .runtime
         .device_control()
         .publish(super::TargetChange::all_connected())
         .await;
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .disable_device(
-                &admission(fixture.state.device_control()),
+                &admission(fixture.runtime.device_control()),
                 missing,
                 JournalContext::default()
             )
@@ -1595,7 +1621,7 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
     ));
     assert!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .get(missing)
@@ -1604,10 +1630,10 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
     );
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .revoke_device(
-                &admission(fixture.state.device_control()),
+                &admission(fixture.runtime.device_control()),
                 missing,
                 JournalContext::default()
             )
@@ -1616,7 +1642,7 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
     ));
     assert!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .get(missing)
@@ -1628,6 +1654,7 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
 #[tokio::test]
 async fn approval_uses_current_authority_instead_of_review_creation_state() {
     let fixture = Fixture::new().await;
+    let control = fixture.runtime.device_control();
     let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
         .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
     let first_evidence = ValidatedEnrollmentEvidence::new(
@@ -1654,9 +1681,8 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
         "2.0.0".to_owned(),
         "2.0.0".to_owned(),
     );
-    let EnrollmentStartOutcome::Pending(first_review, first_activation) = fixture
-        .state
-        .device()
+    let EnrollmentStartOutcome::Pending(first_review, first_activation) = control
+        .device
         .start_enrollment(
             first_evidence,
             std::net::IpAddr::from([127, 0, 0, 1]),
@@ -1667,9 +1693,8 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
     else {
         panic!("the first authority unexpectedly replayed");
     };
-    let EnrollmentStartOutcome::Pending(second_review, second_activation) = fixture
-        .state
-        .device()
+    let EnrollmentStartOutcome::Pending(second_review, second_activation) = control
+        .device
         .start_enrollment(
             second_evidence,
             std::net::IpAddr::from([127, 0, 0, 1]),
@@ -1681,10 +1706,10 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
         panic!("the second authority unexpectedly replayed");
     };
     let first_authority = fixture
-        .state
+        .runtime
         .device_control()
         .approve_enrollment(
-            &admission(fixture.state.device_control()),
+            &admission(fixture.runtime.device_control()),
             first_review.review_id(),
             JournalContext::default(),
         )
@@ -1696,15 +1721,15 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
 
     let device_id = first_authority.device_id();
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
 
     let gate = handle.authority_fence.lock().await;
-    let state = Arc::clone(&fixture.state);
+    let task_control = Arc::clone(fixture.runtime.device_control());
     let approval = tokio::spawn(async move {
-        state
-            .device_control()
+        task_control
             .approve_enrollment(
-                &admission(state.device_control()),
+                &admission(&task_control),
                 second_review.review_id(),
                 JournalContext::default(),
             )
@@ -1737,7 +1762,7 @@ async fn replacement_attach_clears_actual_and_old_session_cannot_restore_it() {
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x65; 32])).await;
     let (first_outbound, mut first_outgoing) = mpsc::channel(1);
     let (first_session, first_handle) =
-        replace_current_lease(&fixture.state, device_id, first_outbound).await;
+        replace_current_lease(fixture.runtime.device_control(), device_id, first_outbound).await;
     assert!(
         first_handle
             .enqueue_client_state(first_session, valid_snapshot())
@@ -1750,7 +1775,7 @@ async fn replacement_attach_clears_actual_and_old_session_cannot_restore_it() {
         .unwrap_or_else(|| panic!("the initial lease closed unexpectedly"));
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -1759,8 +1784,12 @@ async fn replacement_attach_clears_actual_and_old_session_cannot_restore_it() {
     ));
 
     let (replacement_outbound, _replacement_outgoing) = mpsc::channel(1);
-    let (_replacement_session, _) =
-        replace_current_lease(&fixture.state, device_id, replacement_outbound).await;
+    let (_replacement_session, _) = replace_current_lease(
+        fixture.runtime.device_control(),
+        device_id,
+        replacement_outbound,
+    )
+    .await;
     assert!(first_outgoing.recv().await.is_none());
     assert!(
         first_handle
@@ -1770,7 +1799,7 @@ async fn replacement_attach_clears_actual_and_old_session_cannot_restore_it() {
     );
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -1787,8 +1816,9 @@ async fn authority_change_after_precheck_is_rejected_after_attach() {
         .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x66; 32])).await;
     let authority = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .find_current_authority(machine_hardware_id)
         .await
         .unwrap_or_else(|error| panic!("authority lookup failed: {error:?}"))
@@ -1796,16 +1826,15 @@ async fn authority_change_after_precheck_is_rejected_after_attach() {
 
     let (old_outbound, mut old_outgoing) = mpsc::channel(1);
     let (old_session, handle) =
-        replace_current_lease(&fixture.state, device_id, old_outbound).await;
+        replace_current_lease(fixture.runtime.device_control(), device_id, old_outbound).await;
     let gate = handle.authority_fence.lock().await;
-    let prior_weak_count = Arc::weak_count(fixture.state.device_control());
-    let state = Arc::clone(&fixture.state);
+    let prior_weak_count = Arc::weak_count(fixture.runtime.device_control());
+    let task_control = Arc::clone(fixture.runtime.device_control());
     let (outbound, mut outgoing) = mpsc::channel(1);
     let attach = tokio::spawn(async move {
-        state
-            .device_control()
+        task_control
             .attach_device_lease(
-                &admission(state.device_control()),
+                &admission(&task_control),
                 machine_hardware_id,
                 authority,
                 outbound,
@@ -1816,15 +1845,16 @@ async fn authority_change_after_precheck_is_rejected_after_attach() {
     // Only a successful precheck creates the new lease's Weak. The held fence
     // keeps the actor from completing replacement while authority is changed.
     timeout(Duration::from_secs(5), async {
-        while Arc::weak_count(fixture.state.device_control()) == prior_weak_count {
+        while Arc::weak_count(fixture.runtime.device_control()) == prior_weak_count {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap_or_else(|_| panic!("attach did not pass its authority precheck"));
     fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .disable(device_id, JournalContext::default())
         .await
         .unwrap_or_else(|error| panic!("Device disable failed: {error:?}"));
@@ -1840,7 +1870,7 @@ async fn authority_change_after_precheck_is_rejected_after_attach() {
     assert!(outgoing.recv().await.is_none());
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -1871,7 +1901,8 @@ async fn failed_authority_commits_leave_the_current_lease_unfenced() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x76; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     fixture
         .database
         .write(|transaction| {
@@ -1888,10 +1919,10 @@ async fn failed_authority_commits_leave_the_current_lease_unfenced() {
 
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .disable_device(
-                &admission(fixture.state.device_control()),
+                &admission(fixture.runtime.device_control()),
                 device_id,
                 JournalContext::default()
             )
@@ -1900,10 +1931,10 @@ async fn failed_authority_commits_leave_the_current_lease_unfenced() {
     ));
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .revoke_device(
-                &admission(fixture.state.device_control()),
+                &admission(fixture.runtime.device_control()),
                 device_id,
                 JournalContext::default()
             )
@@ -1930,7 +1961,8 @@ async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x67; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     assert!(
         handle
             .enqueue_client_state(session_id, valid_snapshot())
@@ -1956,8 +1988,9 @@ async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
         "2.0.0".to_owned(),
     );
     let EnrollmentStartOutcome::Pending(review, mut activation) = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .start_enrollment(
             replacement,
             std::net::IpAddr::from([127, 0, 0, 1]),
@@ -1975,10 +2008,10 @@ async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
     ));
 
     let authority = fixture
-        .state
+        .runtime
         .device_control()
         .approve_enrollment(
-            &admission(fixture.state.device_control()),
+            &admission(fixture.runtime.device_control()),
             review.review_id(),
             JournalContext::default(),
         )
@@ -2046,25 +2079,29 @@ async fn batch_and_single_active_device_status_have_the_same_convergence() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x70; 32])).await;
     fixture
-        .state
-        .session()
+        .runtime
+        .device_control()
+        .session
         .set_foreground(device_id, ForegroundTarget::Waiting)
         .await
         .unwrap_or_else(|error| panic!("Session target setup failed: {error}"));
     fixture
-        .state
-        .session()
+        .runtime
+        .device_control()
+        .session
         .terminate(device_id)
         .await
         .unwrap_or_else(|error| panic!("Session terminate setup failed: {error}"));
     fixture
-        .state
-        .home()
+        .runtime
+        .device_control()
+        .home
         .reset(device_id)
         .await
         .unwrap_or_else(|error| panic!("Home target setup failed: {error}"));
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     assert!(
         handle
             .enqueue_client_state(session_id, valid_snapshot())
@@ -2077,7 +2114,7 @@ async fn batch_and_single_active_device_status_have_the_same_convergence() {
         .unwrap_or_else(|| panic!("the active lease closed unexpectedly"));
 
     let single = fixture
-        .state
+        .runtime
         .device_control()
         .read_device_status(device_id)
         .await
@@ -2085,7 +2122,7 @@ async fn batch_and_single_active_device_status_have_the_same_convergence() {
         .unwrap_or_else(|| panic!("single Device status was absent"));
     let single_convergence = single.convergence;
     let mut batch = fixture
-        .state
+        .runtime
         .device_control()
         .read_device_statuses(crate::component::device::DeviceListFilter::All)
         .await
@@ -2134,8 +2171,9 @@ async fn closed_window_allows_manual_enrollment_and_a_complete_target() {
     assert_complete_target(active);
 
     let device_id = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .find_current_authority(
             MachineHardwareId::parse(MACHINE_HARDWARE_ID)
                 .unwrap_or_else(|| panic!("invalid machine")),
@@ -2145,8 +2183,9 @@ async fn closed_window_allows_manual_enrollment_and_a_complete_target() {
         .unwrap_or_else(|| panic!("missing authority"))
         .device_id();
     let network = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .find_device(device_id)
         .await
         .unwrap_or_else(|error| panic!("Device: {error}"))
@@ -2168,22 +2207,24 @@ async fn closed_window_allows_manual_enrollment_and_a_complete_target() {
 async fn open_window_automatically_enrolls_without_operator_approval() {
     let mut recorded = journal::RecordedFixture::new().await;
     let fixture = &recorded.fixture;
-    fixture.state.provisioning().open_window();
+    fixture.runtime.device_control().provisioning.open_window();
     let (mut socket, server) = connect(fixture).await;
     submit_enrollment_proof(&mut socket).await;
     let (_, session_id) = finish_enrollment(&mut socket).await;
     assert!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
     );
     assert_eq!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .list_devices(crate::component::device::DeviceListFilter::All)
             .await
             .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
@@ -2200,9 +2241,9 @@ async fn open_window_automatically_enrolls_without_operator_approval() {
 #[tokio::test]
 async fn automatic_approval_wait_does_not_block_pending_heartbeats() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window();
+    fixture.runtime.device_control().provisioning.open_window();
     let approval = fixture
-        .state
+        .runtime
         .device_control()
         .enrollment_approval
         .lock()
@@ -2231,8 +2272,9 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
     submit_enrollment_proof(&mut socket).await;
     assert_eq!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .len(),
@@ -2240,20 +2282,22 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
     );
     assert!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .list_devices(crate::component::device::DeviceListFilter::All)
             .await
             .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
             .is_empty()
     );
 
-    fixture.state.provisioning().open_window();
+    fixture.runtime.device_control().provisioning.open_window();
     let (_, session_id) = finish_enrollment(&mut socket).await;
     assert!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -2266,8 +2310,8 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
 #[tokio::test]
 async fn closing_window_restores_manual_review_for_new_connections() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window();
-    fixture.state.provisioning().close_window();
+    fixture.runtime.device_control().provisioning.open_window();
+    fixture.runtime.device_control().provisioning.close_window();
     let (mut socket, server) = connect(&fixture).await;
     let session_id = enroll(&fixture, &mut socket).await;
     send_active_heartbeat(&mut socket, &session_id).await;
@@ -2280,8 +2324,9 @@ async fn automatic_key_replacement_evicts_the_old_lease_before_activation_delive
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x72; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (_session_id, _handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
-    fixture.state.provisioning().open_window();
+    let (_session_id, _handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
+    fixture.runtime.device_control().provisioning.open_window();
     let (mut socket, server) = connect(&fixture).await;
     submit_enrollment_proof(&mut socket).await;
     let (_, session_id) = finish_enrollment(&mut socket).await;
@@ -2290,8 +2335,9 @@ async fn automatic_key_replacement_evicts_the_old_lease_before_activation_delive
         Err(mpsc::error::TryRecvError::Disconnected)
     ));
     let devices = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .list_devices(crate::component::device::DeviceListFilter::All)
         .await
         .unwrap_or_else(|error| panic!("Device lookup failed: {error}"));
@@ -2338,8 +2384,9 @@ async fn silent_active_connection_becomes_offline_after_the_client_deadline() {
     let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
         .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
     let device_id = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .find_current_authority(machine_hardware_id)
         .await
         .unwrap_or_else(|error| panic!("authority lookup failed: {error:?}"))
@@ -2351,7 +2398,7 @@ async fn silent_active_connection_becomes_offline_after_the_client_deadline() {
     for _ in 0..10 {
         if matches!(
             fixture
-                .state
+                .runtime
                 .device_control()
                 .registry
                 .read_connection_state(device_id)
@@ -2364,7 +2411,7 @@ async fn silent_active_connection_becomes_offline_after_the_client_deadline() {
     }
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device_id)
@@ -2389,15 +2436,16 @@ async fn full_actor_mailbox_cannot_starve_the_client_deadline() {
     let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
         .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
     let device_id = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .find_current_authority(machine_hardware_id)
         .await
         .unwrap_or_else(|error| panic!("authority lookup failed: {error:?}"))
         .unwrap_or_else(|| panic!("the enrolled authority is absent"))
         .device_id();
     let handle = fixture
-        .state
+        .runtime
         .device_control()
         .registry
         .get(device_id)
@@ -2444,12 +2492,18 @@ async fn enrollment_denial_is_delivered_to_the_originating_connection() {
     let (mut socket, server) = connect(fixture).await;
     submit_enrollment_proof(&mut socket).await;
 
-    let reviews = fixture.state.device().pending_enrollment_reviews().await;
+    let reviews = fixture
+        .runtime
+        .device_control()
+        .device
+        .pending_enrollment_reviews()
+        .await;
     assert_eq!(reviews.len(), 1);
     assert!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .deny_enrollment_review(reviews[0].review_id(), JournalContext::default())
             .await
     );
@@ -2491,7 +2545,12 @@ async fn pending_enrollment_heartbeat_keeps_the_review_attached() {
     let (mut socket, server) = connect(&fixture).await;
     submit_enrollment_proof(&mut socket).await;
 
-    let reviews = fixture.state.device().pending_enrollment_reviews().await;
+    let reviews = fixture
+        .runtime
+        .device_control()
+        .device
+        .pending_enrollment_reviews()
+        .await;
     assert_eq!(reviews.len(), 1);
     socket
         .send(ClientMessage::Ping(Vec::new().into()))
@@ -2502,7 +2561,12 @@ async fn pending_enrollment_heartbeat_keeps_the_review_attached() {
         result => panic!("Server did not answer the pending heartbeat: {result:?}"),
     }
 
-    let after_heartbeat = fixture.state.device().pending_enrollment_reviews().await;
+    let after_heartbeat = fixture
+        .runtime
+        .device_control()
+        .device
+        .pending_enrollment_reviews()
+        .await;
     assert_eq!(after_heartbeat.len(), 1);
     assert_eq!(after_heartbeat[0].review_id(), reviews[0].review_id());
 
@@ -2518,8 +2582,9 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
     submit_enrollment_proof(&mut socket).await;
     assert_eq!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .len(),
@@ -2530,8 +2595,9 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
     tokio::time::advance(super::CLIENT_SILENCE_TIMEOUT + Duration::from_secs(1)).await;
     for _ in 0..10 {
         if fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -2542,8 +2608,9 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
     }
     assert!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -2559,7 +2626,7 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
 async fn handshake_capacity_rejects_before_upgrade_and_recovers_after_timeout() {
     let mut recorded = journal::RecordedFixture::new().await;
     let fixture = &recorded.fixture;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let held = Arc::clone(&control.handshakes)
         .acquire_many_owned(63)
         .await
@@ -2598,7 +2665,7 @@ async fn full_manual_review_capacity_does_not_block_resume_or_existing_control()
     let fixture = Fixture::new().await;
     let signing_key = SigningKey::from_bytes(&[0x72; 32]);
     fixture.activate(&signing_key).await;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let held = Arc::clone(&control.handshakes)
         .acquire_many_owned(63)
         .await
@@ -2617,8 +2684,9 @@ async fn full_manual_review_capacity_does_not_block_resume_or_existing_control()
     for _ in 1..640 {
         reviews.push(
             fixture
-                .state
-                .device()
+                .runtime
+                .device_control()
+                .device
                 .start_enrollment(
                     evidence.clone(),
                     std::net::IpAddr::from([127, 0, 0, 1]),
@@ -2630,8 +2698,9 @@ async fn full_manual_review_capacity_does_not_block_resume_or_existing_control()
     }
     assert!(matches!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .start_enrollment(
                 evidence,
                 std::net::IpAddr::from([127, 0, 0, 1]),
@@ -2735,10 +2804,7 @@ async fn connect(fixture: &Fixture) -> (TestSocket, tokio::task::JoinHandle<()>)
     let address = listener
         .local_addr()
         .unwrap_or_else(|error| panic!("test listener address failed: {error}"));
-    let application = crate::http::router(
-        Arc::clone(&fixture.state),
-        std::path::Path::new("/natsume-wss-test-unused-web-root"),
-    );
+    let application = fixture.application.clone();
     let server = tokio::spawn(async move {
         let _ = axum::serve(
             listener,
@@ -2773,13 +2839,18 @@ async fn connect(fixture: &Fixture) -> (TestSocket, tokio::task::JoinHandle<()>)
 async fn enroll(fixture: &Fixture, socket: &mut TestSocket) -> Vec<u8> {
     submit_enrollment_proof(socket).await;
 
-    let reviews = fixture.state.device().pending_enrollment_reviews().await;
+    let reviews = fixture
+        .runtime
+        .device_control()
+        .device
+        .pending_enrollment_reviews()
+        .await;
     assert_eq!(reviews.len(), 1);
     let authority = fixture
-        .state
+        .runtime
         .device_control()
         .approve_enrollment(
-            &admission(fixture.state.device_control()),
+            &admission(fixture.runtime.device_control()),
             reviews[0].review_id(),
             JournalContext::default(),
         )
@@ -2852,11 +2923,10 @@ async fn submit_enrollment_proof(socket: &mut TestSocket) {
 }
 
 async fn replace_current_lease(
-    state: &Arc<ServerState>,
+    control: &Arc<DeviceControl>,
     device_id: DeviceId,
     outbound: mpsc::Sender<ServerActiveEnvelope>,
 ) -> (Uuid, DeviceHandle) {
-    let control = state.device_control();
     let handle = control
         .registry
         .get_or_spawn(device_id)
@@ -2960,7 +3030,8 @@ async fn shutdown_closes_all_registry_leases_including_awaiting_actual_and_rejec
     let fixture = &recorded.fixture;
     let first = fixture.activate(&SigningKey::from_bytes(&[0x31; 32])).await;
     let (outbound, mut active) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, first, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), first, outbound).await;
     handle
         .enqueue_client_state(session, valid_snapshot())
         .await
@@ -2972,7 +3043,7 @@ async fn shutdown_closes_all_registry_leases_including_awaiting_actual_and_rejec
     let second = DeviceId::parse("019a1000-0000-7000-8000-000000000002")
         .unwrap_or_else(|| panic!("device fixture"));
     let pending = fixture
-        .state
+        .runtime
         .device_control()
         .registry
         .get_or_spawn(second)
@@ -2980,12 +3051,12 @@ async fn shutdown_closes_all_registry_leases_including_awaiting_actual_and_rejec
         .unwrap_or_else(|| panic!("registry closed"));
     let (outbound, mut awaiting) = mpsc::channel(1);
     let pending_session = pending
-        .replace_current_lease(Arc::downgrade(fixture.state.device_control()), outbound)
+        .replace_current_lease(Arc::downgrade(fixture.runtime.device_control()), outbound)
         .await
         .unwrap_or_else(|| panic!("awaiting lease"));
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(second)
@@ -2994,24 +3065,25 @@ async fn shutdown_closes_all_registry_leases_including_awaiting_actual_and_rejec
     ));
     let (mut pending_admission, server) = connect(fixture).await;
     submit_enrollment_proof(&mut pending_admission).await;
-    let accepted = admission(fixture.state.device_control());
-    fixture.state.lifecycle().begin_shutdown();
+    let accepted = admission(fixture.runtime.device_control());
+    fixture.lifecycle.begin_shutdown();
     assert!(matches!(
-        fixture.state.device_control().try_reserve_handshake(),
+        fixture.runtime.device_control().try_reserve_handshake(),
         Err(super::AdmissionUnavailable::ServerStopping)
     ));
     let machine =
         MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("machine"));
     let authority = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .find_current_authority(machine)
         .await
         .unwrap_or_else(|error| panic!("authority: {error}"))
         .unwrap_or_else(|| panic!("authority missing"));
     timeout(
         Duration::from_secs(3),
-        fixture.state.device_control().shutdown(),
+        fixture.runtime.device_control().shutdown(),
     )
     .await
     .unwrap_or_else(|error| panic!("shutdown: {error}"));
@@ -3019,7 +3091,7 @@ async fn shutdown_closes_all_registry_leases_including_awaiting_actual_and_rejec
     server.abort();
     assert!(matches!(
         fixture
-            .state
+            .runtime
             .device_control()
             .attach_device_lease(&accepted, machine, authority, mpsc::channel(1).0)
             .await,
@@ -3030,7 +3102,7 @@ async fn shutdown_closes_all_registry_leases_including_awaiting_actual_and_rejec
     for device in [first, second] {
         assert!(
             fixture
-                .state
+                .runtime
                 .device_control()
                 .registry
                 .get(device)
@@ -3063,20 +3135,21 @@ async fn pending_enrollment_is_interrupted_by_shutdown_and_releases_its_admissio
     let fixture = &recorded.fixture;
     let (mut socket, server) = connect(fixture).await;
     submit_enrollment_proof(&mut socket).await;
-    fixture.state.lifecycle().begin_shutdown();
+    fixture.lifecycle.begin_shutdown();
     assert!(matches!(
         connect_async(repeat_connection_request(&socket)).await,
         Err(tokio_tungstenite::tungstenite::Error::Http(response))
             if response.status() == axum::http::StatusCode::SERVICE_UNAVAILABLE
     ));
-    timeout(Duration::from_secs(2), fixture.state.lifecycle().wait()).await?;
+    timeout(Duration::from_secs(2), fixture.lifecycle.wait()).await?;
     assert_closed(&mut socket).await;
-    fixture.state.device_control().shutdown().await;
+    fixture.runtime.device_control().shutdown().await;
     server.abort();
     assert!(
         fixture
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .pending_enrollment_reviews()
             .await
             .is_empty()
@@ -3096,18 +3169,18 @@ async fn stalled_proof_handshake_is_interrupted_and_releases_its_admission()
         receive_handshake(&mut socket).await.body,
         Some(server_handshake_envelope::Body::ServerChallenge(_))
     ));
-    fixture.state.lifecycle().begin_shutdown();
-    timeout(Duration::from_secs(2), fixture.state.lifecycle().wait()).await?;
+    fixture.lifecycle.begin_shutdown();
+    timeout(Duration::from_secs(2), fixture.lifecycle.wait()).await?;
     assert_closed(&mut socket).await;
     assert_eq!(
         fixture
-            .state
+            .runtime
             .device_control()
             .handshakes
             .available_permits(),
         super::MAX_HANDSHAKES
     );
-    fixture.state.device_control().shutdown().await;
+    fixture.runtime.device_control().shutdown().await;
     server.abort();
     Ok(())
 }
@@ -3117,7 +3190,7 @@ async fn registry_drain_owns_an_attach_already_waiting_on_the_actor_fence()
 -> Result<(), crate::test_error::TestError> {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x41; 32])).await;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let accepted = admission(control);
     let machine = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
         .ok_or(crate::test_error::TestError::missing("machine"))?;
@@ -3127,7 +3200,8 @@ async fn registry_drain_owns_an_attach_already_waiting_on_the_actor_fence()
         .await?
         .ok_or(crate::test_error::TestError::missing("authority"))?;
     let (outbound, _old_receiver) = mpsc::channel(1);
-    let (_, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (_, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     let gate = handle.authority_fence.lock().await;
     let prior_weak_count = Arc::weak_count(control);
     let (outbound, mut receiver) = mpsc::channel(1);
@@ -3207,7 +3281,7 @@ async fn closed_registry_cancels_mutations_before_business_commits()
     use crate::component::device::EnrollmentApprovalError;
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x42; 32])).await;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let accepted = admission(control);
     let machine = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
         .ok_or(crate::test_error::TestError::missing("machine"))?;
@@ -3292,7 +3366,8 @@ async fn saturated_journal_does_not_change_device_convergence() {
         );
     }
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, first, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), first, outbound).await;
     handle
         .enqueue_client_state(session, valid_snapshot())
         .await
@@ -3304,17 +3379,17 @@ async fn saturated_journal_does_not_change_device_convergence() {
             .unwrap_or_else(|| panic!("lease")),
     );
     fixture
-        .state
+        .runtime
         .device_control()
         .registry
         .read_connection_state(first)
         .await;
     assert_eq!(
-        fixture.state.journal().stats().categories.device.dropped,
+        fixture.journal.stats().categories.device.dropped,
         1 + 10 + 1 + 7,
         "one approval, ten explicit drops, one attachment, and seven Actual baselines"
     );
-    fixture.state.device_control().shutdown().await;
+    fixture.runtime.device_control().shutdown().await;
 }
 
 #[tokio::test]
@@ -3356,7 +3431,8 @@ async fn exclusively_locked_journal_does_not_block_device_disconnect_and_reconne
         JournalContext::default(),
     );
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, first, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), first, outbound).await;
     assert!(
         handle
             .enqueue_client_state(session, valid_snapshot())
@@ -3372,7 +3448,8 @@ async fn exclusively_locked_journal_does_not_block_device_disconnect_and_reconne
         .clear_lease_if_current(session, super::ConnectionEnd::ClientClose)
         .await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, first, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), first, outbound).await;
     assert!(
         handle
             .enqueue_client_state(session, valid_snapshot())
@@ -3385,21 +3462,25 @@ async fn exclusively_locked_journal_does_not_block_device_disconnect_and_reconne
             .ok_or(crate::test_error::TestError::missing("reconnected target"))?,
     );
     timeout(Duration::from_secs(3), async {
-        while fixture.state.journal().stats().write_failed == 0 {
+        while fixture.journal.stats().write_failed == 0 {
             tokio::task::yield_now().await;
         }
     })
     .await?;
     drop(lock);
-    fixture.state.device_control().shutdown().await;
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.device_control().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     Ok(())
 }
 
 struct Fixture {
     path: PathBuf,
     database: Database,
-    state: Arc<ServerState>,
+    lifecycle: crate::lifecycle::ServerLifecycle,
+    journal: crate::journal::Journal,
+    runtime: crate::server_runtime::ServerRuntime,
+    application: axum::Router,
+    import: crate::feature::import::ImportFeature,
 }
 
 impl Fixture {
@@ -3428,25 +3509,34 @@ impl Fixture {
             })
             .await
             .unwrap_or_else(|error| panic!("Runtime Config fixture failed: {error:?}"));
-        let state = Arc::new(
-            match journal {
-                None => server_state::tests::for_test(
-                    database.clone(),
-                    path.with_extension("print-documents"),
-                ),
-                Some(journal) => server_state::tests::for_test_with_journal(
-                    database.clone(),
-                    path.with_extension("print-documents"),
-                    PathBuf::from("/nonexistent/natsume-test-logos"),
-                    journal,
-                ),
-            }
-            .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}")),
+        let fixture = feature::tests::ServerFixture::new(
+            database.clone(),
+            path.with_extension("print-documents"),
         );
+        let fixture = match journal {
+            Some(journal) => fixture.journal(journal),
+            None => fixture,
+        };
+        let features = fixture
+            .build_with_features()
+            .unwrap_or_else(|error| panic!("server fixture failed: {error}"));
+        let loaded = features.loaded;
+        let application =
+            loaded.http_router(std::path::Path::new("/natsume-wss-test-unused-web-root"));
+        let crate::feature::LoadedServer {
+            runtime,
+            lifecycle,
+            journal,
+            ..
+        } = loaded;
         Self {
             path,
             database,
-            state,
+            lifecycle,
+            journal,
+            runtime,
+            application,
+            import: features.import,
         }
     }
 
@@ -3472,8 +3562,9 @@ impl Fixture {
             "2.0.0".to_owned(),
         );
         let (review, activation) = match self
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .start_enrollment(
                 evidence,
                 std::net::IpAddr::from([127, 0, 0, 1]),
@@ -3486,8 +3577,9 @@ impl Fixture {
             EnrollmentStartOutcome::Replay(_) => panic!("a new fixture authority was replayed"),
         };
         let approval = self
-            .state
-            .device()
+            .runtime
+            .device_control()
+            .device
             .approve_enrollment(
                 review.review_id(),
                 crate::component::device::EnrollmentApprovalMode::Manual,
@@ -3565,7 +3657,7 @@ async fn old_or_mixed_control_protocols_are_rejected_before_handshake() {
     }
     assert_eq!(
         fixture
-            .state
+            .runtime
             .device_control()
             .handshakes
             .available_permits(),
@@ -3591,7 +3683,7 @@ async fn automatic_approval_failure_is_reported_once_when_activation_wins() {
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error))).write(|tx| {
         tx.connection().batch_execute("CREATE TRIGGER reject_activation BEFORE INSERT ON devices BEGIN SELECT RAISE(ABORT, 'automatic activation evidence'); END;").map_err(PersistenceError::from)
     }).await.map_err(crate::db::TransactionError::into_error).unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
-    fixture.state.provisioning().open_window();
+    fixture.runtime.device_control().provisioning.open_window();
     let (mut socket, server) = connect(fixture).await;
     submit_enrollment_proof(&mut socket).await;
     assert_closed(&mut socket).await;

@@ -556,6 +556,7 @@ struct TextValue {
 }
 
 struct Fixture {
+    _runtime: crate::server_runtime::ServerRuntime,
     import: ImportComponent,
     control: Arc<crate::device_control::DeviceControl>,
     database: Database,
@@ -579,12 +580,13 @@ impl Fixture {
                 .await
                 .unwrap_or_else(|_| panic!("fixture database could not be created"));
         let vault = Arc::new(vault);
-        let state = checked(crate::server_state::tests::for_test(
-            database.clone(),
-            root.join("documents"),
-        ));
-        let control = Arc::clone(state.device_control());
+        let crate::feature::LoadedServer { runtime, .. } = checked(
+            crate::feature::tests::ServerFixture::new(database.clone(), root.join("documents"))
+                .build(),
+        );
+        let control = Arc::clone(runtime.device_control());
         Self {
+            _runtime: runtime,
             control,
             import: ImportComponent::new(database.clone(), Arc::clone(&vault)),
             database,

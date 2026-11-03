@@ -9,7 +9,7 @@ use tower::ServiceExt as _;
 
 use super::{
     LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, TestDatabase, drive, header_text,
-    login_request, router, seed_operator, server_state, unused_web_root,
+    login_request, seed_operator, unused_web_root,
 };
 
 type TestResult = Result<(), crate::test_error::TestError>;
@@ -51,8 +51,13 @@ async fn import_rejects_busy_requests_before_buffering_and_recovers_after_body_d
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let state = server_state(&fixture)?;
-    let application = router(state.clone(), unused_web_root());
+    let features = crate::feature::tests::ServerFixture::new(
+        fixture.database.clone(),
+        fixture.documents_path(),
+    )
+    .build_with_features()?;
+    let loaded = features.loaded;
+    let application = loaded.http_router(unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
@@ -111,10 +116,10 @@ async fn import_rejects_busy_requests_before_buffering_and_recovers_after_body_d
         assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
         task.abort();
         assert!(task.await.is_err());
-        assert!(state.import().try_begin().is_err());
+        assert!(features.import.component().try_begin().is_err());
         assert!(disconnect.send(()).is_ok());
         tokio::time::timeout(Duration::from_secs(5), async {
-            while state.import().try_begin().is_err() {
+            while features.import.component().try_begin().is_err() {
                 tokio::task::yield_now().await;
             }
         })

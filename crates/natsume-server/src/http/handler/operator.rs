@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 use crate::http::middleware::audit::RequestAudit;
 use crate::journal::event::types::{AuditTarget, OperatorId};
@@ -12,8 +14,8 @@ pub(crate) use self::dto::{
     OperatorPasswordResetRequest, OperatorRegistrationInspectionResponse,
     OperatorRegistrationRequest, OperatorRoleRequest, OperatorTokenRequest,
 };
-use super::super::{AppState, cookie, error::ApiError, middleware};
-use crate::component::operator::{OperatorError, OperatorIdentity};
+use super::super::{cookie, error::ApiError, middleware};
+use crate::component::operator::{OperatorComponent, OperatorError, OperatorIdentity};
 use axum::{
     Extension, Json,
     extract::{FromRequest, Path, Request, State, rejection::JsonRejection},
@@ -24,7 +26,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-pub(in crate::http) fn public_routes(state: AppState) -> Routes {
+pub(crate) fn public_routes(state: Arc<OperatorComponent>) -> Routes<Arc<OperatorComponent>> {
     let logged_out = axum_middleware::from_fn_with_state(state, require_logged_out);
     vec![
         (
@@ -46,7 +48,7 @@ pub(in crate::http) fn public_routes(state: AppState) -> Routes {
     ]
 }
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<Arc<OperatorComponent>> {
     vec![
         (
             "/operator/accounts",
@@ -77,12 +79,12 @@ pub(in crate::http) fn operator_routes() -> Routes {
 }
 
 async fn require_logged_out(
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     request: Request,
     next: Next,
 ) -> Response {
     if let Ok(credential) = cookie::session_credential(request.headers()) {
-        match state.operator().authenticate_session(credential).await {
+        match state.authenticate_session(credential).await {
             Ok(identity) => {
                 if let Some(audit) = request.extensions().get::<RequestAudit>() {
                     audit.record_actor(identity);
@@ -119,8 +121,8 @@ fn clear_session(response: Response) -> Response {
     })
 }
 
-pub(crate) async fn list_accounts(State(state): State<AppState>) -> Response {
-    match state.operator().list_accounts().await {
+pub(crate) async fn list_accounts(State(state): State<Arc<OperatorComponent>>) -> Response {
+    match state.list_accounts().await {
         Ok(accounts) => Json(
             accounts
                 .into_iter()
@@ -133,7 +135,7 @@ pub(crate) async fn list_accounts(State(state): State<AppState>) -> Response {
 }
 
 pub(crate) async fn update_account(
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     Path(path): Path<OperatorAccountPath>,
     request: Request,
 ) -> Response {
@@ -144,18 +146,14 @@ pub(crate) async fn update_account(
     let Ok(Json(request)) = Json::<OperatorRoleRequest>::from_request(request, &state).await else {
         return ApiError::invalid_request("operator_form_rejected").into_response();
     };
-    match state
-        .operator()
-        .change_role(target, request.role.into())
-        .await
-    {
+    match state.change_role(target, request.role.into()).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_operator(error).into_response(),
     }
 }
 
 pub(crate) async fn delete_account(
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     Extension(actor): Extension<OperatorIdentity>,
     Path(path): Path<OperatorAccountPath>,
 ) -> Response {
@@ -163,7 +161,7 @@ pub(crate) async fn delete_account(
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
-    match state.operator().delete_account(target).await {
+    match state.delete_account(target).await {
         Ok(()) if target == actor.operator_id() => {
             clear_session(StatusCode::NO_CONTENT.into_response())
         }
@@ -172,8 +170,8 @@ pub(crate) async fn delete_account(
     }
 }
 
-pub(crate) async fn list_invitations(State(state): State<AppState>) -> Response {
-    let invitations = match state.operator().list_invitations().await {
+pub(crate) async fn list_invitations(State(state): State<Arc<OperatorComponent>>) -> Response {
+    let invitations = match state.list_invitations().await {
         Ok(invitations) => invitations,
         Err(error) => return ApiError::from_operator(error).into_response(),
     };
@@ -192,7 +190,7 @@ pub(crate) async fn list_invitations(State(state): State<AppState>) -> Response 
 
 pub(in crate::http) async fn create_invitation(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     Extension(actor): Extension<OperatorIdentity>,
     request: Result<Json<OperatorRoleRequest>, JsonRejection>,
 ) -> Response {
@@ -200,7 +198,6 @@ pub(in crate::http) async fn create_invitation(
         return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
-        .operator()
         .issue_invitation(actor.operator_id(), request.role.into())
         .await
     {
@@ -224,14 +221,14 @@ pub(in crate::http) async fn create_invitation(
 }
 
 pub(crate) async fn revoke_invitation(
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     Path(path): Path<OperatorInvitationPath>,
 ) -> Response {
     let id = match parse_id(&path.invite_id) {
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
-    match state.operator().revoke_invitation(id).await {
+    match state.revoke_invitation(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_operator(error).into_response(),
     }
@@ -239,7 +236,7 @@ pub(crate) async fn revoke_invitation(
 
 pub(in crate::http) async fn regenerate_invitation(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     Extension(actor): Extension<OperatorIdentity>,
     Path(path): Path<OperatorInvitationPath>,
 ) -> Response {
@@ -247,11 +244,7 @@ pub(in crate::http) async fn regenerate_invitation(
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
-    match state
-        .operator()
-        .regenerate_invitation(actor.operator_id(), id)
-        .await
-    {
+    match state.regenerate_invitation(actor.operator_id(), id).await {
         Ok(issued) => {
             audit.record_target(AuditTarget::Invitation(issued.invitation.invitation_id));
             let now = match now_ms() {
@@ -273,7 +266,7 @@ pub(in crate::http) async fn regenerate_invitation(
 
 pub(in crate::http) async fn create_password_reset(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     Extension(actor): Extension<OperatorIdentity>,
     Path(path): Path<OperatorAccountPath>,
 ) -> Response {
@@ -282,7 +275,6 @@ pub(in crate::http) async fn create_password_reset(
         Err(error) => return error.into_response(),
     };
     match state
-        .operator()
         .issue_password_reset(actor.operator_id(), target, audit.context())
         .await
     {
@@ -305,17 +297,13 @@ pub(in crate::http) async fn create_password_reset(
 }
 
 pub(crate) async fn inspect_registration(
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     request: Result<Json<OperatorTokenRequest>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
         return ApiError::invalid_request("operator_form_rejected").into_response();
     };
-    match state
-        .operator()
-        .inspect_invitation(request.token.into_string())
-        .await
-    {
+    match state.inspect_invitation(request.token.into_string()).await {
         Ok(invitation) => Json(OperatorRegistrationInspectionResponse {
             role: invitation.role.into(),
         })
@@ -326,14 +314,13 @@ pub(crate) async fn inspect_registration(
 
 pub(in crate::http) async fn register_operator(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     request: Result<Json<OperatorRegistrationRequest>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
         return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
-        .operator()
         .register(
             request.token.into_string(),
             request.username.clone(),
@@ -362,14 +349,13 @@ pub(in crate::http) async fn register_operator(
 }
 
 pub(crate) async fn inspect_password_reset(
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     request: Result<Json<OperatorTokenRequest>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
         return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
-        .operator()
         .inspect_password_reset(request.token.into_string())
         .await
     {
@@ -383,14 +369,13 @@ pub(crate) async fn inspect_password_reset(
 
 pub(in crate::http) async fn reset_password(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     request: Result<Json<OperatorPasswordResetRequest>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
         return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
-        .operator()
         .consume_password_reset(
             request.token.into_string(),
             request.password.into_string(),
@@ -411,7 +396,7 @@ pub(in crate::http) async fn reset_password(
 
 pub(in crate::http) async fn change_password(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     Extension(actor): Extension<OperatorIdentity>,
     request: Result<Json<OperatorPasswordChangeRequest>, JsonRejection>,
 ) -> Response {
@@ -419,7 +404,6 @@ pub(in crate::http) async fn change_password(
         return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
-        .operator()
         .change_password(
             actor.operator_id(),
             request.current_password.into_string(),

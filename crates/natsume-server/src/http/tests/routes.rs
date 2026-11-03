@@ -11,9 +11,10 @@ use axum::{
 use diesel::{ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _};
 use tower::ServiceExt as _;
 
+use super::super::{AccessRoutes, mount};
 use super::{
     Captured, LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, SupportFailure, TestDatabase,
-    drive, header_text, login_request, router, seed_operator, server_state, unused_web_root,
+    drive, header_text, login_request, seed_operator, server, unused_web_root,
 };
 use crate::tls::PeerAddress;
 
@@ -594,28 +595,33 @@ pub(super) async fn mounted_route_responses(
 #[tokio::test]
 async fn inventory_exactly_matches_every_group_path_and_method() -> TestResult {
     let fixture = TestDatabase::new().await?;
-    let state = server_state(&fixture)?;
+    let loaded = server(&fixture)?;
     let mut actual = BTreeSet::new();
+    let AccessRoutes {
+        public,
+        operator,
+        source,
+        client,
+    } = loaded.routes;
+    let public = super::super::handler::health::public_routes::<()>()
+        .into_iter()
+        .chain(public)
+        .collect();
     for (principal, routes) in [
-        Principal::Public,
-        Principal::Operator,
-        Principal::PrintSource,
-        Principal::PrintClient,
-    ]
-    .into_iter()
-    .zip(super::super::route_groups(&state))
-    {
+        (Principal::Public, public),
+        (Principal::Operator, operator),
+        (Principal::PrintSource, source),
+        (Principal::PrintClient, client),
+    ] {
         for (template, methods) in routes {
-            let probe = Router::new()
-                .route(
-                    template,
-                    methods.route_layer(middleware::from_fn(
-                        |_request: axum::extract::Request, _next: axum::middleware::Next| async {
-                            StatusCode::NO_CONTENT
-                        },
-                    )),
-                )
-                .with_state(state.clone());
+            let probe = Router::new().route(
+                template,
+                methods.route_layer(middleware::from_fn(
+                    |_request: axum::extract::Request, _next: axum::middleware::Next| async {
+                        StatusCode::NO_CONTENT
+                    },
+                )),
+            );
             for method in [
                 Method::GET,
                 Method::POST,
@@ -664,8 +670,8 @@ async fn every_principal_and_admin_boundary_is_enforced() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     let viewer = seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let state = server_state(&fixture)?;
-    let application = router(state.clone(), unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     assert_eq!(login.status, StatusCode::OK);
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
@@ -686,12 +692,12 @@ async fn every_principal_and_admin_boundary_is_enforced() -> TestResult {
             .map_err(crate::db::PersistenceError::from)
         })
         .await?;
-    let printer = state
-        .print()
+    let printer = loaded
+        .print
         .create_printer("inventory printer".to_owned())
         .await?;
-    let code = state.print().issue_pairing_code(printer.printer_id).await?;
-    let pending_client = state.print().pair_client(&code.code).await?;
+    let code = loaded.print.issue_pairing_code(printer.printer_id).await?;
+    let pending_client = loaded.print.pair_client(&code.code).await?;
     for route in INVENTORY {
         assert_principal_boundary(&application, route, cookie, &pending_client.token).await?;
     }
@@ -813,19 +819,30 @@ async fn assert_principal_boundary(
 #[tokio::test]
 async fn new_methods_inherit_each_groups_authentication_without_an_opt_in_wrapper() -> TestResult {
     let fixture = TestDatabase::new().await?;
-    let state = server_state(&fixture)?;
-    for group in [
-        super::super::operator_group,
-        super::super::source_group,
-        super::super::client_group,
+    let loaded = server(&fixture)?;
+    let routes = AccessRoutes {
+        operator: vec![("/new-operator", post(|| async { StatusCode::NO_CONTENT }))],
+        source: vec![("/new-source", post(|| async { StatusCode::NO_CONTENT }))],
+        client: vec![("/new-client", post(|| async { StatusCode::NO_CONTENT }))],
+        ..AccessRoutes::new()
+    }
+    .merge(loaded.routes.clone());
+    let application = mount(
+        routes,
+        loaded.operator.clone(),
+        loaded.print.clone(),
+        loaded.journal.clone(),
+        loaded.lifecycle.clone(),
+        unused_web_root(),
+    );
+    for path in [
+        "/api/v2/new-operator",
+        "/api/v2/new-source",
+        "/api/v2/new-client",
     ] {
-        let application = group(
-            state.clone(),
-            vec![("/new-operation", post(|| async { StatusCode::NO_CONTENT }))],
-        )
-        .with_state(state.clone());
         let response = application
-            .oneshot(Request::post("/new-operation").body(Body::empty())?)
+            .clone()
+            .oneshot(Request::post(path).body(Body::empty())?)
             .await?;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
@@ -833,18 +850,52 @@ async fn new_methods_inherit_each_groups_authentication_without_an_opt_in_wrappe
 }
 
 #[tokio::test]
+async fn shared_session_path_keeps_public_methods_and_allow_header() -> TestResult {
+    let fixture = TestDatabase::new().await?;
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
+    for (method, expected) in [
+        (Method::GET, StatusCode::UNAUTHORIZED),
+        (Method::POST, StatusCode::BAD_REQUEST),
+        (Method::DELETE, StatusCode::NO_CONTENT),
+        (Method::PUT, StatusCode::METHOD_NOT_ALLOWED),
+    ] {
+        let response = drive(
+            &application,
+            super::request(method.clone(), "/api/v2/session", "")?,
+        )
+        .await?;
+        assert_eq!(response.status, expected, "session method: {method}");
+        if method == Method::PUT {
+            assert_eq!(response.headers[header::ALLOW], "POST,DELETE,GET,HEAD");
+            assert!(response.body.is_empty());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication() -> TestResult {
     let fixture = TestDatabase::new().await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
+    let inventory = server(&fixture)?;
+    let AccessRoutes {
+        public,
+        operator,
+        source,
+        client,
+    } = inventory.routes;
+    let public = super::super::handler::health::public_routes::<()>()
+        .into_iter()
+        .chain(public)
+        .collect();
     for (principal, routes) in [
-        Principal::Public,
-        Principal::Operator,
-        Principal::PrintSource,
-        Principal::PrintClient,
-    ]
-    .into_iter()
-    .zip(super::super::route_groups(&server_state(&fixture)?))
-    {
+        (Principal::Public, public),
+        (Principal::Operator, operator),
+        (Principal::PrintSource, source),
+        (Principal::PrintClient, client),
+    ] {
         for (template, _) in routes {
             for method in [
                 Method::GET,

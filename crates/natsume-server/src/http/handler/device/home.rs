@@ -1,13 +1,19 @@
+use std::sync::Arc;
+
 use axum::{
     Json,
     extract::{Path, State},
     response::{IntoResponse, Response},
+    routing::get,
 };
 use serde::Serialize;
 
-use crate::component::home::HomeError;
+use crate::{
+    component::home::{HomeComponent, HomeError},
+    http::Routes,
+};
 
-use super::super::super::{AppState, error::ApiError};
+use super::super::super::error::ApiError;
 use super::{DevicePath, invalid_device_id, parse_device_id};
 
 /// Current durable Home target, if any reset has been requested.
@@ -19,14 +25,18 @@ pub(crate) struct HomeResponse {
     reset_epoch: Option<u64>,
 }
 
+pub(crate) fn operator_routes() -> Routes<Arc<HomeComponent>> {
+    vec![("/devices/{device_id}/home", get(get_home))]
+}
+
 pub(crate) async fn get_home(
-    State(state): State<AppState>,
+    State(state): State<Arc<HomeComponent>>,
     Path(path): Path<DevicePath>,
 ) -> Response {
     let Some(device_id) = parse_device_id(&path) else {
         return invalid_device_id();
     };
-    match state.home().read_current(device_id).await {
+    match state.read_current(device_id).await {
         Ok(reset_epoch) => Json(HomeResponse { reset_epoch }).into_response(),
         Err(error) => home_error(error).into_response(),
     }

@@ -596,10 +596,6 @@ async fn rebuilding_the_scheduler_does_not_issue_another_recovery_grace() {
 async fn background_initialization_reports_snapshot_failure_instead_of_becoming_ready() {
     use diesel::connection::SimpleConnection as _;
     let f = Fixture::new().await;
-    let state = must(crate::server_state::tests::for_test(
-        f.database.clone(),
-        f.documents_path(),
-    ));
     must(
         write(&f, |tx| {
             tx.connection().batch_execute("DROP TABLE print_attempts")?;
@@ -607,7 +603,7 @@ async fn background_initialization_reports_snapshot_failure_instead_of_becoming_
         })
         .await,
     );
-    let Err(error) = crate::background::start_background_tasks(&state).await else {
+    let Err(error) = crate::background::start_background_tasks(&f.print).await else {
         panic!("initialization unexpectedly succeeded");
     };
     assert!(
@@ -663,15 +659,15 @@ async fn an_early_check_rearms_and_later_reads_renewal_without_any_notification(
 #[tokio::test]
 async fn cancelling_background_initialization_releases_the_owned_task() {
     let f = Fixture::new().await;
-    let state = Arc::new(must(crate::server_state::tests::for_test(
+    let print = Arc::new(must(crate::component::print::PrintComponent::for_test(
         f.database.clone(),
         f.documents_path(),
     )));
-    let weak_state = Arc::downgrade(&state);
-    let weak_inbox = Arc::downgrade(&state.print().expiry);
+    let weak_print = Arc::downgrade(&print);
+    let weak_inbox = Arc::downgrade(&print.expiry);
     let held_connections = f.database.test_exhaust_pool();
     let start = AbortOnDropHandle::new(tokio::spawn(async move {
-        crate::background::start_background_tasks(&state).await
+        crate::background::start_background_tasks(&print).await
     }));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!start.is_finished());
@@ -680,7 +676,7 @@ async fn cancelling_background_initialization_releases_the_owned_task() {
     drop(held_connections);
     must(
         tokio::time::timeout(Duration::from_secs(5), async {
-            while weak_state.upgrade().is_some() || weak_inbox.upgrade().is_some() {
+            while weak_print.upgrade().is_some() || weak_inbox.upgrade().is_some() {
                 tokio::task::yield_now().await;
             }
         })

@@ -1,10 +1,7 @@
 use super::*;
 use crate::{
     component::operator::{OperatorRole, tests::PasswordVerificationTestGuard},
-    http::{
-        self, AppState,
-        tests::{TestDatabase, seed_operator, unused_web_root},
-    },
+    http::tests::{TestDatabase, seed_operator, unused_web_root},
     journal::{
         Envelope, JournalComponent,
         event::types::OperatorId,
@@ -31,8 +28,10 @@ const VIEWER: &str = "audit-viewer-secret-canary";
 struct Fixture {
     /// Owns the temporary business database used by the real HTTP router.
     database: TestDatabase,
-    /// Real composition with an explicitly injected capture channel.
-    state: AppState,
+    /// Emitter for the injected capture channel.
+    journal: crate::journal::Journal,
+    /// Shared HTTP mutation admission and producer tracking.
+    lifecycle: crate::lifecycle::ServerLifecycle,
     /// Mounted production router, including completion, audit and authentication.
     app: Router,
     /// Fixture-owned capture channel; no writer task is required for these assertions.
@@ -45,6 +44,7 @@ struct Fixture {
     admin_cookie: String,
     /// Viewer session cookie supplied only to HTTP.
     viewer_cookie: String,
+    _runtime: crate::server_runtime::ServerRuntime,
 }
 
 impl Fixture {
@@ -53,22 +53,23 @@ impl Fixture {
         let admin_id = seed_operator(&database.database, ADMIN, PASSWORD).await?;
         let viewer_id = seed_operator(&database.database, VIEWER, PASSWORD).await?;
         let (journal, mut events) = JournalComponent::channel(crate::journal::CAPACITY);
-        let state = Arc::new(crate::server_state::tests::for_test_with_journal(
+        let loaded = crate::feature::tests::ServerFixture::new(
             database.database.clone(),
             database.documents_path(),
-            database.path.with_extension("logos"),
-            journal,
-        )?);
-        state
-            .operator()
+        )
+        .logos(database.path.with_extension("logos"))
+        .journal(journal)
+        .build()?;
+        loaded
+            .operator
             .change_role(viewer_id, OperatorRole::Viewer)
             .await?;
-        let admin = state
-            .operator()
+        let admin = loaded
+            .operator
             .sign_in(ADMIN, PASSWORD.into(), JournalContext::default())
             .await?;
-        let viewer = state
-            .operator()
+        let viewer = loaded
+            .operator
             .sign_in(VIEWER, PASSWORD.into(), JournalContext::default())
             .await?;
         let admin_cookie = format!(
@@ -79,11 +80,19 @@ impl Fixture {
             "__Secure-natsume_session={}",
             viewer.wire_credential().expose()
         );
-        let app = http::router(state.clone(), unused_web_root());
+        let app = loaded.http_router(unused_web_root());
+        let crate::feature::LoadedServer {
+            runtime,
+            journal,
+            lifecycle,
+            ..
+        } = loaded;
         drain_events(&mut events);
         Ok(Self {
+            _runtime: runtime,
             database,
-            state,
+            journal,
+            lifecycle,
             app,
             events,
             admin_id,
@@ -299,14 +308,11 @@ async fn panic_records_one_redacted_internal_error_without_changing_completion()
     let app = Router::new()
         .route("/session", post(panics))
         .layer(middleware::from_fn_with_state(
-            f.state.journal().emitter(),
+            f.journal.clone(),
             audit_request,
         ))
         .layer(middleware::from_fn_with_state(
-            super::super::CompletionState::new(
-                f.state.lifecycle().clone(),
-                f.state.journal().emitter(),
-            ),
+            super::super::CompletionState::new(f.lifecycle.clone(), f.journal.clone()),
             super::super::complete_mutation,
         ));
     let response = app
@@ -351,26 +357,19 @@ async fn cancelled_caller_still_records_exactly_one_completed_request() -> TestR
         .route("/session", post(blocked))
         .with_state(blocking.clone())
         .layer(middleware::from_fn_with_state(
-            f.state.journal().emitter(),
+            f.journal.clone(),
             audit_request,
         ))
         .layer(middleware::from_fn_with_state(
-            super::super::CompletionState::new(
-                f.state.lifecycle().clone(),
-                f.state.journal().emitter(),
-            ),
+            super::super::CompletionState::new(f.lifecycle.clone(), f.journal.clone()),
             super::super::complete_mutation,
         ));
     let caller = tokio::spawn(app.oneshot(HttpRequest::post("/session").body(Body::empty())?));
     blocking.entered.notified().await;
     caller.abort();
-    f.state.lifecycle().begin_shutdown();
+    f.lifecycle.begin_shutdown();
     blocking.release.notify_one();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        f.state.lifecycle().wait(),
-    )
-    .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), f.lifecycle.wait()).await?;
     let records = f.records();
     request_record(&records, AuditRoute::Session, StatusCode::NO_CONTENT);
     assert_eq!(records.len(), 1);
@@ -381,7 +380,7 @@ async fn cancelled_caller_still_records_exactly_one_completed_request() -> TestR
 async fn shutdown_refusals_are_audited_before_authentication() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let mut f = Fixture::new().await?;
-    f.state.lifecycle().begin_shutdown();
+    f.lifecycle.begin_shutdown();
     let response = f
         .request(Method::POST, "/api/v2/session", Some(&f.admin_cookie), "{}")
         .await?;
@@ -512,7 +511,7 @@ async fn machine_print_requests_are_not_audited_even_during_shutdown() -> TestRe
         assert_eq!(response.status(), expected_status, "{path}");
     }
     assert!(f.records().is_empty());
-    f.state.lifecycle().begin_shutdown();
+    f.lifecycle.begin_shutdown();
     let response = f
         .request(Method::POST, "/api/v2/print/client/claims", None, "{}")
         .await?;
@@ -608,14 +607,11 @@ async fn panic_and_shutdown_refusal_keep_the_captured_request_trace() -> TestRes
     let app = Router::new()
         .route("/session", post(panics))
         .layer(middleware::from_fn_with_state(
-            f.state.journal().emitter(),
+            f.journal.clone(),
             audit_request,
         ))
         .layer(middleware::from_fn_with_state(
-            super::super::CompletionState::new(
-                f.state.lifecycle().clone(),
-                f.state.journal().emitter(),
-            ),
+            super::super::CompletionState::new(f.lifecycle.clone(), f.journal.clone()),
             super::super::complete_mutation,
         ))
         .layer(middleware::from_fn(super::super::request_context));
@@ -638,7 +634,7 @@ async fn panic_and_shutdown_refusal_keep_the_captured_request_trace() -> TestRes
         record.trace_id.map(|id| id.to_string()).as_deref(),
         Some("0af7651916cd43dd8448eb211c80319c")
     );
-    f.state.lifecycle().begin_shutdown();
+    f.lifecycle.begin_shutdown();
     let request = HttpRequest::post("/api/v2/session")
         .header("traceparent", TRACEPARENT)
         .body(Body::empty())?;

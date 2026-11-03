@@ -418,6 +418,7 @@ fn input(negotiation_id: BindingNegotiationId, epoch: u64, seat_code: &str) -> B
 }
 
 struct Fixture {
+    _runtime: crate::server_runtime::ServerRuntime,
     root: PathBuf,
     database: Database,
     vault: Arc<VaultSession>,
@@ -448,10 +449,13 @@ impl Fixture {
         let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
         let component =
             BindingComponent::new(database.clone(), Arc::clone(&vault), journal.emitter());
-        let state = crate::server_state::tests::for_test(database.clone(), root.join("documents"))
-            .unwrap_or_else(|error| panic!("state: {error}"));
-        let control = Arc::clone(state.device_control());
+        let crate::feature::LoadedServer { runtime, .. } =
+            crate::feature::tests::ServerFixture::new(database.clone(), root.join("documents"))
+                .build()
+                .unwrap_or_else(|error| panic!("state: {error}"));
+        let control = Arc::clone(runtime.device_control());
         Self {
+            _runtime: runtime,
             root,
             database,
             vault,

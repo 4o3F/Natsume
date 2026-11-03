@@ -13,7 +13,9 @@ use tokio_tungstenite::{Connector, client_async_tls_with_config};
 
 use super::*;
 use crate::{
-    component::target_submission::{TargetAction, TargetScope, TargetSubmissionRequest},
+    component::target_submission::{
+        TargetAction, TargetScope, TargetSubmissionComponent, TargetSubmissionRequest,
+    },
     tls::{PeerAddress, TlsListener, tests::TestIdentity},
 };
 
@@ -35,8 +37,9 @@ async fn activate_device(
         "2.10.3".to_owned(),
     );
     let EnrollmentStartOutcome::Pending(review, activation) = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .start_enrollment(
             evidence,
             std::net::IpAddr::from([127, 0, 0, 1]),
@@ -50,8 +53,9 @@ async fn activate_device(
         ));
     };
     let approval = fixture
-        .state
-        .device()
+        .runtime
+        .device_control()
+        .device
         .approve_enrollment(
             review.review_id(),
             crate::component::device::EnrollmentApprovalMode::Manual,
@@ -196,10 +200,7 @@ async fn run_mixed_probe() -> ProbeResult {
     )
     .await?;
     let address = listener.local_addr()?;
-    let application = crate::http::router(
-        Arc::clone(&fixture.state),
-        std::path::Path::new("/nonexistent-resource-probe-web"),
-    );
+    let application = fixture.application.clone();
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         axum::serve(
@@ -239,7 +240,7 @@ async fn run_mixed_probe() -> ProbeResult {
     }
     assert_eq!(
         fixture
-            .state
+            .runtime
             .device_control()
             .active_device_ids()
             .await
@@ -250,7 +251,7 @@ async fn run_mixed_probe() -> ProbeResult {
     exercise_mixed_load(&fixture, &ids, &heartbeat_samples).await?;
     assert_eq!(
         fixture
-            .state
+            .runtime
             .device_control()
             .active_device_ids()
             .await
@@ -293,7 +294,7 @@ async fn observe_status(
         let started = Instant::now();
         assert!(
             fixture
-                .state
+                .runtime
                 .device_control()
                 .read_device_status(device)
                 .await
@@ -323,14 +324,14 @@ async fn exercise_mixed_load(
     let importing = async {
         let started = Instant::now();
         let preview = fixture
-            .state
-            .import()
+            .import
+            .component()
             .try_begin()?
             .create_candidate(&bytes)
             .await?;
         let change = fixture
-            .state
-            .import()
+            .import
+            .component()
             .try_begin()?
             .commit(
                 preview.candidate_id(),
@@ -338,18 +339,18 @@ async fn exercise_mixed_load(
                 &bytes,
             )
             .await?;
-        fixture.state.device_control().publish(change).await;
+        fixture.runtime.device_control().publish(change).await;
         tracing::info!("preview + commit: {:?}", started.elapsed());
         Ok::<_, crate::test_error::TestError>(())
     };
+    let target_submission =
+        TargetSubmissionComponent::new(fixture.database.clone(), fixture.journal.clone());
     let submitting = async {
         let mut jobs = Vec::new();
         for _ in 0..10 {
             jobs.push(async {
                 let started = Instant::now();
-                let outcome = fixture
-                    .state
-                    .target_submission()
+                let outcome = target_submission
                     .submit(
                         Uuid::now_v7(),
                         TargetSubmissionRequest {
@@ -368,7 +369,11 @@ async fn exercise_mixed_load(
                         .iter()
                         .all(|row| row.rejection.is_none())
                 );
-                fixture.state.device_control().publish(outcome.change).await;
+                fixture
+                    .runtime
+                    .device_control()
+                    .publish(outcome.change)
+                    .await;
                 Ok::<_, crate::test_error::TestError>(started.elapsed())
             });
         }

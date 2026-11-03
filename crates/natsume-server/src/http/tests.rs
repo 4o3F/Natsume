@@ -50,13 +50,11 @@ use crate::{
         Database, DatabaseConfig,
         tests::{test_data_version, test_lock_database, test_observer},
     },
+    feature,
     logging::tests::{CapturedLogs, SubscriberTestGuard},
-    server_state,
 };
 
-use super::{
-    AppState, error::ApiError, handler::health, middleware::request_context, not_found, router,
-};
+use super::{error::ApiError, handler::health, middleware::request_context, not_found};
 
 pub(crate) fn health_router() -> Router {
     Router::new()
@@ -399,9 +397,9 @@ pub(crate) fn unused_web_root() -> &'static Path {
     Path::new("/natsume-server-test-unused-web-root")
 }
 
-pub(super) fn server_state(fixture: &TestDatabase) -> Result<AppState, SupportFailure> {
-    server_state::tests::for_test(fixture.database.clone(), fixture.documents_path())
-        .map(Arc::new)
+pub(super) fn server(fixture: &TestDatabase) -> Result<feature::LoadedServer, SupportFailure> {
+    feature::tests::ServerFixture::new(fixture.database.clone(), fixture.documents_path())
+        .build()
         .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
@@ -410,7 +408,8 @@ async fn login_rejects_invalid_fields_and_excess_requests_before_database_work()
 -> Result<(), TestFailure> {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let permits = db_operator::occupy_sign_in_capacity().await;
     let connections = fixture.database.test_exhaust_pool();
     let response = drive(&application, login_request("admin", "password")?).await?;
@@ -442,7 +441,8 @@ async fn login_rejects_invalid_fields_and_excess_requests_before_database_work()
 async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestFailure> {
     let web_root = TestWebRoot::new()?;
     let fixture = TestDatabase::new().await?;
-    let application = router(server_state(&fixture)?, web_root.path());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(web_root.path());
 
     for (path, expected_body) in [
         ("/", INDEX_HTML),
@@ -476,7 +476,8 @@ async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestF
 async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
 -> Result<(), TestFailure> {
     let closed_fixture = TestDatabase::new().await?;
-    let health_router = router(server_state(&closed_fixture)?, unused_web_root());
+    let loaded = server(&closed_fixture)?;
+    let health_router = loaded.http_router(unused_web_root());
     let _database_lock = test_lock_database(&closed_fixture.path)
         .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let health_response =
@@ -490,7 +491,8 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
     }
 
     let fixture = TestDatabase::new().await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let supplied = "00000000-0000-7000-8000-000000000000";
     let supplied_request = Request::builder()
         .method(Method::GET)
@@ -521,7 +523,8 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
 async fn completed_request_log_is_single_and_uses_the_route_template() -> Result<(), TestFailure> {
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let fixture = TestDatabase::new().await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Info);
     let response = async { drive(&application, request(Method::GET, "/api/v2/health", "")?).await }
@@ -550,7 +553,8 @@ async fn authenticated_request_records_context_on_the_http_root_span() -> Result
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     let operator_id = seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -728,7 +732,8 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOG_LOGIN_NAME, LOG_PASSWORD).await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Trace);
     let credential = async {
@@ -809,7 +814,8 @@ async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -859,7 +865,8 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -925,7 +932,8 @@ async fn head_on_every_api_route_is_rejected_at_the_root() -> Result<(), TestFai
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -1051,7 +1059,8 @@ async fn roster_http_accepts_binary_xlsx_and_keeps_credentials_out_of_previews_a
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
@@ -1196,14 +1205,19 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     let fixture = TestDatabase::new().await?;
     let logos = tempfile::TempDir::new()?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let state = Arc::new(server_state::tests::for_test_with_logos(
-        fixture.database.clone(),
-        fixture.documents_path(),
-        logos.path().to_path_buf(),
-    )?);
-    let application = router(state.clone(), unused_web_root());
+    let features =
+        feature::tests::ServerFixture::new(fixture.database.clone(), fixture.documents_path())
+            .logos(logos.path().to_path_buf())
+            .build_with_features()?;
+    let loaded = features.loaded;
+    let application = loaded.http_router(unused_web_root());
     let xlsx = include_bytes!("../component/import/examples/roster.xlsx");
-    let preview = state.import().try_begin()?.create_candidate(xlsx).await?;
+    let preview = features
+        .import
+        .component()
+        .try_begin()?
+        .create_candidate(xlsx)
+        .await?;
     let candidate_list = format!("/api/v2/imports/{}/organizations", preview.candidate_id());
     let candidate_logo = format!("{candidate_list}/INST-001/logo");
     let private_routes = [
@@ -1252,12 +1266,13 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     assert_eq!(schools[0]["status"], "available");
     assert_eq!(schools[0]["files"], serde_json::json!(["示例大学.webp"]));
     assert!(!String::from_utf8_lossy(&observation.body).contains("example-password"));
-    let change = state
-        .import()
+    let change = features
+        .import
+        .component()
         .try_begin()?
         .commit(preview.candidate_id(), preview.preview_token_bytes(), xlsx)
         .await?;
-    state.device_control().publish(change).await;
+    loaded.runtime.device_control().publish(change).await;
     assert_eq!(
         drive(
             &application,

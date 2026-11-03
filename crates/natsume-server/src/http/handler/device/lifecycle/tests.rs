@@ -5,12 +5,9 @@ use serde_json::Value;
 use crate::{
     component::operator::tests::PasswordVerificationTestGuard,
     db::PersistenceError,
-    http::{
-        router,
-        tests::{
-            TestDatabase, cookie_request, drive, header_text, login_request, seed_operator,
-            server_state, unused_web_root,
-        },
+    http::tests::{
+        TestDatabase, cookie_request, drive, header_text, login_request, seed_operator, server,
+        unused_web_root,
     },
 };
 
@@ -32,7 +29,8 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
         ('01900000-0000-7000-8000-000000000002','22222222-2222-5222-8222-222222222222','strong','disabled',1),
         ('01900000-0000-7000-8000-000000000003','33333333-3333-5333-8333-333333333333','strong','revoked',1);"
     ).map_err(PersistenceError::from)).await.map_err(crate::test_error::TestError::from)?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server(&fixture)?;
+    let application = loaded.http_router(unused_web_root());
     let login = drive(
         &application,
         login_request("list-admin", "device-filter-test-password1!")?,

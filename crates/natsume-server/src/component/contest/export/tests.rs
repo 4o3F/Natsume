@@ -152,10 +152,10 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
         Database::connect_and_migrate(&DatabaseConfig::new(root.path().join("db"), true)).await,
     );
     let import = ImportComponent::new(database.clone(), vault.clone());
-    let state = checked(crate::server_state::tests::for_test(
-        database.clone(),
-        root.path().join("documents"),
-    ));
+    let crate::feature::LoadedServer { runtime, .. } = checked(
+        crate::feature::tests::ServerFixture::new(database.clone(), root.path().join("documents"))
+            .build(),
+    );
     let contest = ContestComponent::new(database, vault, root.path().join("absent-logos"));
     assert!(matches!(
         contest.export_domjudge().await,
@@ -192,7 +192,7 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
             .commit(preview.candidate_id(), preview.preview_token_bytes(), &xlsx)
             .await,
     );
-    state.device_control().publish(change).await;
+    runtime.device_control().publish(change).await;
     let first = entries(checked(contest.export_domjudge().await));
     assert_eq!(
         json(&first, "teams.json").as_array().map(Vec::len),
@@ -225,7 +225,7 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
             )
             .await,
     );
-    state.device_control().publish(change).await;
+    runtime.device_control().publish(change).await;
     let next = entries(checked(contest.export_domjudge().await));
     let accounts: Vec<Value> = checked(serde_saphyr::from_slice(&next["accounts.yaml"]));
     assert_eq!(accounts.len(), 400);

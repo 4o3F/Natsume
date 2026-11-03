@@ -17,15 +17,15 @@ async fn expire_token(f: &Fixture) -> TestResult {
 
 async fn replace_and_confirm(f: &mut Fixture) -> TestResult {
     assert!(matches!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .issue_code(f.source.clone(), PendingEnrollment::Preserve)
             .await,
         Err(EnrollmentError::Conflict)
     ));
     let replacement = f
-        .state
-        .photo()
+        .photo
+        .component()
         .issue_code(f.source.clone(), PendingEnrollment::Replace)
         .await;
     assert!(
@@ -33,8 +33,8 @@ async fn replace_and_confirm(f: &mut Fixture) -> TestResult {
         "explicit replacement must recover a confirmed source whose initialization has not completed"
     );
     assert!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .check_token(&f.token, CredentialUse::Initialization)
             .await
             .is_err()
@@ -47,8 +47,8 @@ async fn replace_and_confirm(f: &mut Fixture) -> TestResult {
     .parse()
     .unwrap_or_else(|error| panic!("generated non-weak public key: {error:?}"));
     let issued = f
-        .state
-        .photo()
+        .photo
+        .component()
         .pair(PhotoPairRequest {
             code: replacement?.code,
             signing_public_key: key.clone(),
@@ -103,8 +103,8 @@ async fn confirmed_source_replaces_an_uncompleted_snapshot_after_roster_correcti
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     // Also require replacement to invalidate an old credential that is still valid.
-    f.state
-        .photo()
+    f.photo
+        .component()
         .check_token(&f.token, CredentialUse::Initialization)
         .await?;
     replace_and_confirm(&mut f).await?;
@@ -123,7 +123,7 @@ async fn confirmed_source_replaces_an_uncompleted_snapshot_after_roster_correcti
             .any(|team| team["account_id"] == "account-a"
                 && team["team_name_zh"] == "Corrected team")
     );
-    assert_eq!(f.state.photo().list_sources().await?.len(), 1);
+    assert_eq!(f.photo.component().list_sources().await?.len(), 1);
     Ok(())
 }
 
@@ -149,8 +149,8 @@ async fn completed_source_still_rejects_explicit_replacement() -> TestResult {
         StatusCode::NO_CONTENT
     );
     assert!(matches!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .issue_code(f.source.clone(), PendingEnrollment::Replace)
             .await,
         Err(EnrollmentError::Conflict)
@@ -169,10 +169,13 @@ async fn disabled_and_revoked_sources_cannot_be_replaced() -> TestResult {
     for state in [SourceState::Disabled, SourceState::Revoked] {
         let f = Fixture::new().await?;
         f.confirm().await?;
-        f.state.photo().set_state(f.source.clone(), state).await?;
+        f.photo
+            .component()
+            .set_state(f.source.clone(), state)
+            .await?;
         assert!(matches!(
-            f.state
-                .photo()
+            f.photo
+                .component()
                 .issue_code(f.source, PendingEnrollment::Replace)
                 .await,
             Err(EnrollmentError::Conflict)
@@ -196,8 +199,8 @@ async fn confirmed_source_replacement_requires_an_administrator_session() -> Tes
         f.send(Method::POST, &path, body.clone()).await?.status,
         StatusCode::UNAUTHORIZED
     );
-    f.state
-        .photo()
+    f.photo
+        .component()
         .check_token(&f.token, CredentialUse::Initialization)
         .await?;
     seed_operator(&f.database.database, LOGIN_NAME, PASSWORD).await?;
@@ -243,8 +246,8 @@ async fn replacement_and_completion_cannot_both_commit() -> TestResult {
             "client/initialization/complete",
             receipt.clone()
         ),
-        f.state
-            .photo()
+        f.photo
+            .component()
             .issue_code(f.source.clone(), PendingEnrollment::Replace)
     );
     let status = completion?.status;
@@ -278,8 +281,8 @@ async fn replacement_prevents_old_snapshot_publication() -> TestResult {
     f.confirm().await?;
     let (download, replacement) = tokio::join!(
         f.send(Method::POST, "client/initialization", Value::Null),
-        f.state
-            .photo()
+        f.photo
+            .component()
             .issue_code(f.source.clone(), PendingEnrollment::Replace)
     );
     replacement?;
@@ -337,8 +340,8 @@ async fn failed_replacement_rolls_back_snapshot_removal_and_preserves_credential
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     assert!(matches!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .issue_code(f.source.clone(), PendingEnrollment::Replace)
             .await,
         Err(EnrollmentError::Persistence { .. })

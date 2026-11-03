@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 
 use axum::{
@@ -8,11 +10,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::component::provisioning::ProvisioningWindow;
+use crate::component::provisioning::{ProvisioningComponent, ProvisioningWindow};
 
-use super::super::{AppState, error::ApiError, middleware};
+use super::super::{error::ApiError, middleware};
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<Arc<ProvisioningComponent>> {
     vec![(
         "/provisioning-window",
         get(get_provisioning_window)
@@ -53,13 +55,15 @@ impl From<ProvisioningWindow> for ProvisioningWindowResponse {
     }
 }
 
-pub(crate) async fn get_provisioning_window(State(state): State<AppState>) -> Response {
-    let window = state.provisioning().read_window();
+pub(crate) async fn get_provisioning_window(
+    State(state): State<Arc<ProvisioningComponent>>,
+) -> Response {
+    let window = state.read_window();
     Json(ProvisioningWindowResponse::from(window)).into_response()
 }
 
 pub(crate) async fn update_provisioning_window(
-    State(state): State<AppState>,
+    State(state): State<Arc<ProvisioningComponent>>,
     request: Result<Json<ProvisioningWindowRequest>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
@@ -67,8 +71,8 @@ pub(crate) async fn update_provisioning_window(
             .into_response();
     };
     let window = match request.state {
-        ProvisioningWindowState::Closed => state.provisioning().close_window(),
-        ProvisioningWindowState::Open => state.provisioning().open_window(),
+        ProvisioningWindowState::Closed => state.close_window(),
+        ProvisioningWindowState::Open => state.open_window(),
     };
     Json(ProvisioningWindowResponse::from(window)).into_response()
 }

@@ -18,12 +18,10 @@ async fn request(f: &Fixture, path: &str, cookie: Option<&str>) -> Result<Respon
     if let Some(cookie) = cookie {
         request = request.header(header::COOKIE, cookie);
     }
-    Ok(crate::http::router(
-        f.state.clone(),
-        std::path::Path::new("/nonexistent/journal-web"),
-    )
-    .oneshot(request.body(Body::empty())?)
-    .await?)
+    Ok(f.application
+        .clone()
+        .oneshot(request.body(Body::empty())?)
+        .await?)
 }
 async fn body(response: Response) -> Result<String, TestError> {
     let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024).await?;
@@ -62,8 +60,8 @@ async fn every_endpoint_has_operator_permissions_no_store_and_no_get_audit() -> 
         body(response).await?;
     }
     let audit = f
-        .state
-        .journal_query()
+        .feature
+        .query()
         .events(
             ReadRequest {
                 filter: Filter {
@@ -77,7 +75,7 @@ async fn every_endpoint_has_operator_permissions_no_store_and_no_get_audit() -> 
         )
         .await?;
     assert!(audit.events.is_empty());
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -117,7 +115,7 @@ async fn viewer_restrictions_and_malformed_inputs_never_echo_path_or_query_text(
         let body = body(response).await?;
         assert!(!body.contains("secret-canary"));
     }
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -132,7 +130,7 @@ async fn unreadable_rows_are_bounded_and_export_never_echoes_secrets() -> Result
         }),
     )])
     .await?;
-    corrupt_latest(f.state.journal(), "password_token_login_secret_canary").await?;
+    corrupt_latest(f.runtime.journal(), "password_token_login_secret_canary").await?;
     for path in ["/api/v2/journal/events", "/api/v2/journal/export"] {
         let response = request(&f, path, Some(&f.admin_cookie)).await?;
         assert_eq!(response.status(), StatusCode::OK);
@@ -146,7 +144,7 @@ async fn unreadable_rows_are_bounded_and_export_never_echoes_secrets() -> Result
         }
         assert!(body.contains("unreadable"));
     }
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -163,7 +161,7 @@ async fn rejected_read_canaries_never_reach_the_journal_database_or_sidecars()
         let response = request(&f, path, Some(&f.admin_cookie)).await?;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
-    crate::journal::tests::ready(f.state.journal()).await?;
+    crate::journal::tests::ready(f.runtime.journal()).await?;
     for file in ["journal.db", "journal.db-wal", "journal.db-shm"] {
         let path = f.directory.path().join(file);
         match std::fs::read(path) {
@@ -186,6 +184,6 @@ async fn rejected_read_canaries_never_reach_the_journal_database_or_sidecars()
             Err(error) => return Err(error.into()),
         }
     }
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }

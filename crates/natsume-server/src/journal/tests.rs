@@ -174,18 +174,18 @@ async fn unavailable_journal_does_not_change_http_statuses_or_business_writes()
             .await?;
     let component = JournalComponent::start(root.path().join("absent/journal.db"), config());
     let journal = component.emitter();
-    let degraded = Arc::new(crate::server_state::tests::for_test_with_journal(
-        database.clone(),
-        root.path().join("documents"),
-        root.path().join("logos"),
-        component,
-    )?);
-    let normal = Arc::new(crate::server_state::tests::for_test(
+    let degraded =
+        crate::feature::tests::ServerFixture::new(database.clone(), root.path().join("documents"))
+            .logos(root.path().join("logos"))
+            .journal(component)
+            .build()?;
+    let normal = crate::feature::tests::ServerFixture::new(
         database.clone(),
         root.path().join("normal-documents"),
-    )?);
-    let first = crate::http::router(Arc::clone(&degraded), root.path());
-    let second = crate::http::router(normal, root.path());
+    )
+    .build()?;
+    let first = degraded.http_router(root.path());
+    let second = normal.http_router(root.path());
     for path in [
         "/api/v2/health",
         "/api/v2/operator/session",
@@ -217,12 +217,12 @@ async fn unavailable_journal_does_not_change_http_statuses_or_business_writes()
         );
     }
     timeout(Duration::from_secs(2), async {
-        while degraded.journal().stats().categories.device.dropped < 5 {
+        while degraded.journal.stats().categories.device.dropped < 5 {
             tokio::task::yield_now().await;
         }
     })
     .await?;
-    assert!(degraded.journal().stats().degraded);
+    assert!(degraded.journal.stats().degraded);
     database
         .write(|transaction| {
             diesel::insert_into(crate::diesel_schema::seats::table)
@@ -234,7 +234,7 @@ async fn unavailable_journal_does_not_change_http_statuses_or_business_writes()
                 .map_err(crate::db::PersistenceError::from)
         })
         .await?;
-    degraded.journal().shutdown().await;
+    degraded.runtime.shutdown_journal().await;
     Ok(())
 }
 

@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use super::{
     LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, TestDatabase, drive, header_text,
-    login_request, router, seed_operator, server_state, unused_web_root,
+    login_request, seed_operator, server, unused_web_root,
 };
 use crate::{
     diesel_schema::{accounts, organizations, teams},
@@ -144,7 +144,8 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
         })
         .await
         .map_err(crate::test_error::TestError::from)?;
-    let application = router(server_state(&database)?, unused_web_root());
+    let loaded = server(&database)?;
+    let application = loaded.http_router(unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
@@ -305,11 +306,9 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
         false,
     ))
     .await?;
-    let restarted_state = Arc::new(crate::server_state::tests::for_test(
-        reopened,
-        database.documents_path(),
-    )?);
-    let restarted_application = router(restarted_state, unused_web_root());
+    let restarted =
+        crate::feature::tests::ServerFixture::new(reopened, database.documents_path()).build()?;
+    let restarted_application = restarted.http_router(unused_web_root());
     let (_restarted_server, origin) = listen(restarted_application, &identity).await?;
     config.server_url = origin;
     let after_reopen = run(&config, &unavailable_runtime, &input).await?;

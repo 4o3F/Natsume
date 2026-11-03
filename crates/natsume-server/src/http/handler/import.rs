@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 use crate::http::middleware::audit::RequestAudit;
 use axum::Extension;
@@ -16,23 +18,32 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::super::{AppState, error::ApiError, middleware};
+use super::super::{error::ApiError, middleware};
 use crate::component::import::{
-    ImportOperation, OrganizationDetails, PendingImportCandidate, RedactedImportPreview,
-    TeamDetails,
+    ImportComponent, ImportOperation, OrganizationDetails, PendingImportCandidate,
+    RedactedImportPreview, TeamDetails,
 };
+use crate::device_control::DeviceControl;
+
+#[derive(Clone)]
+pub(crate) struct ImportState {
+    /// Shared import authority and upload admission budget.
+    pub(crate) import: Arc<ImportComponent>,
+    /// Shared device coordinator notified after a successful commit.
+    pub(crate) device_control: Arc<DeviceControl>,
+}
 
 pub(crate) struct RosterUpload {
     operation: ImportOperation,
     bytes: Bytes,
 }
 
-impl FromRequest<AppState> for RosterUpload {
+impl FromRequest<ImportState> for RosterUpload {
     type Rejection = Response;
 
-    async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request(request: Request, state: &ImportState) -> Result<Self, Self::Rejection> {
         let operation = state
-            .import()
+            .import
             .try_begin()
             .map_err(|error| ApiError::from_import(error).into_response())?;
         let bytes = Bytes::from_request(request, state)
@@ -47,7 +58,7 @@ const PREVIEW_TOKEN_WIRE_LENGTH: usize = 43;
 const XLSX_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const PREVIEW_TOKEN_HEADER: &str = "x-natsume-preview-token";
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<ImportState> {
     let upload =
         post(create_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type));
     let commit =
@@ -224,8 +235,8 @@ pub(in crate::http) async fn create_import(
     }
 }
 
-pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
-    match state.import().read_pending().await {
+pub(crate) async fn get_import(State(state): State<ImportState>) -> Response {
+    match state.import.read_pending().await {
         Ok(pending) => Json(ImportPendingResponse {
             pending: pending.as_ref().map(ImportPendingSummary::from),
         })
@@ -235,7 +246,7 @@ pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
 }
 
 pub(crate) async fn commit_import(
-    State(state): State<AppState>,
+    State(state): State<ImportState>,
     Path(path): Path<ImportPath>,
     headers: HeaderMap,
     upload: RosterUpload,
@@ -256,7 +267,7 @@ pub(crate) async fn commit_import(
         .await
     {
         Ok(change) => {
-            state.device_control().publish(change).await;
+            state.device_control.publish(change).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => ApiError::from_import(error).into_response(),
@@ -264,13 +275,13 @@ pub(crate) async fn commit_import(
 }
 
 pub(crate) async fn delete_import(
-    State(state): State<AppState>,
+    State(state): State<ImportState>,
     Path(path): Path<ImportPath>,
 ) -> Response {
     let Some(import_id) = canonical_uuid_v7(&path.import_id) else {
         return ApiError::invalid_request("import_id_not_canonical_uuid_v7").into_response();
     };
-    match state.import().discard(import_id).await {
+    match state.import.discard(import_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_import(error).into_response(),
     }

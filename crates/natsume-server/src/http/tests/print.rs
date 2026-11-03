@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use super::{
     Captured, LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, TestDatabase, drive,
-    header_text, login_request, router, seed_operator, server_state, unused_web_root,
+    header_text, login_request, seed_operator, server, unused_web_root,
 };
 use crate::{
     component::print::{
@@ -30,6 +30,7 @@ use crate::{
 type TestResult = Result<(), crate::test_error::TestError>;
 
 struct Fixture {
+    _runtime: crate::server_runtime::ServerRuntime,
     database: TestDatabase,
     router: axum::Router,
     cookie: String,
@@ -73,7 +74,9 @@ impl Fixture {
             })
             .await
             .map_err(crate::test_error::TestError::from)?;
-        let router = router(server_state(&database)?, unused_web_root());
+        let loaded = server(&database)?;
+        let router = loaded.http_router(unused_web_root());
+        let runtime = loaded.runtime;
         let login = drive(&router, login_request(LOGIN_NAME, PASSWORD)?).await?;
         let cookie = header_text(&login.headers, &header::SET_COOKIE)?
             .split(';')
@@ -93,6 +96,7 @@ impl Fixture {
         assert_eq!(source.status, StatusCode::OK);
         let value: Value = serde_json::from_slice(&source.body)?;
         Ok(Self {
+            _runtime: runtime,
             database,
             router,
             cookie,

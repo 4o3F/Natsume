@@ -1,13 +1,21 @@
+use std::sync::Arc;
+
 use axum::{
     Json,
     extract::{Path, State},
     response::{IntoResponse, Response},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::component::session::{ForegroundTarget, SessionControlError, SessionControlTarget};
+use crate::{
+    component::session::{
+        ForegroundTarget, SessionControlComponent, SessionControlError, SessionControlTarget,
+    },
+    http::Routes,
+};
 
-use super::super::super::{AppState, error::ApiError};
+use super::super::super::error::ApiError;
 use super::{DevicePath, invalid_device_id, parse_device_id};
 
 /// Current durable Session Control target, if it has been initialized.
@@ -46,14 +54,21 @@ impl From<SessionControlTarget> for SessionControlTargetResponse {
     }
 }
 
+pub(crate) fn operator_routes() -> Routes<Arc<SessionControlComponent>> {
+    vec![(
+        "/devices/{device_id}/session-control",
+        get(get_session_control),
+    )]
+}
+
 pub(crate) async fn get_session_control(
-    State(state): State<AppState>,
+    State(state): State<Arc<SessionControlComponent>>,
     Path(path): Path<DevicePath>,
 ) -> Response {
     let Some(device_id) = parse_device_id(&path) else {
         return invalid_device_id();
     };
-    match state.session().read_current(device_id).await {
+    match state.read_current(device_id).await {
         Ok(target) => Json(SessionControlResponse {
             target: target.map(SessionControlTargetResponse::from),
         })

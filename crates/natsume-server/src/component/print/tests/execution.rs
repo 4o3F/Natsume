@@ -603,14 +603,14 @@ async fn background_tasks_expire_attempts_and_shutdown_stops_maintenance() {
         })
         .await,
     );
-    let state = std::sync::Arc::new(must(crate::server_state::tests::for_test(
+    let print = std::sync::Arc::new(must(crate::component::print::PrintComponent::for_test(
         f.database.clone(),
         f.documents_path(),
     )));
-    let weak_state = std::sync::Arc::downgrade(&state);
-    let background = must(crate::background::start_background_tasks(&state).await);
-    drop(state);
-    assert!(weak_state.upgrade().is_none());
+    let weak_print = std::sync::Arc::downgrade(&print);
+    let background = must(crate::background::start_background_tasks(&print).await);
+    drop(print);
+    assert!(weak_print.upgrade().is_none());
     let service = async {
         loop {
             let identity = c.clone();
@@ -661,11 +661,7 @@ async fn background_shutdown_does_not_end_active_print_attempts() {
     let attempt = claim(&f, &client, &Uuid::now_v7().to_string(), now)
         .await
         .unwrap_or_else(|| panic!("claim"));
-    let state = must(crate::server_state::tests::for_test(
-        f.database.clone(),
-        f.documents_path(),
-    ));
-    let background = must(crate::background::start_background_tasks(&state).await);
+    let background = must(crate::background::start_background_tasks(&f.print).await);
     must(background.shutdown().await);
     assert_eq!(
         must(write(&f, move |tx| store::current(tx, &client)).await),

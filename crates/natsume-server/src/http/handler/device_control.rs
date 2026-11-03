@@ -10,13 +10,13 @@ use axum::{
 };
 use natsume_workstation_protocol::CONTROL_SUBPROTOCOL;
 
-use crate::device_control::{MAX_MESSAGE_BYTES, serve_connection};
+use crate::device_control::{DeviceControl, MAX_MESSAGE_BYTES, serve_connection};
 use crate::tls::PeerAddress;
 
-use super::super::{AppState, error::ApiError};
+use super::super::error::ApiError;
 
 /// Registers the production Device Control WebSocket endpoint.
-pub(in crate::http) fn public_routes() -> Routes {
+pub(crate) fn public_routes() -> Routes<Arc<DeviceControl>> {
     vec![("/device/control", get(upgrade))]
 }
 
@@ -26,7 +26,7 @@ pub(in crate::http) fn public_routes() -> Routes {
 /// Protocol mismatch is rejected before upgrade. After upgrade, connection lifetime
 /// and all close-on-failure semantics belong to [`serve_connection`].
 async fn upgrade(
-    State(state): State<AppState>,
+    State(state): State<Arc<DeviceControl>>,
     ConnectInfo(PeerAddress(peer_ip)): ConnectInfo<PeerAddress>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -42,7 +42,7 @@ async fn upgrade(
             expected = CONTROL_SUBPROTOCOL,
             "Incompatible Device control protocol"
         );
-        state.device_control().reject_admission(
+        state.reject_admission(
             crate::journal::event::types::AdmissionStage::ProtocolVersion,
             peer_ip,
             None,
@@ -53,7 +53,7 @@ async fn upgrade(
         )
             .into_response();
     }
-    let control = Arc::clone(state.device_control());
+    let control = Arc::clone(&state);
     let permit = match control.try_reserve_handshake() {
         Ok(permit) => permit,
         Err(crate::device_control::AdmissionUnavailable::ServerStopping) => {

@@ -1,4 +1,5 @@
-use crate::http::middleware::audit::RequestAudit;
+use std::sync::Arc;
+
 use axum::{
     Extension, Json,
     extract::{
@@ -7,22 +8,43 @@ use axum::{
     },
     http::StatusCode,
     response::{IntoResponse, Response},
+    routing::{get, patch},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     component::device::{
-        DeviceListFilter, DeviceNetworkInfo, DeviceState, EvidenceQuality, LifecycleOutcome,
+        DeviceComponent, DeviceListFilter, DeviceNetworkInfo, DeviceState, EvidenceQuality,
+        LifecycleOutcome,
     },
-    device_control::DeviceStatus,
+    device_control::{DeviceControl, DeviceStatus},
+    http::{Routes, middleware, middleware::audit::RequestAudit},
 };
 
-use super::super::super::{AppState, error::ApiError};
+use super::super::super::error::ApiError;
 use super::{
     DevicePath,
     convergence::{DeviceConvergenceResponse, convergence_error},
     invalid_device_id, parse_device_id,
 };
+
+pub(crate) fn operator_routes() -> Routes<DeviceRecordState> {
+    vec![
+        ("/devices", get(list_devices)),
+        (
+            "/devices/{device_id}",
+            get(get_device).merge(middleware::require_admin(patch(update_device))),
+        ),
+    ]
+}
+
+#[derive(Clone)]
+pub(crate) struct DeviceRecordState {
+    /// Shared durable device authority and enrollment operations.
+    pub(crate) device: Arc<DeviceComponent>,
+    /// Shared coordinator for device status and authority changes.
+    pub(crate) device_control: Arc<DeviceControl>,
+}
 
 /// Durable Device identity and lifecycle with its current complete convergence view.
 #[derive(Serialize, specta::Type)]
@@ -139,7 +161,7 @@ impl From<DeviceStatus> for DeviceResponse {
 }
 
 pub(crate) async fn list_devices(
-    State(state): State<AppState>,
+    State(state): State<DeviceRecordState>,
     query: Result<Query<DeviceListQuery>, QueryRejection>,
 ) -> Response {
     let Ok(Query(query)) = query else {
@@ -160,7 +182,7 @@ pub(crate) async fn list_devices(
     if matches!(filter, DeviceListFilter::States(ref states) if states.is_empty()) {
         return ApiError::invalid_request("device_list_query_rejected").into_response();
     }
-    match state.device_control().read_device_statuses(filter).await {
+    match state.device_control.read_device_statuses(filter).await {
         Ok(statuses) => Json(
             statuses
                 .into_iter()
@@ -173,13 +195,13 @@ pub(crate) async fn list_devices(
 }
 
 pub(crate) async fn get_device(
-    State(state): State<AppState>,
+    State(state): State<DeviceRecordState>,
     Path(path): Path<DevicePath>,
 ) -> Response {
     let Some(device_id) = parse_device_id(&path) else {
         return invalid_device_id();
     };
-    match state.device_control().read_device_status(device_id).await {
+    match state.device_control.read_device_status(device_id).await {
         Ok(Some(status)) => Json(DeviceResponse::from(status)).into_response(),
         Ok(None) => ApiError::not_found("device_not_found").into_response(),
         Err(error) => convergence_error(error).into_response(),
@@ -188,7 +210,7 @@ pub(crate) async fn get_device(
 
 pub(in crate::http) async fn update_device(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<DeviceRecordState>,
     Extension(admission): Extension<crate::lifecycle::Admission>,
     Path(path): Path<DevicePath>,
     request: Result<Json<DeviceUpdateRequest>, JsonRejection>,
@@ -201,16 +223,16 @@ pub(in crate::http) async fn update_device(
     };
     let context = audit.context();
     let outcome = match request.state {
-        DeviceStateResponse::Enabled => state.device().enable(device_id, context.clone()).await,
+        DeviceStateResponse::Enabled => state.device.enable(device_id, context.clone()).await,
         DeviceStateResponse::Disabled => {
             state
-                .device_control()
+                .device_control
                 .disable_device(&admission, device_id, context.clone())
                 .await
         }
         DeviceStateResponse::Revoked => {
             state
-                .device_control()
+                .device_control
                 .revoke_device(&admission, device_id, context.clone())
                 .await
         }

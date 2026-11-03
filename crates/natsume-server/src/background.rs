@@ -3,7 +3,7 @@ use tokio::{sync::oneshot, task::JoinSet};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{Instrument as _, instrument::WithSubscriber as _};
 
-use crate::{component::print::ExpiryError, server_state::ServerState};
+use crate::component::print::{ExpiryError, PrintComponent};
 
 #[derive(Debug, Snafu)]
 pub(crate) enum BackgroundError {
@@ -26,7 +26,7 @@ pub(crate) struct BackgroundTasks {
 }
 
 pub(crate) async fn start_background_tasks(
-    state: &ServerState,
+    print: &PrintComponent,
 ) -> Result<BackgroundTasks, BackgroundError> {
     let stop = CancellationToken::new();
     let mut background = BackgroundTasks {
@@ -34,7 +34,7 @@ pub(crate) async fn start_background_tasks(
         tasks: JoinSet::new(),
     };
     let (ready, initialized) = oneshot::channel();
-    let expiry = state.print().maintain_attempts(stop, ready);
+    let expiry = print.maintain_attempts(stop, ready);
     background.tasks.spawn(
         async move { expiry.await.context(PrintExpirySnafu) }
             .in_current_span()

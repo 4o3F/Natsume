@@ -13,6 +13,7 @@ mod deployment;
 pub(crate) mod device_control;
 #[path = "../diesel/business/schema.rs"]
 pub(crate) mod diesel_schema;
+pub(crate) mod feature;
 pub(crate) mod http;
 pub(crate) mod journal;
 pub(crate) mod journal_query;
@@ -21,12 +22,11 @@ pub(crate) mod journal_schema;
 pub(crate) mod lifecycle;
 pub(crate) mod logging;
 pub(crate) mod photo_initialization;
-pub(crate) mod server_state;
+pub(crate) mod server_runtime;
 pub(crate) mod task;
 pub(crate) mod tls;
 pub(crate) mod vault;
 
-pub use commands::router;
 pub use deployment::{
     BootstrapStatus, CertificateRejection, DeploymentError, DeploymentMaterials, MaterialRole,
     inspect_bootstrap, validate_deployment, validate_setup_materials,

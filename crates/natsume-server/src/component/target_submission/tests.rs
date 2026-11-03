@@ -15,10 +15,10 @@ struct Fixture {
     component: TargetSubmissionComponent,
     /// Captured per-device facts from committed submissions and replays.
     events: tokio::sync::mpsc::Receiver<crate::journal::Envelope>,
-    state: crate::server_state::ServerState,
     ids: Vec<DeviceId>,
     owner: Uuid,
     _root: TempDir,
+    runtime: crate::server_runtime::ServerRuntime,
 }
 
 impl Fixture {
@@ -57,12 +57,16 @@ impl Fixture {
             })
             .await
             .unwrap_or_else(|error| panic!("fixtures: {error:?}"));
-        let state =
-            crate::server_state::tests::for_test(database.clone(), root.path().join("documents"))
-                .unwrap_or_else(|error| panic!("state: {error}"));
+        let crate::feature::LoadedServer { runtime, .. } =
+            crate::feature::tests::ServerFixture::new(
+                database.clone(),
+                root.path().join("documents"),
+            )
+            .build()
+            .unwrap_or_else(|error| panic!("state: {error}"));
         let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
         Self {
-            state,
+            runtime,
             component: TargetSubmissionComponent::new(database.clone(), journal.emitter()),
             events,
             database,
@@ -89,7 +93,7 @@ impl Fixture {
         let outcome = component
             .submit(owner, request, JournalContext::default())
             .await?;
-        self.state.device_control().publish(outcome.change).await;
+        self.runtime.device_control().publish(outcome.change).await;
         Ok(outcome.result)
     }
 

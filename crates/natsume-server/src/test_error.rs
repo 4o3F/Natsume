@@ -91,7 +91,7 @@ pub(crate) enum TestError {
     },
     #[snafu(context(false), display("test State operation failed"))]
     State {
-        source: crate::server_state::ServerStateError,
+        source: crate::feature::StartupError,
     },
     #[snafu(context(false), display("test Address operation failed"))]
     Address { source: std::net::AddrParseError },

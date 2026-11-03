@@ -1,4 +1,9 @@
-use crate::http::middleware::audit::RequestAudit;
+use std::sync::Arc;
+
+use crate::{
+    component::{operator::OperatorComponent, print::PrintComponent},
+    http::middleware::audit::RequestAudit,
+};
 use axum::{
     extract::{Request, State},
     http::header,
@@ -6,17 +11,17 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use super::super::{AppState, cookie, error::ApiError};
+use super::super::{cookie, error::ApiError};
 
 pub(in crate::http) async fn authenticate_operator(
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     mut request: Request,
     next: Next,
 ) -> Response {
     let Ok(wire_credential) = cookie::session_credential(request.headers()) else {
         return ApiError::authentication_failed("missing_session_cookie").into_response();
     };
-    let identity = match state.operator().authenticate_session(wire_credential).await {
+    let identity = match state.authenticate_session(wire_credential).await {
         Ok(identity) => identity,
         Err(error) => return ApiError::from_operator(error).into_response(),
     };
@@ -32,7 +37,7 @@ pub(in crate::http) async fn authenticate_operator(
 }
 
 pub(in crate::http) async fn authenticate_source(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     mut request: Request,
     next: Next,
 ) -> Response {
@@ -46,7 +51,7 @@ pub(in crate::http) async fn authenticate_source(
         return ApiError::from_print(crate::component::print::PrintError::Authentication)
             .into_response();
     };
-    match state.print().authenticate(token).await {
+    match state.authenticate(token).await {
         Ok(identity) => {
             request.extensions_mut().insert(identity);
             next.run(request).await
@@ -56,7 +61,7 @@ pub(in crate::http) async fn authenticate_source(
 }
 
 pub(in crate::http) async fn authenticate_client(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     mut request: Request,
     next: Next,
 ) -> Response {
@@ -69,7 +74,7 @@ pub(in crate::http) async fn authenticate_client(
         return ApiError::from_print(crate::component::print::PrintError::Authentication)
             .into_response();
     };
-    match state.print().authenticate_client(token).await {
+    match state.authenticate_client(token).await {
         Ok(client) => {
             request.extensions_mut().insert(client);
             next.run(request).await
