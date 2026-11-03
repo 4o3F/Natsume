@@ -1,3 +1,4 @@
+mod logos;
 mod photo;
 mod print;
 mod print_domjudge;
@@ -1257,6 +1258,22 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     assert_eq!(candidate_image.status, StatusCode::OK);
     assert_eq!(candidate_image.headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(candidate_image.headers[header::CONTENT_TYPE], "image/png");
+    for condition in [
+        "*".to_owned(),
+        format!(
+            "W/{}",
+            header_text(&candidate_image.headers, &header::ETAG)?
+        ),
+    ] {
+        let mut conditional = cookie_request(Method::GET, &candidate_logo, cookie)?;
+        conditional
+            .headers_mut()
+            .insert(header::IF_NONE_MATCH, condition.parse()?);
+        let private = drive(&application, conditional).await?;
+        assert_eq!(private.status, StatusCode::OK);
+        assert_eq!(private.body, candidate_image.body);
+        assert_eq!(private.headers[header::CACHE_CONTROL], "no-store");
+    }
     let observation = drive(
         &application,
         cookie_request(Method::GET, &candidate_list, cookie)?,
@@ -1294,6 +1311,9 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     let unchanged = drive(&application, conditional).await?;
     assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
     assert!(unchanged.body.is_empty());
+    assert_eq!(unchanged.headers[header::ETAG], image.headers[header::ETAG]);
+    assert_eq!(unchanged.headers[header::CACHE_CONTROL], "public, no-cache");
+    assert_eq!(unchanged.headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
     let exported = drive(
         &application,
         cookie_request(Method::GET, "/api/v2/exports/domjudge", cookie)?,

@@ -3991,6 +3991,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "hyper",
+ "hyper-util",
  "image",
  "lopdf",
  "natsume-photo-protocol",

@@ -80,6 +80,8 @@ futures-util = { version = "0.3", default-features = false, features = [
 getrandom = { version = "0.4", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 hkdf = "0.13"
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["service", "tokio"] }
 lopdf = { version = "=0.45.0", default-features = false }
 image = { version = "0.25.10", default-features = false, features = [
   "png",

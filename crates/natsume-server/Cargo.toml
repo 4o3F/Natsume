@@ -30,6 +30,8 @@ ed25519-dalek.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 image.workspace = true
 lopdf.workspace = true
 natsume-workstation-protocol = { path = "../natsume-workstation-protocol" }
@@ -59,6 +61,7 @@ tokio-rustls.workspace = true
 tokio-util = { workspace = true, features = ["time"] }
 toml.workspace = true
 tower-http.workspace = true
+tower.workspace = true
 tracing-opentelemetry.workspace = true
 url.workspace = true
 specta.workspace = true
@@ -77,7 +80,6 @@ regex.workspace = true
 rustls = { workspace = true, features = ["tls12"] }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite.workspace = true
-tower.workspace = true
 
 [lints]
 workspace = true

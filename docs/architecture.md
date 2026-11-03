@@ -895,7 +895,7 @@ Journal HTTP handler直接持有JournalQuery，Print、Operator（含登录 sess
 
 ```text
 runtime.lifecycle.begin_shutdown()
-  → http_stop.cancel()，通知axum进入graceful shutdown，停止新HTTP
+  → http_stop.cancel()，通知HTTP服务进入graceful shutdown，停止新HTTP
   → lifecycle.wait()，最多10秒，超时记journal计数和tracing
   → DeviceControl::shutdown()，结束全部registry lease并等待actor确认
   → BackgroundTasks::shutdown()
@@ -920,6 +920,8 @@ Production WSS handler只把socket交给`device_control::serve_connection`。该
 - DeviceControl在HTTP upgrade前预留最多64个短期认证名额，满额返回503与`Retry-After: 1`；失败、断线或SessionReady后释放，active lease不占用短期名额；
 - Enrollment review registry在创建时原子检查640条上限；新review成功登记后释放短期认证名额，长期人工审核由registry条目约束，删除或认领即释放名额。exact committed replay和Resume不占用待审核容量；
 - 各容量由既有owner维护，不建立统一admission manager；上限限制资源积累，不承诺同一匿名网络入口在持续饱和时仍能保证新连接公平性。现场验收须测量RSS、FD、拒绝行为及已有控制连接延迟。
+
+HTTP 入口使用 Hyper 的 HTTP/1 builder、`TokioTimer` 和 `header_read_timeout`，等待首个或后续完整请求头的期限固定为30秒；收到部分请求头不重置期限。后续计时从上一请求正文读取和响应发送均完成、开始等待下一请求头时启动，因此空闲 keep-alive 会在下一次60秒 Logo 轮询前关闭并释放连接许可。该期限不覆盖请求正文读取、handler 执行、响应正文发送或已升级的 WebSocket。HTTP 服务循环继续通过 Axum 的 `ConnectInfo<PeerAddress>` 提供 socket 对端地址；关闭时先释放 Listener 和未完成的 TLS 握手，再通知 HTTP 连接优雅关闭并等待在途请求及响应排空。WebSocket 的关闭由现有 DeviceControl 生命周期管理。
 
 ### 11.2 Registry
 
@@ -1432,13 +1434,19 @@ Import 自己拥有一个重型操作名额，预览创建和提交共用；在�
 
 源图位于部署方配置的 `[storage].organization_logos`，按学校完整中／英文名匹配直接子文件，无 Excel 文件名字段、别名表或自动外部下载。学校资料为名单数据，图片为独立部署文件；缺图不影响导入。实际内容识别、限额、解码和 SVG 渲染归 Server Contest，拒绝符号链接和外部 SVG 资源，不带入公共领域包。目录与图片失败通过 tracing 记录路径和原因。
 
-Logo 列表的完整校验结果由 Contest 私有缓存，已提交名单和候选共用，最多 1024 个路径， 按近期使用淘汰，不保留版本历史、图片字节、解码像素或名单权限。每次仍重扫目录、重新匹配名称， 并以可读、非符号链接的同一文件句柄检查 dev/ino/size/mtime/ctime；指纹不变才复用结果。 同路径并发未命中在既有 4 个 image workers 内串行校验并共享结果，全局缓存锁不跨 I/O。 校验前后指纹变化、临时读取错误和超过 4 KiB 的错误文案不入缓存；Missing/Ambiguous 每次重新判断。 图片下载、ETag 和 ZIP 导出仍完整读取/校验，不使用列表缓存代替当前数据或授权判断。
+Logo 列表的完整校验结果由 Contest 私有缓存，已提交名单和候选共用，最多 1024 个路径， 按近期使用淘汰，不保留版本历史、图片字节、解码像素或名单权限。每次仍重扫目录、重新匹配名称， 并以可读、非符号链接的同一文件句柄检查 dev/ino/size/mtime/ctime；指纹不变才复用结果。 同路径并发未命中在既有 4 个 image workers 内串行校验并共享结果，全局缓存锁不跨 I/O。 校验前后指纹变化、临时读取错误和超过 4 KiB 的错误文案不入缓存；Missing/Ambiguous 每次重新判断。 ZIP 导出仍完整读取和校验。
 
 Contest 提供已提交学校及导出读取边界；OrganizationDetails 是其根模块的非秘密契约，Import 保留全部名单写权限。导出从同一数据库 read transaction 读取全量学校、队伍、映射和加密 vault records，关闭事务后才解密并打包。一个 export worker 生成最多 256 MiB 的内存 ZIP；四个 image workers 处理目录观测／图像请求，阻塞 IO 和转码不占据异步控制循环。
 
 管理员 `GET /api/v2/exports/domjudge` 返回 groups.json、organizations.json、teams.json、accounts.yaml 和当前名单中全部可用的 `logos/INST-xxx.png`。重复导出使用固定排序和持久 ID；只改密时只影响 accounts.yaml。密码只进入这份管理员下载，响应 no-store，不落 Server 临时文件或浏览器持久存储。缺图／歧义不写入导出且不阻塞；匹配到的损坏／不可读／超限图片中止整包，并给出学校、源文件和原因。所有可用 Logo（PNG／JPEG／WebP／SVG）统一输出为 64×64 PNG：SVG 先以自然画布／96 DPI 渲染，再与栅格图一样使用 Lanczos3 和预乘 alpha 等比重采样，完整居中显示，空余区域补透明边，不拉伸、不裁切；源文件及 HTTP 图片交付不改动。
 
-管理员通过 `/organizations` 或 `/imports/{import_id}/organizations` 读取学校图像状态，候选图片接口也要求管理员权限。公开的只读 `/organizations/{organization_id}/logo` 先验证该 ID 属于当前名单，随后提供实际 MIME 的栅格源图或 SVG 渲染后的 PNG。成功响应以 SHA-256 ETag 和 no-cache 重新验证，404 不缓存；后补和替换图片无需重启、重导名单或 revision/Dirty 变更。Web 显示学校 ID／源图／缩略图及状态，支持校名搜索、问题过滤和手动刷新。
+管理员通过 `/organizations` 或 `/imports/{import_id}/organizations` 读取学校图像状态，候选图片接口也要求管理员权限。公开的只读 `/organizations/{organization_id}/logo` 每次按学校主键查询当前名单，并确认存在关联队伍，随后提供实际 MIME 的栅格源图或 SVG 渲染后的 PNG。成功响应以 SHA-256 ETag 和 no-cache 重新验证，404 不缓存；后补和替换图片无需重启、重导名单或 revision/Dirty 变更。Web 显示学校 ID／源图／缩略图及状态，支持校名搜索、问题过滤和手动刷新。
+
+HTTP Logo 的名称解析和 ETag 由 Contest 私有的 `LogoHttpCache` 保存。名称解析以当前学校的完整中／英文名为键，最多保留 1024 个唯一文件匹配；异步锁串行执行目录元数据检查和扫描，同一时刻最多生成一份目录快照；目录路径或目录的 dev/ino/size/mtime/ctime 改变时重新扫描，新增、删除、重命名和替换目录会使解析失效。Missing/Ambiguous 不缓存。公开请求每次重新查询当前学校资料，名单改名或移除后下一次请求即按新资料处理；候选路由仍读取当前待提交名单并要求管理员权限。
+
+ETag 以解析后的文件路径为键，使用固定 16 组异步锁同步同路径首次计算，每组按近期使用最多保留 64 项，总数最多 1024。扫描和图像工作持有各自的锁直到阻塞工作结束并发布缓存，请求取消也不会提前释放锁。每次以不跟随最终符号链接的 stat 检查文件类型、8 MiB 上限及 dev/ino/size/mtime/ctime，两个时间戳均包含文件系统提供的纳秒部分。目录和文件指纹均不变且条件匹配时直接返回 304，不打开或读取图片、不解码、不渲染、不计算摘要，也不申请四个 image workers 的许可。首次读取仍以同一无符号链接文件句柄执行既有图像限额和解码，ETag 保持为响应字节的带引号 SHA-256：栅格图使用源字节，SVG 使用渲染后的 PNG。仅在读取前后文件句柄和当前路径指纹一致时保存 ETag；200 响应仍读取和验证文件，指纹一致时复用摘要。缓存只保留名称、路径、指纹、ETag 和使用时间，不保留图片字节或像素，避免 1024 张图片积累内存。候选图片始终返回完整响应并使用 no-store。
+
+这些指纹依赖文件系统准确、及时提供元数据：同尺寸原地改写若同时落在 mtime 和 ctime 的时间精度内，或目录修改未改变可见指纹，可能暂时复用旧结果；网络文件系统的元数据缓存也可能推迟变化可见时间。建议以原子替换更新图片，inode 变化可检测保留尺寸和时间戳的替换。请求检查与文件系统并发修改之间仍存在通常的快照竞争，读取期间检测到的变化不会写入 ETag 缓存。
 
 BoundTarget 必须包含非秘密 TeamPresentation：中英文队名、中英文校名和 INST ID；seat/account/binding_id 沿用同一 BindingContext。Binding 组件在读取凭据的同一事务中读取队伍／学校资料，缺少资料拒绝 materialize。旧部署须先用完整 XLSX 补齐资料再恢复控制连接。展示不进入凭据 revision、工件或 Binding Actual，也不参与 Client 资源目标比较。
 
@@ -1474,8 +1482,6 @@ Session foreground、terminate、Home reset 的单台/批量写入口统一为 `
 HTTP 方法表达资源语义，不为动词机械创建伪资源，也不把实际状态转换伪装成普通字段覆盖。`/api/v2` 根层在认证和路由处理前统一拒绝 `HEAD`。Panel API 不设置路由正文大小覆盖，JSON 和 Bytes 提取器使用 Axum 默认的 2 MiB 上限。JSON 提取失败沿用 400 错误映射，包括正文超限、格式错误和不支持的媒体类型；名单上传的 Bytes 提取超限返回 413。解析组件继续执行自己的格式、解压和解码限制；Import 内部的 XLSX 原始文件上限为 8 MiB，但不覆盖 HTTP 提取器的 2 MiB 上限。
 
 当前 Operator API 尚未设置统一请求处理期限，也不对正文读取独立计时；慢速名单上传可长期占用Import名额，直到正文读取结束或传输失败；仅取消外层请求future不会释放仍在读取正文的进程任务所持名额。
-
-当前 `axum::serve` 入口未安装 Hyper 计时器，默认 HTTP/1 请求头读取超时不生效，慢请求头仍可占用连接容量。补齐请求头保护需独立调整服务入口，并验证 TLS、WebSocket upgrade 与优雅关闭。
 
 Operator Target提交成功后返回成功设备集合的`TargetChange`，HTTP任务通过`DeviceControl::publish`通知已有Actor。receipt重放也只触发从当前数据库重新读取，不恢复旧Target。HTTP请求取消不影响该提交与通知序列；周期刷新和重连仍为独立反熵路径。通知不在数据库事务内，也不等待终端执行。HTTP handler不直接访问组件表。
 

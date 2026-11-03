@@ -3,7 +3,8 @@ use std::{io, path::Path, sync::Arc};
 use super::{
     ContestComponent, ExportError, OrganizationDetails,
     logo_cache::LogoValidationCache,
-    logo_io::{DecodedLogo, LogoDirectory, LogoError, LogoImage, LogoMatch, read_logo},
+    logo_http_cache::LogoResponse,
+    logo_io::{LogoDirectory, LogoError, LogoMatch},
 };
 
 #[derive(Clone, Copy)]
@@ -52,28 +53,16 @@ impl ContestComponent {
     pub(crate) async fn organization_logo(
         &self,
         organization: OrganizationDetails,
-    ) -> Result<LogoImage, ExportError> {
-        let permit = self
-            .image_work
-            .clone()
-            .acquire_owned()
+        conditions: Vec<String>,
+    ) -> Result<LogoResponse, ExportError> {
+        self.logo_http
+            .response(
+                self.logo_directory.clone(),
+                organization,
+                conditions,
+                Arc::clone(&self.image_work),
+            )
             .await
-            .map_err(|source| ExportError::WorkerUnavailable { source })?;
-        let directory = self.logo_directory.clone();
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            let index = open_directory(&directory)?;
-            match resolve(index.as_ref(), &organization) {
-                LogoMatch::Missing | LogoMatch::Ambiguous(_) => Err(ExportError::LogoUnavailable),
-                LogoMatch::Unique(path) => read_logo(&path)
-                    .and_then(DecodedLogo::into_http)
-                    .map_err(|error| logo_error(&organization, &path, error)),
-            }
-        })
-        .await
-        .map_err(|source| ExportError::Worker {
-            source: source.into(),
-        })?
     }
 }
 
