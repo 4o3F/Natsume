@@ -35,6 +35,25 @@ fn write_image(path: &Path, format: ImageFormat) {
 }
 
 #[test]
+fn photo_png_reuses_validated_png_bytes_and_converts_other_formats() {
+    let root = checked(TempDir::new());
+    for format in [ImageFormat::Png, ImageFormat::Jpeg] {
+        let path = root.path().join("source");
+        write_image(&path, format);
+        let original = checked(fs::read(&path));
+        let encoded = checked(checked(read_logo(&path)).encode_photo_png());
+        assert_eq!(checked(image::guess_format(&encoded)), ImageFormat::Png);
+        assert_eq!(checked(image::load_from_memory(&encoded)).width(), 8);
+        if format == ImageFormat::Png {
+            assert_eq!(encoded, original);
+        }
+    }
+    let path = root.path().join("broken.png");
+    checked(fs::write(&path, b"\x89PNG\r\n\x1a\ninvalid"));
+    assert!(read_logo(&path).is_err());
+}
+
+#[test]
 fn complete_names_match_without_normalizing_punctuation_or_recursing() {
     let (name_zh, name_en) = ("示例大学", "Example University");
     let directory = checked(TempDir::new());

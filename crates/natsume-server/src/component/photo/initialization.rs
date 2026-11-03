@@ -206,9 +206,12 @@ impl PhotoComponent {
             credential,
             permit: _permit,
             files,
-            manifest,
+            mut manifest,
             ..
         } = draft;
+        manifest
+            .school_logos
+            .sort_unstable_by_key(|logo| logo.organization_id);
         manifest
             .validate(&manifest.source_id)
             .context(InvalidContractSnafu)?;

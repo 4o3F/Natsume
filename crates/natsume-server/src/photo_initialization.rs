@@ -1,8 +1,9 @@
 //! Coordinates Contest facts with Photo snapshot publication.
 use crate::component::{
-    contest::{ContestComponent, ContestError, PhotoLogoError},
+    contest::{ContestComponent, ContestError, IMAGE_WORKERS, PhotoLogoError},
     photo::{InitializationError, PhotoComponent, Preparation, SnapshotDownload},
 };
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use snafu::{ResultExt as _, Snafu};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -52,8 +53,16 @@ impl PreparePhotoInitialization {
             })
             .collect();
         draft.set_teams(teams).context(PhotoSnafu)?;
-        for (organization_id, (zh, en)) in schools {
-            if let Some(bytes) = self.contest.photo_logo(&zh, &en).await.context(LogoSnafu)? {
+        // Consume completed work immediately; publishing sorts only metadata.
+        // Actual decoding still owns Contest's shared image permits.
+        let mut logos = futures_util::stream::iter(schools)
+            .map(|(organization_id, (zh, en))| async move {
+                let bytes = self.contest.photo_logo(&zh, &en).await.context(LogoSnafu)?;
+                Ok::<_, Error>((organization_id, bytes))
+            })
+            .buffer_unordered(IMAGE_WORKERS);
+        while let Some((organization_id, bytes)) = logos.try_next().await? {
+            if let Some(bytes) = bytes {
                 draft
                     .add_logo(organization_id, bytes)
                     .await
