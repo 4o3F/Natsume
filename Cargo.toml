@@ -192,7 +192,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
   "fmt"
 ] }
 url = "2.5"
-specta = { version = "=2.0.0-rc.25", features = ["derive", "collect", "uuid"] }
+specta = { version = "=2.0.0-rc.27", features = ["derive", "collect", "uuid"] }
 specta-serde = "=0.0.12"
 specta-typescript = "=0.0.12"
 uuid = { version = "1", features = ["serde", "v5", "v7"] }
