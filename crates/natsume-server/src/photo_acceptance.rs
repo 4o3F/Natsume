@@ -38,7 +38,9 @@ impl AcceptPhotoResults {
     ) -> Result<PendingPhotoPage, Error> {
         self.database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = ContestComponent::photo_roster_in(tx)
+                    .context(RosterSnafu)?
+                    .into();
                 PhotoComponent::pending_in(tx, query, &roster).context(PhotoSnafu)
             })
             .await
@@ -52,7 +54,9 @@ impl AcceptPhotoResults {
     pub(crate) async fn preview(&self, id: Uuid) -> Result<ImportPreview, Error> {
         self.database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = ContestComponent::photo_roster_in(tx)
+                    .context(RosterSnafu)?
+                    .into();
                 PhotoComponent::preview_in(tx, id, &roster).context(PhotoSnafu)
             })
             .await
@@ -61,7 +65,9 @@ impl AcceptPhotoResults {
     pub(crate) async fn commit(&self, id: Uuid) -> Result<ImportPreview, Error> {
         self.database
             .write(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = ContestComponent::photo_roster_in(tx)
+                    .context(RosterSnafu)?
+                    .into();
                 PhotoComponent::commit_in(tx, id, &roster).context(PhotoSnafu)
             })
             .await
@@ -74,7 +80,9 @@ impl AcceptPhotoResults {
     ) -> Result<ImportPreview, Error> {
         self.database
             .write(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = ContestComponent::photo_roster_in(tx)
+                    .context(RosterSnafu)?
+                    .into();
                 PhotoComponent::decide_in(tx, id, decision, &roster).context(PhotoSnafu)
             })
             .await

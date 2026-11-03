@@ -490,7 +490,6 @@ export type ConvergenceStatusResponse =
   "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
 
 export type CurrentPhoto = {
-  account: string;
   source_id: string;
   submission_id: string;
   revision: number;
@@ -788,7 +787,6 @@ export type ExecutionState =
 export type ExpectedPhoto = {
   source_id: string;
   submission_id: string;
-  revision: number;
 };
 
 export type ExportFailure = "journal_read_failed";
@@ -982,13 +980,7 @@ export type ImportRedactedDiff = {
 };
 
 export type ImportState =
-  | "uploading"
-  | "uploaded"
-  | "validating"
-  | "ready"
-  | "committed"
-  | "failed"
-  | "interrupted";
+  "uploading" | "processing" | "ready" | "committed" | "failed";
 
 export type ImportTeamChangeResponse = {
   account: string;
@@ -1233,6 +1225,7 @@ export type PendingPhoto = {
   import_id: string;
   account_id: string;
   account: string;
+  assigned_account_id: string | null;
   image_sha256: Sha256Digest;
   state: SubmissionState;
   revision: number;
@@ -1259,7 +1252,6 @@ export type PhotoAction =
   | {
       action: "activate";
       account_id: string;
-      account: string;
       expected_current: ExpectedPhoto | null;
     };
 

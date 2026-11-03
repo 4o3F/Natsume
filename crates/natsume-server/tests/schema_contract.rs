@@ -47,7 +47,7 @@ fn migrations_round_trip() -> Result<(), TestError> {
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations'";
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        36
+        34
     );
     assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 10);
     assert_eq!(
@@ -57,7 +57,7 @@ fn migrations_round_trip() -> Result<(), TestError> {
     assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 10);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        36
+        34
     );
     Ok(())
 }
@@ -88,7 +88,7 @@ fn photo_migration_preserves_existing_schema_accounts_and_print_sources() -> Res
         ))
         .execute(&mut connection)?;
     // SQLite system metadata is inspected here; ordinary fixture writes use Diesel.
-    let shape = "SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'photo_%' AND name != 'team_photos' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'sqlite_%' ORDER BY name)";
+    let shape = "SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'photo_%' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'sqlite_%' ORDER BY name)";
     let baseline = sql::<diesel::sql_types::Text>(shape).get_result::<String>(&mut connection)?;
     for upgrade in [true, true, false, false] {
         if upgrade {
@@ -397,7 +397,7 @@ fn strict_tables_enforce_storage_types_and_nullability() -> Result<(), TestError
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND strict = 1"
         )
         .get_result::<i64>(&mut connection)?,
-        36
+        34
     );
     connection.batch_execute("INSERT INTO accounts VALUES ('a1', 'team-1', 1);")?;
     rejects(
@@ -720,7 +720,7 @@ fn snapshot_existing_tables(
         #[diesel(sql_type = Nullable<Text>)]
         rows: Option<String>,
     }
-    let tables = sql_query("SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'print_%' AND name NOT LIKE 'photo_%' AND name != 'team_photos' ORDER BY name").load::<Table>(connection)?;
+    let tables = sql_query("SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'print_%' AND name NOT LIKE 'photo_%' ORDER BY name").load::<Table>(connection)?;
     let mut snapshot = Vec::new();
     for table in tables {
         let columns =

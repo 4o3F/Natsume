@@ -10,12 +10,10 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ImportState {
     Uploading,
-    Uploaded,
-    Validating,
+    Processing,
     Ready,
     Committed,
     Failed,
-    Interrupted,
 }
 
 #[derive(serde::Serialize, specta::Type)]
@@ -84,11 +82,6 @@ impl PhotoComponent {
     where
         R: AsyncRead + Unpin + Send + 'static,
     {
-        let permit = self
-            .upload_work
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| BusySnafu.build())?;
         let id = Uuid::now_v7();
         let admitted = self
             .database
@@ -107,8 +100,7 @@ impl PhotoComponent {
         let store = self.results.clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            // The actual blocking operation owns capacity even if its caller disappears.
-            let _permit = permit;
+            // The durable nonterminal job reserves admission until physical IO ends.
             let mut owned = false;
             let mut total = 0_u64;
             let result = (|| {
@@ -118,7 +110,6 @@ impl PhotoComponent {
                 let mut input =
                     tokio_util::io::SyncIoBridge::new_with_handle(input, runtime.clone());
                 let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-                let mut checkpoint = 0;
                 loop {
                     let read = input.read(&mut buffer).context(InputSnafu)?;
                     if read == 0 {
@@ -132,15 +123,6 @@ impl PhotoComponent {
                         LimitSnafu
                     );
                     files.file.write_all(&buffer[..read]).context(IoSnafu)?;
-                    if total - checkpoint >= 1024 * 1024 {
-                        runtime
-                            .block_on(
-                                database.write(move |tx| db::imports::progress(tx, id, total)),
-                            )
-                            .map_err(TransactionError::into_error)
-                            .context(PersistenceSnafu)?;
-                        checkpoint = total;
-                    }
                 }
                 ensure!(total != 0, EmptySnafu);
                 files.file.sync_all().context(IoSnafu)?;

@@ -10,7 +10,7 @@ pub(in crate::component::photo) fn active_count(
     tx: &mut Transaction<'_>,
 ) -> Result<i64, PersistenceError> {
     jobs::table
-        .filter(jobs::state.eq_any(["uploading", "uploaded", "validating"]))
+        .filter(jobs::state.eq_any(["uploading", "processing"]))
         .count()
         .get_result::<i64>(tx.connection())
         .map_err(PersistenceError::from)
@@ -32,29 +32,6 @@ pub(in crate::component::photo) fn begin(
     Ok(())
 }
 
-pub(in crate::component::photo) fn progress(
-    tx: &mut Transaction<'_>,
-    id: Uuid,
-    bytes: u64,
-) -> Result<(), PersistenceError> {
-    let bytes = i64::try_from(bytes).map_err(|_| PersistenceError::invalid("upload byte count"))?;
-    let now = now(tx)?;
-    let changed = diesel::update(
-        jobs::table
-            .find(id.to_string())
-            .filter(jobs::state.eq("uploading")),
-    )
-    .set((
-        jobs::uploaded_bytes.eq(bytes),
-        jobs::updated_at_unix_ms.eq(now),
-    ))
-    .execute(tx.connection())?;
-    if changed != 1 {
-        return Err(PersistenceError::invalid("upload progress state"));
-    }
-    Ok(())
-}
-
 pub(in crate::component::photo) fn finish(
     tx: &mut Transaction<'_>,
     id: Uuid,
@@ -72,7 +49,7 @@ pub(in crate::component::photo) fn finish(
         jobs::state.eq(if failure.is_some() {
             "failed"
         } else {
-            "uploaded"
+            "processing"
         }),
         jobs::uploaded_bytes.eq(bytes),
         jobs::failure_code.eq(failure),
@@ -103,12 +80,10 @@ pub(in crate::component::photo) fn read(
         .map(|(state, uploaded_bytes, verified_images, failure_code)| {
             let state = match state.as_str() {
                 "uploading" => ImportState::Uploading,
-                "uploaded" => ImportState::Uploaded,
-                "validating" => ImportState::Validating,
+                "processing" => ImportState::Processing,
                 "ready" => ImportState::Ready,
                 "committed" => ImportState::Committed,
                 "failed" => ImportState::Failed,
-                "interrupted" => ImportState::Interrupted,
                 _ => return Err(PersistenceError::invalid("Photo import state")),
             };
             let failure_code = failure_code

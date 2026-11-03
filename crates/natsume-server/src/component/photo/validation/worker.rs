@@ -34,7 +34,6 @@ impl PhotoComponent {
             .await
             .map_err(TransactionError::into_error)
             .context(PersistenceSnafu)?;
-        ensure!(interrupted.len() <= 1, CorruptSnafu);
         for id in interrupted {
             let this = self.clone();
             let ownership = lease.clone();
@@ -44,7 +43,7 @@ impl PhotoComponent {
                 tokio::runtime::Handle::current()
                     .block_on(
                         this.database
-                            .write(move |tx| db::validation::fail(tx, id, true, "interrupted")),
+                            .write(move |tx| db::validation::fail(tx, id, "interrupted")),
                     )
                     .map_err(TransactionError::into_error)
                     .context(PersistenceSnafu)
@@ -64,11 +63,6 @@ impl PhotoComponent {
                 .map_err(TransactionError::into_error)
                 .context(PersistenceSnafu)?;
             if let Some((id, bytes)) = pending {
-                self.database
-                    .write(move |tx| db::validation::claim(tx, id))
-                    .await
-                    .map_err(TransactionError::into_error)
-                    .context(PersistenceSnafu)?;
                 let this = self.clone();
                 let owned_stop = stop.clone();
                 let ownership = lease.clone();
@@ -135,7 +129,7 @@ impl PhotoComponent {
             tokio::runtime::Handle::current()
                 .block_on(
                     self.database
-                        .write(move |tx| db::validation::fail(tx, id, false, code)),
+                        .write(move |tx| db::validation::fail(tx, id, code)),
                 )
                 .map_err(TransactionError::into_error)
                 .context(PersistenceSnafu)?;
@@ -156,15 +150,7 @@ impl PhotoComponent {
             .block_on(self.database.read(move |tx| trusted(tx, &authorization)))
             .map_err(TransactionError::into_error)?;
         let mut stage = self.results.stage().context(StorageSnafu)?;
-        let verification = package.images(&mut stage, stop, |count| {
-            runtime
-                .block_on(
-                    self.database
-                        .write(move |tx| db::validation::progress(tx, id, count)),
-                )
-                .map_err(TransactionError::into_error)
-                .context(PersistenceSnafu)
-        });
+        let verification = package.images(&mut stage, stop);
         let images = match verification {
             Ok(images) => images,
             Err(error) => {
@@ -196,10 +182,8 @@ impl PhotoComponent {
                         .context(PersistenceSnafu)?,
                     ConflictSnafu
                 );
-                for image in &images {
-                    db::validation::object(tx, image).context(PersistenceSnafu)?;
-                }
-                db::validation::ready(tx, id, &signed, &json, &hash).context(PersistenceSnafu)
+                db::validation::ready(tx, id, &signed, &json, &hash, images.len())
+                    .context(PersistenceSnafu)
             }))
             .map_err(TransactionError::into_error)
     }

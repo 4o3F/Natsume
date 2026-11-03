@@ -6,6 +6,7 @@ mod enrollment;
 mod imports;
 mod initialization;
 mod results_storage;
+mod roster;
 mod storage;
 mod validation;
 
@@ -15,6 +16,7 @@ pub(crate) use delivery::{DeliveryError, PhotoPage, PhotoQuery, PreparedDownload
 pub(crate) use enrollment::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState};
 pub(crate) use imports::{ImportError, ImportJob, ImportState};
 pub(crate) use initialization::{InitializationError, Preparation, SnapshotDownload};
+pub(crate) use roster::PhotoRoster;
 pub(crate) use validation::ValidationError;
 
 use std::{
@@ -45,7 +47,6 @@ pub(crate) struct PhotoComponent {
     database: Database,
     storage: storage::PhotoStore,
     results: results_storage::ResultsStore,
-    upload_work: Arc<Semaphore>,
     export_work: Arc<Semaphore>,
     result_download_work: Arc<Semaphore>,
     validation_wake: Arc<tokio::sync::Notify>,
@@ -65,7 +66,6 @@ impl PhotoComponent {
             database,
             storage: storage::PhotoStore::open(initializations).context(InitializationSnafu)?,
             results,
-            upload_work: Arc::new(Semaphore::new(1)),
             export_work: Arc::new(Semaphore::new(1)),
             result_download_work: Arc::new(Semaphore::new(2)),
             validation_wake: Arc::new(tokio::sync::Notify::new()),

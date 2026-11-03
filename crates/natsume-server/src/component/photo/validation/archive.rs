@@ -160,7 +160,6 @@ impl Package {
         &mut self,
         stage: &mut Staging,
         stop: &CancellationToken,
-        mut progress: impl FnMut(usize) -> Result<()>,
     ) -> Result<Vec<TeamResult>> {
         let images: BTreeMap<_, _> = self
             .signed
@@ -177,7 +176,7 @@ impl Package {
                     .all(|name| name == "manifest.json" || images.contains_key(name)),
             ArchiveSnafu
         );
-        for (index, (name, expected)) in images.iter().enumerate() {
+        for (name, expected) in &images {
             ensure!(!stop.is_cancelled(), InterruptedSnafu);
             let mut source = self
                 .zip
@@ -211,7 +210,6 @@ impl Package {
             );
             target.sync_all().context(IoSnafu)?;
             decode(&mut target, expected)?;
-            progress(index + 1)?;
         }
         Ok(images.into_values().collect())
     }

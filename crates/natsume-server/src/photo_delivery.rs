@@ -47,7 +47,9 @@ impl DeliverPhotoResults {
     pub(crate) async fn list(&self, query: PhotoQuery) -> Result<PhotoPage, Error> {
         self.database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = ContestComponent::photo_roster_in(tx)
+                    .context(RosterSnafu)?
+                    .into();
                 PhotoComponent::photos_in(tx, &query, &roster).context(PhotoSnafu)
             })
             .await
@@ -58,7 +60,9 @@ impl DeliverPhotoResults {
         let record = self
             .database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = ContestComponent::photo_roster_in(tx)
+                    .context(RosterSnafu)?
+                    .into();
                 PhotoComponent::photo_in(tx, &id, &roster).context(PhotoSnafu)
             })
             .await
@@ -76,7 +80,9 @@ impl DeliverPhotoResults {
         let snapshot = self
             .database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = ContestComponent::photo_roster_in(tx)
+                    .context(RosterSnafu)?
+                    .into();
                 PhotoComponent::export_snapshot_in(tx, &roster).context(PhotoSnafu)
             })
             .await

@@ -66,7 +66,6 @@ async fn activate(
     id: Uuid,
     index: usize,
     target: &str,
-    account: &str,
     expected: Value,
 ) -> Result<Value, TestError> {
     let preview = value(
@@ -80,10 +79,10 @@ async fn activate(
         .await?,
     )?;
     let entry = &preview["entries"][index];
-    value(call(f,cookie,Method::POST,&format!("{id}/decisions"),json!({"submission_id":entry["submission_id"],"expected_submission_revision":entry["submission_revision"],"decision":{"action":"activate","account_id":target,"account":account,"expected_current":expected}})).await?)
+    value(call(f,cookie,Method::POST,&format!("{id}/decisions"),json!({"submission_id":entry["submission_id"],"expected_submission_revision":entry["submission_revision"],"decision":{"action":"activate","account_id":target,"expected_current":expected}})).await?)
 }
 fn expected(current: &Value) -> Value {
-    json!({"source_id":current["source_id"],"submission_id":current["submission_id"],"revision":current["revision"]})
+    json!({"source_id":current["source_id"],"submission_id":current["submission_id"]})
 }
 fn archive(bytes: Vec<u8>) -> Result<Vec<(String, Vec<u8>)>, TestError> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
@@ -99,61 +98,20 @@ fn archive(bytes: Vec<u8>) -> Result<Vec<(String, Vec<u8>)>, TestError> {
 }
 
 #[tokio::test]
-async fn current_photos_download_exact_bytes_and_roster_rename_requires_explicit_association()
--> TestResult {
+async fn current_photos_keep_stable_identity_and_use_current_export_names() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let (mut f, cookie) = admin().await?;
     let (signed, image) = fixture_package(&f).await?;
     let running = background(&mut f).await?;
     let id = ready(&f, &cookie, &signed, &image).await?;
-    let accepted = commit(&f, &cookie, id).await?;
-    f.database
-        .database
-        .write(|tx| -> Result<(), PersistenceError> {
-            diesel::update(teams::table.find("account-a"))
-                .set(teams::name_zh.eq("队名更新"))
-                .execute(tx.connection())?;
-            diesel::update(organizations::table.find(7_i64))
-                .set(organizations::name_zh.eq("学校名更新"))
-                .execute(tx.connection())?;
-            Ok(())
-        })
-        .await?;
-    let listed = value(get(&f, &cookie, "photos").await?)?;
-    assert_eq!(listed["entries"].as_array().map(Vec::len), Some(1));
-    let downloaded = get(&f, &cookie, "photos/account-a/image").await?;
-    assert_eq!(downloaded.status, StatusCode::OK);
-    assert_eq!(downloaded.body, image);
-    let zip = export(&f, &cookie).await?;
-    assert_eq!(zip.status, StatusCode::OK);
+    commit(&f, &cookie, id).await?;
     assert_eq!(
-        archive(zip.body)?,
-        vec![("account-a.png".into(), image.clone())]
+        get(&f, &cookie, "photos/account-a/image").await?.body,
+        image
     );
     rename(&f, "account-a", "renamed-a").await?;
-    assert_eq!(
-        value(get(&f, &cookie, "photos").await?)?["entries"],
-        json!([])
-    );
-    assert_eq!(
-        get(&f, &cookie, "photos/account-a/image").await?.status,
-        StatusCode::NOT_FOUND
-    );
-    assert!(archive(export(&f, &cookie).await?.body)?.is_empty());
-    let pending = visible_pending(&f, &cookie, String::new()).await?;
-    assert_eq!(pending["entries"][0]["state"], "needs_association");
-    let associated = activate(
-        &f,
-        &cookie,
-        id,
-        0,
-        "account-a",
-        "renamed-a",
-        expected(&accepted["entries"][0]["current"]),
-    )
-    .await?;
-    assert_eq!(associated["entries"][0]["account"], "account-a");
-    assert_eq!(associated["entries"][0]["current"]["revision"], 2);
+    let listed = value(get(&f, &cookie, "photos").await?)?;
+    assert_eq!(listed["entries"][0]["account"], "renamed-a");
     assert_eq!(
         archive(export(&f, &cookie).await?.body)?,
         vec![("renamed-a.png".into(), image)]
@@ -174,33 +132,37 @@ async fn current_photos_download_exact_bytes_and_roster_rename_requires_explicit
 }
 
 #[tokio::test]
-async fn moving_an_invalid_binding_keeps_revision_history_and_rejects_an_aba_replacement()
--> TestResult {
+async fn stale_target_identity_cannot_replace_a_newly_approved_photo() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let (mut f, cookie) = admin().await?;
     let (signed, image) = fixture_package(&f).await?;
     let running = background(&mut f).await?;
-    let id = ready(&f, &cookie, &signed, &image).await?;
-    let accepted = commit(&f, &cookie, id).await?;
+    let first = ready(&f, &cookie, &signed, &image).await?;
+    let accepted = commit(&f, &cookie, first).await?;
     let old = expected(&accepted["entries"][0]["current"]);
-    let (retake, image) = different(&signed, 89)?;
-    let candidate = ready(&f, &cookie, &retake, &image).await?;
-    commit(&f, &cookie, candidate).await?;
-    rename(&f, "account-a", "renamed-a").await?;
-    let moved = activate(&f, &cookie, id, 0, "account-b", "account-b", Value::Null).await?;
-    assert_eq!(moved["entries"][0]["active_account_id"], "account-b");
+    let (b, bytes) = different(&signed, 25)?;
+    let second = ready(&f, &cookie, &b, &bytes).await?;
+    commit(&f, &cookie, second).await?;
+    let (c, bytes) = different(&signed, 26)?;
+    let third = ready(&f, &cookie, &c, &bytes).await?;
+    commit(&f, &cookie, third).await?;
+    activate(&f, &cookie, second, 0, "account-a", old.clone()).await?;
+    let request = json!({"submission_id":c.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-a","expected_current":old}});
     assert_eq!(
-        get(&f, &cookie, "photos/account-a/image").await?.status,
-        StatusCode::NOT_FOUND
+        call(
+            &f,
+            &cookie,
+            Method::POST,
+            &format!("{third}/decisions"),
+            request
+        )
+        .await?
+        .status,
+        StatusCode::CONFLICT
     );
-    rename(&f, "account-a", "account-a").await?;
-    rename(&f, "account-b", "renamed-b").await?;
-    let back = activate(&f, &cookie, id, 0, "account-a", "account-a", Value::Null).await?;
-    assert_eq!(back["entries"][0]["current"]["revision"], 3);
-    assert_eq!(call(&f,&cookie,Method::POST,&format!("{candidate}/decisions"),json!({"submission_id":retake.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-a","account":"account-a","expected_current":old}})).await?.status,StatusCode::CONFLICT);
     assert_eq!(
         value(get(&f, &cookie, "photos").await?)?["entries"][0]["image_sha256"],
-        json!(signed.manifest.results[0].image_sha256)
+        json!(b.manifest.results[0].image_sha256)
     );
     running.shutdown().await?;
     Ok(())
@@ -250,16 +212,7 @@ async fn recreated_team_does_not_inherit_old_photo_even_with_the_same_username()
         StatusCode::NOT_FOUND
     );
     assert!(archive(export(&f, &cookie).await?.body)?.is_empty());
-    let associated = activate(
-        &f,
-        &cookie,
-        id,
-        0,
-        "account-rebuilt",
-        "account-a",
-        Value::Null,
-    )
-    .await?;
+    let associated = activate(&f, &cookie, id, 0, "account-rebuilt", Value::Null).await?;
     assert_eq!(associated["entries"][0]["account_id"], "account-a");
     assert_eq!(
         associated["entries"][0]["active_account_id"],
@@ -327,9 +280,7 @@ async fn missing_or_corrupt_objects_never_return_a_successful_image_or_partial_z
 #[tokio::test]
 async fn export_payload_budget_rejects_before_reading_image_data_and_releases_its_slot()
 -> TestResult {
-    use crate::diesel_schema::{
-        photo_objects as objects, photo_submissions as submissions, team_photos,
-    };
+    use crate::diesel_schema::photo_submissions as submissions;
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let (mut f, cookie) = admin().await?;
     let (signed, image) = fixture_package(&f).await?;
@@ -344,8 +295,8 @@ async fn export_payload_budget_rejects_before_reading_image_data_and_releases_it
     f.database
         .database
         .write(move |tx| -> Result<(), PersistenceError> {
-            diesel::update(objects::table.find(&hash))
-                .set(objects::image_bytes.eq(50_i64 * 1024 * 1024))
+            diesel::update(submissions::table)
+                .set(submissions::image_bytes.eq(50_i64 * 1024 * 1024))
                 .execute(tx.connection())?;
             for n in 0..165 {
                 let account = format!("budget-{n}");
@@ -385,16 +336,10 @@ async fn export_payload_budget_rejects_before_reading_image_data_and_releases_it
                         submissions::account.eq(&account),
                         submissions::image_sha256.eq(&hash),
                         submissions::state.eq("active"),
+                        submissions::assigned_account_id.eq(&account),
+                        submissions::image_format.eq("png"),
+                        submissions::image_bytes.eq(50_i64 * 1024 * 1024),
                         submissions::revision.eq(1_i64),
-                    ))
-                    .execute(tx.connection())?;
-                diesel::insert_into(team_photos::table)
-                    .values((
-                        team_photos::account_id.eq(&account),
-                        team_photos::account.eq(&account),
-                        team_photos::source_id.eq(&source),
-                        team_photos::submission_id.eq(&submission),
-                        team_photos::revision.eq(1_i64),
                     ))
                     .execute(tx.connection())?;
             }
@@ -409,8 +354,8 @@ async fn export_payload_budget_rejects_before_reading_image_data_and_releases_it
     f.database
         .database
         .write(move |tx| {
-            diesel::update(objects::table)
-                .set(objects::image_bytes.eq(bytes))
+            diesel::update(submissions::table)
+                .set(submissions::image_bytes.eq(bytes))
                 .execute(tx.connection())
                 .map_err(PersistenceError::from)
         })
@@ -435,7 +380,7 @@ async fn unsafe_export_names_and_case_collisions_are_rejected_without_renaming()
     let signed = manifest.sign(&ed25519_dalek::SigningKey::from_bytes(&[17; 32]))?;
     let running = background(&mut f).await?;
     let id = ready(&f, &cookie, &signed, &image).await?;
-    let mut preview = commit(&f, &cookie, id).await?;
+    commit(&f, &cookie, id).await?;
     assert_eq!(
         archive(export(&f, &cookie).await?.body)?,
         vec![
@@ -447,7 +392,7 @@ async fn unsafe_export_names_and_case_collisions_are_rejected_without_renaming()
         rename(&f, "account-a", name).await?;
         if name == "CON" {
             let page = value(get(&f, &cookie, "photos?limit=1").await?)?;
-            assert_eq!(page["entries"], json!([]));
+            assert_eq!(page["entries"][0]["account"], "CON");
             assert_eq!(page["next"], "account-a");
             assert_eq!(
                 value(get(&f, &cookie, "photos?limit=1&after_account_id=account-a").await?)?["entries"]
@@ -455,31 +400,11 @@ async fn unsafe_export_names_and_case_collisions_are_rejected_without_renaming()
                 "account-b"
             );
         }
-        preview = activate(
-            &f,
-            &cookie,
-            id,
-            0,
-            "account-a",
-            name,
-            expected(&preview["entries"][0]["current"]),
-        )
-        .await?;
         if name != "Case" {
             assert_eq!(export(&f, &cookie).await?.status, StatusCode::CONFLICT);
         }
     }
     rename(&f, "account-b", "case").await?;
-    activate(
-        &f,
-        &cookie,
-        id,
-        1,
-        "account-b",
-        "case",
-        expected(&preview["entries"][1]["current"]),
-    )
-    .await?;
     assert_eq!(export(&f, &cookie).await?.status, StatusCode::CONFLICT);
     running.shutdown().await?;
     Ok(())
@@ -596,7 +521,6 @@ async fn a_replacement_during_download_does_not_change_the_prepared_export_snaps
         second,
         0,
         "account-a",
-        "account-a",
         expected(&accepted["entries"][0]["current"]),
     )
     .await?;
@@ -614,27 +538,42 @@ async fn a_replacement_during_download_does_not_change_the_prepared_export_snaps
 }
 
 #[tokio::test]
-async fn rejecting_an_invalid_active_photo_preserves_the_next_binding_revision() -> TestResult {
+async fn rejecting_an_invalid_assignment_preserves_other_submissions() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let (mut f, cookie) = admin().await?;
     let (signed, image) = fixture_package(&f).await?;
     let running = background(&mut f).await?;
     let id = ready(&f, &cookie, &signed, &image).await?;
     commit(&f, &cookie, id).await?;
-    rename(&f, "account-a", "renamed-a").await?;
-    let rejected = value(call(&f, &cookie, Method::POST, &format!("{id}/decisions"), json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"reject"}})).await?)?;
+    f.database
+        .database
+        .write(|tx| {
+            diesel::delete(accounts::table.find("account-a"))
+                .execute(tx.connection())
+                .map_err(PersistenceError::from)
+        })
+        .await?;
+    let request = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"reject"}});
+    let rejected = value(
+        call(
+            &f,
+            &cookie,
+            Method::POST,
+            &format!("{id}/decisions"),
+            request,
+        )
+        .await?,
+    )?;
     assert_eq!(rejected["entries"][0]["state"], "rejected");
-    rename(&f, "account-a", "account-a").await?;
-    assert_eq!(
-        get(&f, &cookie, "photos/account-a/image").await?.status,
-        StatusCode::NOT_FOUND
-    );
+    assert!(archive(export(&f, &cookie).await?.body)?.is_empty());
     let (new, image) = different(&signed, 33)?;
     let new_id = ready(&f, &cookie, &new, &image).await?;
     assert_eq!(
-        commit(&f, &cookie, new_id).await?["entries"][0]["current"]["revision"],
-        3
+        commit(&f, &cookie, new_id).await?["entries"][0]["submission_revision"],
+        1
     );
+    let active = activate(&f, &cookie, new_id, 0, "account-b", Value::Null).await?;
+    assert_eq!(active["entries"][0]["active_account_id"], "account-b");
     running.shutdown().await?;
     Ok(())
 }
@@ -681,7 +620,7 @@ async fn stalled_and_cancelled_downloads_hold_capacity_until_the_tracked_produce
 
 #[tokio::test]
 async fn export_ignores_historical_invalid_associations() -> TestResult {
-    use crate::diesel_schema::{photo_submissions as history, team_photos as current};
+    use crate::diesel_schema::photo_submissions as history;
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let (mut f, cookie) = admin().await?;
     let (signed, image) = fixture_package(&f).await?;
@@ -706,16 +645,10 @@ async fn export_ignores_historical_invalid_associations() -> TestResult {
                         history::account.eq(&account),
                         history::image_sha256.eq(&hash),
                         history::state.eq("active"),
+                        history::assigned_account_id.eq(&account),
+                        history::image_format.eq("png"),
+                        history::image_bytes.eq(1_i64),
                         history::revision.eq(1_i64),
-                    ))
-                    .execute(tx.connection())?;
-                diesel::insert_into(current::table)
-                    .values((
-                        current::account_id.eq(&account),
-                        current::account.eq(&account),
-                        current::source_id.eq(&source),
-                        current::submission_id.eq(&submission),
-                        current::revision.eq(1_i64),
                     ))
                     .execute(tx.connection())?;
             }

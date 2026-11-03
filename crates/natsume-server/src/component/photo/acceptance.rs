@@ -1,8 +1,8 @@
 //! Explicit acceptance of verified results. All decisions run inside the caller's transaction.
-use super::{PhotoComponent, db, validation};
-use crate::{component::contest::PhotoTeam, db::Transaction};
+use super::{PhotoComponent, PhotoRoster, db, validation};
+use crate::db::Transaction;
 use natsume_photo_protocol::{
-    InitializationId, Sha256Digest, SourceId,
+    Sha256Digest, SourceId,
     results::{ResultId, SignedResults, SubmissionId, TeamResult},
 };
 use snafu::{OptionExt as _, ResultExt as _, Snafu, ensure};
@@ -65,14 +65,13 @@ pub(super) struct SavedResult {
     pub account_id: String,
     pub account: String,
     pub image_sha256: Sha256Digest,
-    pub initialization_id: InitializationId,
+    pub assigned_account_id: Option<String>,
     pub state: SubmissionState,
     pub revision: i64,
 }
 
 #[derive(serde::Serialize, specta::Type)]
 pub(crate) struct CurrentPhoto {
-    pub account: String,
     pub source_id: SourceId,
     pub submission_id: SubmissionId,
     #[specta(type = specta_typescript::Number)]
@@ -114,6 +113,7 @@ pub(crate) struct PendingPhoto {
     pub import_id: Uuid,
     pub account_id: String,
     pub account: String,
+    pub assigned_account_id: Option<String>,
     pub image_sha256: Sha256Digest,
     pub state: SubmissionState,
     #[specta(type = specta_typescript::Number)]
@@ -137,8 +137,6 @@ pub(crate) struct PendingPhotoPage {
 pub(crate) struct ExpectedPhoto {
     pub source_id: SourceId,
     pub submission_id: SubmissionId,
-    #[specta(type = specta_typescript::Number)]
-    pub revision: i64,
 }
 #[derive(serde::Deserialize, specta::Type)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -146,7 +144,6 @@ pub(crate) enum PhotoAction {
     Reject {},
     Activate {
         account_id: String,
-        account: String,
         expected_current: Option<ExpectedPhoto>,
     },
 }
@@ -199,8 +196,7 @@ fn existing(
                 && row.result_id == image.result_id
                 && row.account_id == image.account_id
                 && row.account == image.account
-                && row.image_sha256 == image.image_sha256
-                && row.initialization_id == signed.manifest.context.initialization_id,
+                && row.image_sha256 == image.image_sha256,
             ConflictSnafu
         );
     }
@@ -209,16 +205,13 @@ fn existing(
 
 fn proposed(
     image: &TeamResult,
-    roster: &[PhotoTeam],
+    roster: &PhotoRoster,
     current: Option<&CurrentPhoto>,
 ) -> SubmissionState {
-    if !roster
-        .iter()
-        .any(|team| team.account_id == image.account_id && team.account == image.account)
-    {
+    if !roster.contains(&image.account_id) {
         SubmissionState::NeedsAssociation
     } else if let Some(current) = current {
-        if current.account == image.account && current.image_sha256 == image.image_sha256 {
+        if current.image_sha256 == image.image_sha256 {
             SubmissionState::Superseded
         } else {
             SubmissionState::PendingReview
@@ -228,31 +221,28 @@ fn proposed(
     }
 }
 
-fn association(
-    tx: &mut Transaction<'_>,
-    source: &SourceId,
-    submission: &SubmissionId,
-    roster: &[PhotoTeam],
-) -> Result<Option<(String, bool)>> {
-    let Some(account_id) =
-        db::acceptance::active_account(tx, source, submission).context(PersistenceSnafu)?
-    else {
-        return Ok(None);
-    };
-    let current = db::acceptance::current(tx, &account_id)
-        .context(PersistenceSnafu)?
-        .context(CorruptSnafu)?;
-    let valid = roster
-        .iter()
-        .any(|team| team.account_id == account_id && team.account == current.account);
-    Ok(Some((account_id, valid)))
+fn projected(
+    state: SubmissionState,
+    original: &str,
+    assigned: Option<&str>,
+    roster: &PhotoRoster,
+) -> SubmissionState {
+    match state {
+        SubmissionState::Active if !assigned.is_some_and(|id| roster.contains(id)) => {
+            SubmissionState::NeedsAssociation
+        }
+        SubmissionState::PendingReview if !roster.contains(original) => {
+            SubmissionState::NeedsAssociation
+        }
+        _ => state,
+    }
 }
 
 impl PhotoComponent {
     pub(crate) fn pending_in(
         tx: &mut Transaction<'_>,
         query: PendingPhotoQuery,
-        roster: &[PhotoTeam],
+        roster: &PhotoRoster,
     ) -> Result<PendingPhotoPage> {
         let limit = query.limit.unwrap_or(50);
         ensure!((1..=100).contains(&limit), InvalidSnafu);
@@ -267,6 +257,7 @@ impl PhotoComponent {
                 .as_ref()
                 .map(|(source, submission)| (source, submission)),
             i64::from(limit) + 1,
+            roster,
         )
         .context(PersistenceSnafu)?;
         let next = if entries.len() > usize::from(limit) {
@@ -278,34 +269,21 @@ impl PhotoComponent {
         } else {
             None
         };
-        let mut visible = Vec::with_capacity(entries.len());
-        for mut entry in entries {
-            if entry.state == SubmissionState::Active {
-                let (_, valid) = association(tx, &entry.source_id, &entry.submission_id, roster)?
-                    .context(CorruptSnafu)?;
-                if valid {
-                    continue;
-                }
-                entry.state = SubmissionState::NeedsAssociation;
-            } else if entry.state == SubmissionState::PendingReview
-                && !roster.iter().any(|team| {
-                    team.account_id == entry.account_id && team.account == entry.account
-                })
-            {
-                entry.state = SubmissionState::NeedsAssociation;
-            }
-            visible.push(entry);
+        for entry in &mut entries {
+            entry.state = projected(
+                entry.state,
+                &entry.account_id,
+                entry.assigned_account_id.as_deref(),
+                roster,
+            );
         }
-        Ok(PendingPhotoPage {
-            entries: visible,
-            next,
-        })
+        Ok(PendingPhotoPage { entries, next })
     }
 
     pub(crate) fn preview_in(
         tx: &mut Transaction<'_>,
         id: Uuid,
-        roster: &[PhotoTeam],
+        roster: &PhotoRoster,
     ) -> Result<ImportPreview> {
         let (committed, signed) = package(tx, id)?;
         preview(tx, id, committed, &signed, roster)
@@ -314,7 +292,7 @@ impl PhotoComponent {
     pub(crate) fn commit_in(
         tx: &mut Transaction<'_>,
         id: Uuid,
-        roster: &[PhotoTeam],
+        roster: &PhotoRoster,
     ) -> Result<ImportPreview> {
         let (committed, signed) = package(tx, id)?;
         if !committed {
@@ -325,20 +303,11 @@ impl PhotoComponent {
                 let current =
                     db::acceptance::current(tx, &image.account_id).context(PersistenceSnafu)?;
                 let state = proposed(image, roster, current.as_ref());
-                db::acceptance::insert(tx, id, &signed, image, state).context(PersistenceSnafu)?;
-                if state == SubmissionState::Active {
-                    let revision = db::acceptance::next_revision(tx, &image.account_id)
-                        .context(PersistenceSnafu)?;
-                    db::acceptance::set_current(
-                        tx,
-                        &image.account_id,
-                        &image.account,
-                        &signed.manifest.context.source_id,
-                        &image.submission_id,
-                        revision,
-                    )
+                let assigned = roster
+                    .contains(&image.account_id)
+                    .then_some(image.account_id.as_str());
+                db::acceptance::insert(tx, id, &signed, image, state, assigned)
                     .context(PersistenceSnafu)?;
-                }
             }
             db::acceptance::committed(tx, id).context(PersistenceSnafu)?;
         }
@@ -351,32 +320,33 @@ fn preview(
     id: Uuid,
     committed: bool,
     signed: &SignedResults,
-    roster: &[PhotoTeam],
+    roster: &PhotoRoster,
 ) -> Result<ImportPreview> {
     let mut entries = Vec::with_capacity(signed.manifest.results.len());
     for image in &signed.manifest.results {
         let saved = existing(tx, signed, image)?;
-        let current = db::acceptance::current(tx, &image.account_id).context(PersistenceSnafu)?;
         ensure!(!committed || saved.is_some(), CorruptSnafu);
-        let (mut state, submission_revision) = saved.map_or_else(
-            || (proposed(image, roster, current.as_ref()), 0),
-            |saved| (saved.state, saved.revision),
-        );
-        let associated = association(
-            tx,
-            &signed.manifest.context.source_id,
-            &image.submission_id,
-            roster,
-        )?;
-        if (state == SubmissionState::Active
-            && associated.as_ref().is_some_and(|(_, valid)| !valid))
-            || (state == SubmissionState::PendingReview
-                && !roster.iter().any(|team| {
-                    team.account_id == image.account_id && team.account == image.account
-                }))
-        {
-            state = SubmissionState::NeedsAssociation;
-        }
+        let target = saved
+            .as_ref()
+            .and_then(|saved| saved.assigned_account_id.as_deref())
+            .unwrap_or(&image.account_id);
+        let current = db::acceptance::current(tx, target).context(PersistenceSnafu)?;
+        let (state, submission_revision, active_account_id) = if let Some(saved) = saved {
+            let state = projected(
+                saved.state,
+                &saved.account_id,
+                saved.assigned_account_id.as_deref(),
+                roster,
+            );
+            let assigned = if state == SubmissionState::Active {
+                saved.assigned_account_id
+            } else {
+                None
+            };
+            (state, saved.revision, assigned)
+        } else {
+            (proposed(image, roster, current.as_ref()), 0, None)
+        };
         entries.push(PhotoPreviewEntry {
             submission_id: image.submission_id.clone(),
             result_id: image.result_id.clone(),
@@ -386,7 +356,7 @@ fn preview(
             state,
             submission_revision,
             current,
-            active_account_id: associated.and_then(|(id, valid)| valid.then_some(id)),
+            active_account_id,
         });
     }
     Ok(ImportPreview {
@@ -401,7 +371,7 @@ impl PhotoComponent {
         tx: &mut Transaction<'_>,
         id: Uuid,
         decision: PhotoDecision,
-        roster: &[PhotoTeam],
+        roster: &PhotoRoster,
     ) -> Result<ImportPreview> {
         ensure!(decision.expected_submission_revision > 0, InvalidSnafu);
         let (committed, signed) = package(tx, id)?;
@@ -413,56 +383,37 @@ impl PhotoComponent {
             .find(|image| image.submission_id == decision.submission_id)
             .context(NotFoundSnafu)?;
         let saved = existing(tx, &signed, image)?.context(CorruptSnafu)?;
-        let source = &signed.manifest.context.source_id;
-        let associated = association(tx, source, &saved.submission_id, roster)?;
-        let stale_active = saved.state == SubmissionState::Active
-            && associated.as_ref().is_some_and(|(_, valid)| !valid);
         ensure!(
             saved.revision == decision.expected_submission_revision
-                && (stale_active
-                    || matches!(
+                && matches!(
+                    projected(
                         saved.state,
-                        SubmissionState::PendingReview | SubmissionState::NeedsAssociation
-                    )),
+                        &saved.account_id,
+                        saved.assigned_account_id.as_deref(),
+                        roster
+                    ),
+                    SubmissionState::PendingReview | SubmissionState::NeedsAssociation
+                ),
             ConflictSnafu
         );
+        let source = &signed.manifest.context.source_id;
         match decision.decision {
-            PhotoAction::Reject {} => {
-                if stale_active {
-                    db::acceptance::clear_current(
-                        tx,
-                        &associated.as_ref().context(CorruptSnafu)?.0,
-                    )
-                    .context(PersistenceSnafu)?;
-                }
-                db::acceptance::state(
-                    tx,
-                    source,
-                    &saved.submission_id,
-                    saved.revision,
-                    SubmissionState::Rejected,
-                )
-                .context(PersistenceSnafu)?;
-            }
+            PhotoAction::Reject {} => db::acceptance::transition(
+                tx,
+                source,
+                &saved.submission_id,
+                saved.revision,
+                SubmissionState::Rejected,
+                None,
+            )
+            .context(PersistenceSnafu)?,
             PhotoAction::Activate {
                 account_id,
-                account,
                 expected_current,
             } => {
+                ensure!(roster.contains(&account_id), ConflictSnafu);
                 ensure!(
-                    roster
-                        .iter()
-                        .any(|team| team.account_id == account_id && team.account == account),
-                    ConflictSnafu
-                );
-                // A matching original identity can replace only its own photo. Moving to
-                // another identity is reserved for explicitly unassociated submissions.
-                ensure!(
-                    !roster
-                        .iter()
-                        .any(|team| team.account_id == image.account_id
-                            && team.account == image.account)
-                        || (account_id == image.account_id && account == image.account),
+                    !roster.contains(&image.account_id) || account_id == image.account_id,
                     ConflictSnafu
                 );
                 let current = db::acceptance::current(tx, &account_id).context(PersistenceSnafu)?;
@@ -470,34 +421,26 @@ impl PhotoComponent {
                     matches_current(current.as_ref(), expected_current.as_ref()),
                     ConflictSnafu
                 );
-                let revision =
-                    db::acceptance::next_revision(tx, &account_id).context(PersistenceSnafu)?;
-                if stale_active {
-                    let old_account = &associated.as_ref().context(CorruptSnafu)?.0;
-                    if old_account != &account_id {
-                        db::acceptance::clear_current(tx, old_account).context(PersistenceSnafu)?;
-                    }
-                }
                 if let Some(old) = current.filter(|old| {
                     &old.source_id != source || old.submission_id != saved.submission_id
                 }) {
-                    retire_current(tx, &old)?;
+                    db::acceptance::transition(
+                        tx,
+                        &old.source_id,
+                        &old.submission_id,
+                        old.revision,
+                        SubmissionState::Superseded,
+                        None,
+                    )
+                    .context(PersistenceSnafu)?;
                 }
-                db::acceptance::state(
+                db::acceptance::transition(
                     tx,
                     source,
                     &saved.submission_id,
                     saved.revision,
                     SubmissionState::Active,
-                )
-                .context(PersistenceSnafu)?;
-                db::acceptance::set_current(
-                    tx,
-                    &account_id,
-                    &account,
-                    source,
-                    &saved.submission_id,
-                    revision,
+                    Some(&account_id),
                 )
                 .context(PersistenceSnafu)?;
             }
@@ -506,28 +449,12 @@ impl PhotoComponent {
     }
 }
 
-fn retire_current(tx: &mut Transaction<'_>, old: &CurrentPhoto) -> Result<()> {
-    let (state, revision) =
-        db::acceptance::submission_state(tx, &old.source_id, &old.submission_id)
-            .context(PersistenceSnafu)?;
-    ensure!(state == SubmissionState::Active, CorruptSnafu);
-    db::acceptance::state(
-        tx,
-        &old.source_id,
-        &old.submission_id,
-        revision,
-        SubmissionState::Superseded,
-    )
-    .context(PersistenceSnafu)
-}
-
 fn matches_current(current: Option<&CurrentPhoto>, expected: Option<&ExpectedPhoto>) -> bool {
     match (current, expected) {
         (None, None) => true,
         (Some(current), Some(expected)) => {
             current.source_id == expected.source_id
                 && current.submission_id == expected.submission_id
-                && current.revision == expected.revision
         }
         _ => false,
     }

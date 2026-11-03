@@ -1,6 +1,6 @@
 //! Current identity projections and bounded, disk-backed image/ZIP delivery.
-use super::{PhotoComponent, db, results_storage};
-use crate::{component::contest::PhotoTeam, db::Transaction, lifecycle::Admission};
+use super::{PhotoComponent, PhotoRoster, db, results_storage};
+use crate::{db::Transaction, lifecycle::Admission};
 use natsume_photo_protocol::{
     Sha256Digest, SourceId,
     results::{PACKAGE_LIMIT, PhotoFormat, RESULT_IMAGES_LIMIT, SubmissionId},
@@ -70,13 +70,6 @@ pub(crate) struct PhotoRecord {
     #[specta(type = specta_typescript::Number)]
     pub image_bytes: u64,
 }
-impl PhotoRecord {
-    fn valid(&self, roster: &[PhotoTeam]) -> bool {
-        roster
-            .iter()
-            .any(|team| team.account_id == self.account_id && team.account == self.account)
-    }
-}
 #[derive(Default, serde::Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PhotoQuery {
@@ -100,7 +93,7 @@ impl PhotoComponent {
     pub(crate) fn photos_in(
         tx: &mut Transaction<'_>,
         query: &PhotoQuery,
-        roster: &[PhotoTeam],
+        roster: &PhotoRoster,
     ) -> Result<PhotoPage> {
         let limit = query.limit.unwrap_or(50);
         ensure!(
@@ -115,7 +108,7 @@ impl PhotoComponent {
             tx,
             query.after_account_id.as_deref(),
             None,
-            None,
+            roster,
             i64::from(limit) + 1,
         )
         .context(PersistenceSnafu)?;
@@ -125,41 +118,37 @@ impl PhotoComponent {
         } else {
             None
         };
-        entries.retain(|entry| entry.valid(roster));
         Ok(PhotoPage { entries, next })
     }
 
     pub(crate) fn photo_in(
         tx: &mut Transaction<'_>,
         id: &str,
-        roster: &[PhotoTeam],
+        roster: &PhotoRoster,
     ) -> Result<PhotoRecord> {
         ensure!(!id.is_empty() && id.len() <= 512, InvalidSnafu);
-        db::delivery::read(tx, None, Some(id), None, 1)
+        db::delivery::read(tx, None, Some(id), roster, 1)
             .context(PersistenceSnafu)?
             .pop()
-            .filter(|entry| entry.valid(roster))
             .ok_or_else(|| NotFoundSnafu.build())
     }
 
     pub(crate) fn export_snapshot_in(
         tx: &mut Transaction<'_>,
-        roster: &[PhotoTeam],
+        roster: &PhotoRoster,
     ) -> Result<Vec<PhotoRecord>> {
-        let mut entries = Vec::new();
-        // Bound SQLite parameters and query only current roster candidates.
-        // Historical invalid bindings must not consume the export budget.
-        for teams in roster.chunks(500) {
-            let ids: Vec<_> = teams.iter().map(|team| team.account_id.as_str()).collect();
-            let page =
-                db::delivery::read(tx, None, None, Some(&ids), 500).context(PersistenceSnafu)?;
-            entries.extend(page.into_iter().filter(|entry| entry.valid(teams)));
-            ensure!(
-                entries.len() <= natsume_photo_protocol::TEAM_LIMIT,
-                LimitSnafu
-            );
-        }
-        entries.sort_unstable_by(|a, b| a.account_id.cmp(&b.account_id));
+        let entries = db::delivery::read(
+            tx,
+            None,
+            None,
+            roster,
+            i64::try_from(natsume_photo_protocol::TEAM_LIMIT).map_err(|_| LimitSnafu.build())? + 1,
+        )
+        .context(PersistenceSnafu)?;
+        ensure!(
+            entries.len() <= natsume_photo_protocol::TEAM_LIMIT,
+            LimitSnafu
+        );
         Ok(entries)
     }
 

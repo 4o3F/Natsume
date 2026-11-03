@@ -4,7 +4,7 @@ use super::imports::{admin, upload};
 use super::*;
 use crate::{
     background::{BackgroundTasks, start_background_tasks},
-    diesel_schema::{photo_import_jobs as jobs, photo_objects as objects, team_photos},
+    diesel_schema::{photo_import_jobs as jobs, photo_submissions as submissions},
 };
 use natsume_photo_protocol::{
     FormatVersion, PhotoInitialization, Sha256Digest,
@@ -133,8 +133,7 @@ pub(super) async fn terminal(f: &Fixture, cookie: &str, id: Uuid) -> Result<Valu
             .await?;
             assert_eq!(response.status, StatusCode::OK);
             let job: Value = serde_json::from_slice(&response.body)?;
-            if job["state"] == "ready" || job["state"] == "failed" || job["state"] == "interrupted"
-            {
+            if job["state"] == "ready" || job["state"] == "failed" {
                 return Ok(job);
             }
             tokio::task::yield_now().await;
@@ -156,20 +155,18 @@ async fn valid_packages_reach_ready_without_acceptance_and_repeated_manifest_is_
         assert_eq!(job["state"], "ready");
         assert_eq!(job["verified_images"], 1);
     }
-    let counts = f
+    let count = f
         .database
         .database
         .read(|tx| {
-            Ok::<_, PersistenceError>((
-                objects::table.count().get_result::<i64>(tx.connection())?,
-                team_photos::table
-                    .count()
-                    .get_result::<i64>(tx.connection())?,
-            ))
+            submissions::table
+                .count()
+                .get_result::<i64>(tx.connection())
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(crate::db::TransactionError::into_error)?;
-    assert_eq!(counts, (1, 0));
+    assert_eq!(count, 0);
     let object = f
         .database
         .documents_path()
@@ -285,10 +282,7 @@ async fn startup_recovers_interrupted_upload_and_revalidates_complete_package() 
     file.write_all(b"par")?;
     file.sync_all()?;
     let running = background(&mut f).await?;
-    assert_eq!(
-        terminal(&f, &cookie, interrupted).await?["state"],
-        "interrupted"
-    );
+    assert_eq!(terminal(&f, &cookie, interrupted).await?["state"], "failed");
     assert!(!partial.exists());
     running.shutdown().await?;
     let id = submit(
@@ -302,7 +296,7 @@ async fn startup_recovers_interrupted_upload_and_revalidates_complete_package() 
         .database
         .write(move |tx| {
             diesel::update(jobs::table.find(id.to_string()))
-                .set(jobs::state.eq("validating"))
+                .set(jobs::state.eq("processing"))
                 .execute(tx.connection())
                 .map_err(PersistenceError::from)
         })
@@ -413,7 +407,7 @@ async fn queued_revoked_source_is_rejected_and_a_second_worker_cannot_take_owner
         .database
         .database
         .read(|tx| {
-            objects::table
+            submissions::table
                 .count()
                 .get_result::<i64>(tx.connection())
                 .map_err(PersistenceError::from)
@@ -436,7 +430,7 @@ async fn missing_uploaded_file_is_failed_without_stopping_validation() -> TestRe
             diesel::insert_into(jobs::table)
                 .values((
                     jobs::import_id.eq(missing.to_string()),
-                    jobs::state.eq("uploaded"),
+                    jobs::state.eq("processing"),
                     jobs::uploaded_bytes.eq(100),
                     jobs::created_at_unix_ms.eq(1),
                     jobs::updated_at_unix_ms.eq(1),

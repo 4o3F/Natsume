@@ -116,11 +116,17 @@ impl ServerConfig {
             &self.photo_results_path,
             ConfigError::RelativePhotoResultsPath,
         )?;
-        let results = normalized_storage_path(&self.photo_results_path)?;
-        let initializations = normalized_storage_path(&self.photo_initializations_path)?;
+        let photo_error = |error| match error {
+            ConfigError::JournalPath { source } => ConfigError::PhotoResultsPath { source },
+            other => other,
+        };
+        let results = normalized_storage_path(&self.photo_results_path).map_err(photo_error)?;
+        let initializations =
+            normalized_storage_path(&self.photo_initializations_path).map_err(photo_error)?;
         if results.starts_with(&initializations)
             || initializations.starts_with(&results)
-            || same_storage_file(&self.photo_results_path, &self.photo_initializations_path)?
+            || same_storage_file(&self.photo_results_path, &self.photo_initializations_path)
+                .map_err(photo_error)?
         {
             return Err(ConfigError::SharedPhotoStoragePath);
         }
@@ -373,7 +379,7 @@ fn same_storage_file(first: &Path, second: &Path) -> Result<bool, ConfigError> {
         {
             Ok(None)
         }
-        Err(source) => Err(ConfigError::StoragePath { source }),
+        Err(source) => Err(ConfigError::JournalPath { source }),
     };
     Ok(match (metadata(first)?, metadata(second)?) {
         (Some(first), Some(second)) => first.dev() == second.dev() && first.ino() == second.ino(),
@@ -406,12 +412,12 @@ fn normalized_storage_path(path: &Path) -> Result<PathBuf, ConfigError> {
                             error.kind(),
                             std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
                         ) => {}
-                    Err(source) => return Err(ConfigError::StoragePath { source }),
+                    Err(source) => return Err(ConfigError::JournalPath { source }),
                 }
             }
             Ok(normalized)
         }
-        Err(source) => Err(ConfigError::StoragePath { source }),
+        Err(source) => Err(ConfigError::JournalPath { source }),
     }
 }
 
@@ -552,6 +558,8 @@ impl GatewayNotAfter {
 pub enum ConfigError {
     #[snafu(display("storage.photo_results must be an absolute path"))]
     RelativePhotoResultsPath,
+    #[snafu(display("cannot resolve Photo results storage paths"))]
+    PhotoResultsPath { source: std::io::Error },
     #[snafu(display("Photo results and initialization storage must use different directories"))]
     SharedPhotoStoragePath,
     #[snafu(display("storage.photo_initializations must be an absolute path"))]
@@ -581,8 +589,8 @@ pub enum ConfigError {
     SharedJournalPath,
     #[snafu(display("journal retention, disk limits and flush timeout must be positive"))]
     InvalidJournalBudget,
-    #[snafu(display("cannot resolve storage paths"))]
-    StoragePath { source: std::io::Error },
+    #[snafu(display("cannot resolve journal storage paths"))]
+    JournalPath { source: std::io::Error },
     #[snafu(display("storage.organization_logos must be an absolute path"))]
     RelativeOrganizationLogosPath,
     #[snafu(display("storage.print_documents must be an absolute path"))]

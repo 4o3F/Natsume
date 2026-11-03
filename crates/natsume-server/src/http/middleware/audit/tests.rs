@@ -752,14 +752,16 @@ async fn photo_acceptance_routes_keep_admin_authority_and_audit_mutations_withou
         (Method::POST, "decisions", AuditRoute::PhotoImportDecision),
     ] {
         let path = format!("/api/v2/photo/imports/{id}/{action}");
-        let body = r#"{"submission_id":"private-photo-decision-canary","expected_submission_revision":1,"decision":{"action":"reject"}}"#;
+        let body = serde_json::to_string(
+            &json!({"submission_id": natsume_photo_protocol::results::SubmissionId::generate(), "expected_submission_revision":1,"decision":{"action":"reject"}}),
+        )?;
         for (cookie, status) in [
             (None, StatusCode::UNAUTHORIZED),
             (Some(f.viewer_cookie.clone()), StatusCode::FORBIDDEN),
             (Some(f.admin_cookie.clone()), StatusCode::NOT_FOUND),
         ] {
             assert_eq!(
-                f.request(method.clone(), &path, cookie.as_deref(), body)
+                f.request(method.clone(), &path, cookie.as_deref(), &body)
                     .await?
                     .status(),
                 status
@@ -778,6 +780,26 @@ async fn photo_acceptance_routes_keep_admin_authority_and_audit_mutations_withou
             }
         }
     }
+    let body = r#"{"submission_id":"private-photo-decision-canary","expected_submission_revision":1,"decision":{"action":"reject"}}"#;
+    let response = f
+        .request(
+            Method::POST,
+            &format!("/api/v2/photo/imports/{id}/decisions"),
+            Some(&f.admin_cookie.clone()),
+            body,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let records = f.records();
+    let record = request_record(
+        &records,
+        AuditRoute::PhotoImportDecision,
+        StatusCode::BAD_REQUEST,
+    );
+    assert!(!record.details().contains("canary"));
+    let body: Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4096).await?)?;
+    assert_eq!(body["code"], "INVALID_REQUEST");
     Ok(())
 }
 

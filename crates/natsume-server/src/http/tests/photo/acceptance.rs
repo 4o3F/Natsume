@@ -5,8 +5,7 @@ use super::{
     validation::{background, fixture_package, package, submit, terminal},
 };
 use crate::{
-    diesel_schema::{photo_submissions as submissions, team_photos},
-    http::tests::PasswordVerificationTestGuard,
+    diesel_schema::photo_submissions as submissions, http::tests::PasswordVerificationTestGuard,
 };
 use natsume_photo_protocol::{
     Sha256Digest,
@@ -174,7 +173,7 @@ async fn retake_requires_revision_checked_replacement_and_rejection_keeps_curren
         initial["entries"][0]["current"]
     );
     let team = &retake.manifest.results[0];
-    let mut request = json!({"submission_id": team.submission_id, "expected_submission_revision":1,"decision":{"action":"activate", "account_id":team.account_id,"account":team.account,"expected_current":null}});
+    let mut request = json!({"submission_id": team.submission_id, "expected_submission_revision":1,"decision":{"action":"activate", "account_id":team.account_id,"expected_current":null}});
     assert_eq!(
         call(
             &f,
@@ -188,7 +187,8 @@ async fn retake_requires_revision_checked_replacement_and_rejection_keeps_curren
         StatusCode::CONFLICT
     );
     let old = &initial["entries"][0]["current"];
-    request["decision"]["expected_current"] = json!({"source_id":old["source_id"],"submission_id":old["submission_id"],"revision":old["revision"]});
+    request["decision"]["expected_current"] =
+        json!({"source_id":old["source_id"],"submission_id":old["submission_id"]});
     let updated = value(
         call(
             &f,
@@ -238,28 +238,24 @@ async fn retake_requires_revision_checked_replacement_and_rejection_keeps_curren
 }
 
 #[tokio::test]
-async fn changed_roster_requires_explicit_association_and_preserves_original_identity() -> TestResult
-{
+async fn removed_roster_identity_requires_explicit_association_and_preserves_original_identity()
+-> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let (mut f, cookie) = admin().await?;
     let (signed, image) = fixture_package(&f).await?;
     let running = background(&mut f).await?;
     let id = ready(&f, &cookie, &signed, &image).await?;
-    let account_id = signed.manifest.results[0].account_id.clone();
     f.database
         .database
-        .write(move |tx| {
-            diesel::update(accounts::table.find(account_id))
-                .set(accounts::domjudge_username.eq("renamed-photo-team"))
+        .write(|tx| {
+            diesel::delete(accounts::table.find("account-a"))
                 .execute(tx.connection())
                 .map_err(PersistenceError::from)
         })
         .await?;
     let pending = commit(&f, &cookie, id).await?;
     assert_eq!(pending["entries"][0]["state"], "needs_association");
-    assert_eq!(pending["entries"][0]["current"], Value::Null);
-    let team = &signed.manifest.results[0];
-    let request = json!({"submission_id":team.submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":team.account_id,"account":"renamed-photo-team","expected_current":null}});
+    let request = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-b","expected_current":null}});
     let associated = value(
         call(
             &f,
@@ -270,11 +266,9 @@ async fn changed_roster_requires_explicit_association_and_preserves_original_ide
         )
         .await?,
     )?;
-    assert_eq!(associated["entries"][0]["account"], team.account);
-    assert_eq!(
-        associated["entries"][0]["current"]["account"],
-        "renamed-photo-team"
-    );
+    assert_eq!(associated["entries"][0]["account_id"], "account-a");
+    assert_eq!(associated["entries"][0]["account"], "account-a");
+    assert_eq!(associated["entries"][0]["active_account_id"], "account-b");
     running.shutdown().await?;
     Ok(())
 }
@@ -384,7 +378,10 @@ async fn concurrent_commits_preserve_first_photo_and_failed_commit_rolls_back_ev
         .read(|tx| {
             Ok::<_, PersistenceError>((
                 submissions::table.count().get_result(tx.connection())?,
-                team_photos::table.count().get_result(tx.connection())?,
+                submissions::table
+                    .filter(submissions::state.eq("active"))
+                    .count()
+                    .get_result(tx.connection())?,
             ))
         })
         .await?;
@@ -418,7 +415,10 @@ async fn concurrent_commits_preserve_first_photo_and_failed_commit_rolls_back_ev
         .read(|tx| {
             Ok::<_, PersistenceError>((
                 submissions::table.count().get_result(tx.connection())?,
-                team_photos::table.count().get_result(tx.connection())?,
+                submissions::table
+                    .filter(submissions::state.eq("active"))
+                    .count()
+                    .get_result(tx.connection())?,
             ))
         })
         .await?;
@@ -503,8 +503,7 @@ async fn pending_list_is_bounded_and_resumes_by_stable_identity_after_a_decision
     f.database
         .database
         .write(|tx| {
-            diesel::update(accounts::table.find("account-b"))
-                .set(accounts::domjudge_username.eq("renamed-b"))
+            diesel::delete(accounts::table.find("account-b"))
                 .execute(tx.connection())
                 .map_err(PersistenceError::from)
         })
@@ -573,8 +572,7 @@ async fn mixed_package_accepts_valid_team_and_explicit_reassociation_can_target_
     f.database
         .database
         .write(|tx| {
-            diesel::update(accounts::table.find("account-a"))
-                .set(accounts::domjudge_username.eq("renamed-a"))
+            diesel::delete(accounts::table.find("account-a"))
                 .execute(tx.connection())
                 .map_err(PersistenceError::from)
         })
@@ -583,7 +581,7 @@ async fn mixed_package_accepts_valid_team_and_explicit_reassociation_can_target_
     assert_eq!(accepted["entries"][0]["state"], "needs_association");
     assert_eq!(accepted["entries"][1]["state"], "active");
     let current = &accepted["entries"][1]["current"];
-    let decision = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-b","account":"account-b","expected_current":{"source_id":current["source_id"],"submission_id":current["submission_id"],"revision":current["revision"]}}});
+    let decision = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-b","expected_current":{"source_id":current["source_id"],"submission_id":current["submission_id"]}}});
     let replaced = value(
         call(
             &f,
@@ -668,7 +666,7 @@ async fn acceptance_routes_require_admin_and_canonical_ids_and_closed_decision_b
     for body in [
         json!({"submission_id":"invalid", "expected_submission_revision":1,"decision":{"action":"reject"}}),
         json!({"submission_id":"550e8400-e29b-41d4-a716-446655440000", "expected_submission_revision":1,"decision":{"action":"reject"}}),
-        json!({"submission_id":submission, "expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-a","account":"account-a","expected_current":{"source_id":"invalid","submission_id":submission,"revision":1}}}),
+        json!({"submission_id":submission, "expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-a","expected_current":{"source_id":"invalid","submission_id":submission}}}),
     ] {
         let response = call(&f, &cookie, Method::POST, &format!("{id}/decisions"), body).await?;
         assert_eq!(response.status, StatusCode::BAD_REQUEST);
@@ -692,9 +690,7 @@ async fn pending_preview_agrees_after_roster_change() -> TestResult {
     f.database
         .database
         .write(|tx| -> Result<(), crate::db::PersistenceError> {
-            diesel::update(accounts::table.find("account-a"))
-                .set(accounts::domjudge_username.eq("renamed-a"))
-                .execute(tx.connection())?;
+            diesel::delete(accounts::table.find("account-a")).execute(tx.connection())?;
             Ok(())
         })
         .await?;

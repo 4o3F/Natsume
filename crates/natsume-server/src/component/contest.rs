@@ -49,8 +49,6 @@ pub(crate) struct BindingFacts {
     pub(crate) device: DeviceId,
 }
 
-pub(crate) const IMAGE_WORKERS: usize = 16;
-
 /// Contest-owned current facts exposed to transport and peer components.
 pub(crate) struct ContestComponent {
     database: Database,
@@ -71,7 +69,7 @@ impl ContestComponent {
             database,
             vault,
             logo_directory,
-            image_work: Arc::new(Semaphore::new(IMAGE_WORKERS)),
+            image_work: Arc::new(Semaphore::new(4)),
             logo_validation: Arc::new(logo_cache::LogoValidationCache::default()),
             export_work: Arc::new(Semaphore::new(1)),
         }

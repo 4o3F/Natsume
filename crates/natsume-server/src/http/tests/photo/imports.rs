@@ -43,7 +43,7 @@ async fn streamed_upload_is_durable_queryable_bounded_and_not_verified() -> Test
     .await?;
     assert_eq!(accepted.status, StatusCode::ACCEPTED);
     let job: Value = serde_json::from_slice(&accepted.body)?;
-    assert_eq!(job["state"], "uploaded");
+    assert_eq!(job["state"], "processing");
     assert_eq!(job["uploaded_bytes"], 16);
     assert_eq!(job["verified_images"], 0);
     let id = job["import_id"]
@@ -182,10 +182,14 @@ async fn disconnected_caller_and_shutdown_keep_upload_ownership_until_cleanup() 
     let (f, cookie) = admin().await?;
     let release = Arc::new(Notify::new());
     let gate = release.clone();
+    let observed = Arc::new(Notify::new());
+    let entered = observed.clone();
     let stream = futures_util::stream::unfold(false, move |sent| {
         let gate = gate.clone();
+        let entered = entered.clone();
         async move {
             if sent {
+                entered.notify_one();
                 gate.notified().await;
                 None
             } else {
@@ -199,6 +203,7 @@ async fn disconnected_caller_and_shutdown_keep_upload_ownership_until_cleanup() 
     let request = upload(&cookie, Body::from_stream(stream))?;
     let app = f.app.clone();
     let caller = tokio::spawn(async move { app.oneshot(request).await });
+    tokio::time::timeout(Duration::from_secs(5), observed.notified()).await?;
     let id = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let current = f
@@ -206,7 +211,7 @@ async fn disconnected_caller_and_shutdown_keep_upload_ownership_until_cleanup() 
                 .database
                 .read(|tx| {
                     jobs::table
-                        .filter(jobs::uploaded_bytes.ge(1024 * 1024))
+                        .filter(jobs::state.eq("uploading"))
                         .select(jobs::import_id)
                         .first::<String>(tx.connection())
                         .optional()
