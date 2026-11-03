@@ -1,0 +1,38 @@
+#!/usr/bin/expect -f
+# stdin is an RSA-OAEP envelope. Plaintext is held only in this process on A.
+log_user 0
+set timeout 90
+set directory [lindex $argv 0]
+set version [lindex $argv 1]
+if {![regexp {^v[0-9]+\.[0-9]+\.[0-9]+$} $version]} { exit 2 }
+fconfigure stdin -translation binary
+set envelope [read stdin]
+set ciphertext [open "$directory/envelope.bin" wb]
+fconfigure $ciphertext -translation binary -encoding binary
+puts -nonewline $ciphertext $envelope
+close $ciphertext
+set password [exec openssl pkeyutl -decrypt -inkey "$directory/key.pem" -pkeyopt rsa_padding_mode:oaep -in "$directory/envelope.bin"]
+unset envelope
+spawn systemd-run --unit=natsume-bench-bootstrap --pty --wait --collect -p User=natsume-server -p ProtectSystem=strict -p ProtectHome=yes -p NoNewPrivileges=yes -p BindReadOnlyPaths=/srv/natsume-bench/$version/config.toml:/etc/natsume-server/config.toml -p ReadWritePaths=/srv/natsume-bench/$version/data /opt/natsume-bench/$version/natsume-server bootstrap
+expect {
+  "Login name: " { send -- "synthetic-admin\r" }
+  timeout { exit 3 }
+  eof { exit 4 }
+}
+expect {
+  "Password: " { send -- "$password\r" }
+  timeout { exit 3 }
+  eof { exit 4 }
+}
+expect {
+  "Confirm password: " { send -- "$password\r" }
+  timeout { exit 3 }
+  eof { exit 4 }
+}
+unset password
+expect {
+  eof {}
+  timeout { exit 3 }
+}
+set status [wait]
+exit [lindex $status 3]

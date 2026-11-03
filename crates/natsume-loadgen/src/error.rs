@@ -38,6 +38,8 @@ pub(crate) enum Error {
     Zip { source: zip::result::ZipError },
     #[snafu(display("WebP generation failed"))]
     Image { source: image::ImageError },
+    #[snafu(display("libwebp encoding failed: {reason:?}"))]
+    LogoEncode { reason: webp::WebPEncodingError },
     #[snafu(display("operator request {route} returned HTTP {status}"))]
     Status { route: &'static str, status: u16 },
     #[snafu(display("network transport failed"))]
@@ -83,6 +85,10 @@ impl Error {
                     "TLS_HANDSHAKE"
                 } else if source.kind() == std::io::ErrorKind::ConnectionRefused {
                     "TCP_REFUSED"
+                } else if source.kind() == std::io::ErrorKind::ConnectionReset {
+                    "TCP_RESET"
+                } else if source.kind() == std::io::ErrorKind::UnexpectedEof {
+                    "TLS_EOF"
                 } else {
                     "TRANSPORT"
                 }
@@ -91,6 +97,8 @@ impl Error {
             Self::Invalid { code } | Self::Peer { code } => code,
             Self::WebSocket { .. } => "WEBSOCKET",
             Self::Tls { .. } => "TLS",
+            Self::Http { source } if source.is_timeout() => "HTTPS_TIMEOUT",
+            Self::Http { source } if source.is_connect() => "HTTPS_CONNECT",
             Self::Http { .. } => "HTTPS",
             Self::Decode { .. } => "PROTOBUF",
             Self::Certificate { .. } => "CSR",
@@ -107,7 +115,7 @@ impl Error {
             Self::Toml { .. } => "SCENARIO",
             Self::Duration { .. } => "DURATION",
             Self::Zip { .. } => "XLSX",
-            Self::Image { .. } => "WEBP",
+            Self::Image { .. } | Self::LogoEncode { .. } => "WEBP",
             Self::Status { .. } => "HTTP_STATUS",
         }
     }

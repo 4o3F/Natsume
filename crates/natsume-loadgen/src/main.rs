@@ -5,10 +5,12 @@ mod connection;
 mod convergence;
 mod emulate;
 mod error;
+mod generate_logos;
 mod identity;
 mod logo;
 mod metrics;
 mod operator;
+mod probe;
 mod scenario;
 mod setup;
 mod target;
@@ -18,7 +20,7 @@ use std::{
     os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _},
     process::ExitCode,
     sync::{Arc, atomic::Ordering},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser as _;
@@ -59,6 +61,10 @@ async fn main() -> ExitCode {
     let result = match cli.command {
         Command::Run(run) => execute(*run).await,
         Command::Setup(setup) => setup::execute(setup).await,
+        Command::Probe(probe) => probe::execute(probe).await,
+        Command::Export(export) => probe::execute_export(export).await,
+        Command::DecodeLogos(options) => probe::execute_decode(options),
+        Command::GenerateLogos(options) => generate_logos::execute(options),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -95,6 +101,9 @@ async fn execute(mut run: Run) -> Result<()> {
     })
     .await
     .context(error::JoinSnafu)??;
+    if let Some(target) = run.start_at_unix_us {
+        wait_until_epoch(target).await?;
+    }
     let (metrics, writer) = Metrics::start(&run.output_dir)?;
     write_manifest(&run, &metrics)?;
     let stop = CancellationToken::new();
@@ -129,6 +138,24 @@ async fn execute(mut run: Run) -> Result<()> {
     drop(metrics);
     writer.await.context(error::JoinSnafu)??;
     result
+}
+
+async fn wait_until_epoch(target: u64) -> Result<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+    let delay = u128::from(target)
+        .checked_sub(now)
+        .filter(|delay| *delay <= 7 * 24 * 3600 * 1_000_000)
+        .ok_or(crate::error::Error::Invalid {
+            code: "START_DEADLINE_MISSED_OR_OUT_OF_RANGE",
+        })?;
+    tokio::time::sleep(Duration::from_micros(
+        u64::try_from(delay).context(crate::error::SizeSnafu)?,
+    ))
+    .await;
+    Ok(())
 }
 
 fn lock_fleet(run: &Run) -> Result<File> {
@@ -180,12 +207,14 @@ fn write_manifest(run: &Run, metrics: &Metrics) -> Result<()> {
         "format_version": 2, "version": env!("CARGO_PKG_VERSION"), "protocol": natsume_workstation_protocol::CONTROL_SUBPROTOCOL,
         "server": run.server, "devices": run.devices,
         "ramp_ms": run.ramp.as_millis(), "duration_ms": run.duration.as_millis(),
+        "start_at_unix_us": run.start_at_unix_us,
         "delay_ms": run.resource_delay.as_millis(), "jitter_ms": run.resource_jitter.as_millis(),
         "resource_delays_ms": ([run.gateway_delay, run.binding_delay, run.runtime_delay, run.session_delay, run.home_delay, run.power_delay].map(|d| d.map(|d| d.as_millis()))),
         "logo_interval_ms": run.logo_interval.as_millis(), "ping_interval_ms": run.ping_interval.as_millis(),
         "reconnect_initial_ms": run.reconnect_initial.as_millis(), "reconnect_max_ms": run.reconnect_max.as_millis(),
         "stable_after_ms": run.stable_after.as_millis(), "silence_timeout_ms": run.silence_timeout.as_millis(),
         "operators": run.operators, "poll_interval_ms": run.poll_interval.as_millis(), "session_interval_ms": run.session_interval.as_millis(),
+        "panel_rates": run.panel_rates,
         "schedule": run.events, "dropped_events": metrics.dropped.load(Ordering::Relaxed),
         "events": metrics.events.load(Ordering::Relaxed), "convergence": metrics.convergence.summary(),
     });

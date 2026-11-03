@@ -35,6 +35,7 @@ pub(crate) struct Scenario {
     operators: Option<usize>,
     poll_interval: Option<String>,
     session_interval: Option<String>,
+    panel_rates: Option<std::collections::BTreeMap<String, f64>>,
     pub(crate) schools: Option<usize>,
     pub(crate) logo_bytes: Option<usize>,
     pub(crate) logo_dimension: Option<u32>,
@@ -120,6 +121,7 @@ impl Scenario {
             home_delay,
             power_delay
         );
+        run.panel_rates = self.panel_rates;
         run.events = self.events;
         Ok(())
     }

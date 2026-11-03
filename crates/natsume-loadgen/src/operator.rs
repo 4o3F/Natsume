@@ -11,10 +11,7 @@ use reqwest::{
 };
 use serde_json::{Value, json};
 use snafu::ResultExt as _;
-use tokio::{
-    task::JoinSet,
-    time::{Instant, MissedTickBehavior},
-};
+use tokio::{task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -189,6 +186,16 @@ impl Operator {
         Ok(response)
     }
 
+    pub(crate) async fn probe_devices(&mut self) -> Result<()> {
+        self.get("/devices", "operator_devices").await.map(|_| ())
+    }
+
+    pub(crate) async fn export(&mut self) -> Result<()> {
+        self.get("/exports/domjudge", "operator_export")
+            .await
+            .map(|_| ())
+    }
+
     pub(crate) async fn import(&mut self, workbook: Vec<u8>) -> Result<()> {
         // HEAD's extractor caps bodies at 2 MiB; v2.10.3 allows 8 MiB. Use the common budget.
         if workbook.len() > 2 * 1024 * 1024 {
@@ -346,6 +353,69 @@ fn check(response: &Response, route: &'static str) -> Result<()> {
     }
 }
 
+const PANEL_ROUTES: [(&str, &str); 8] = [
+    ("/devices", "operator_devices"),
+    ("/bindings", "operator_bindings"),
+    ("/seats", "operator_seats"),
+    ("/accounts", "operator_accounts"),
+    ("/organizations", "operator_organizations"),
+    ("/provisioning-window", "operator_provisioning"),
+    ("/enrollment-reviews", "operator_enrollment"),
+    ("/session", "operator_session"),
+];
+
+pub(crate) fn validate_rates(
+    rates: Option<&std::collections::BTreeMap<String, f64>>,
+) -> Result<()> {
+    if rates.is_some_and(|rates| {
+        rates.iter().any(|(path, rate)| {
+            !PANEL_ROUTES.iter().any(|(route, _)| *route == path)
+                || !rate.is_finite()
+                || *rate < 0.0
+                || (*rate > 0.0 && !(0.0001..=60_000.0).contains(rate))
+        })
+    }) {
+        return Err(Error::Invalid {
+            code: "PANEL_RATES",
+        });
+    }
+    Ok(())
+}
+
+fn panel_schedule(
+    run: &Run,
+    index: usize,
+    started: Instant,
+) -> Vec<(&'static str, &'static str, Instant, Duration)> {
+    PANEL_ROUTES
+        .into_iter()
+        .filter_map(|(path, kind)| {
+            let period = if let Some(rates) = &run.panel_rates {
+                let rate = rates.get(path).copied().unwrap_or_default();
+                if rate == 0.0 {
+                    return None;
+                }
+                Duration::from_secs_f64(
+                    60.0 * f64::from(u32::try_from(run.operators).unwrap_or(u32::MAX)) / rate,
+                )
+            } else if path == "/session" {
+                run.session_interval
+            } else {
+                run.poll_interval
+            };
+            let phase = if run.panel_rates.is_some() {
+                period.mul_f64(
+                    f64::from(u32::try_from(index).unwrap_or(u32::MAX))
+                        / f64::from(u32::try_from(run.operators.max(1)).unwrap_or(u32::MAX)),
+                )
+            } else {
+                Duration::ZERO
+            };
+            Some((path, kind, started + phase, period))
+        })
+        .collect()
+}
+
 pub(crate) fn spawn(
     tasks: &mut JoinSet<Result<()>>,
     run: &Arc<Run>,
@@ -364,23 +434,28 @@ pub(crate) fn spawn(
         let stop = stop.clone();
         tasks.spawn(async move {
             tokio::select! { () = stop.cancelled() => return Ok(()), result = operator.login() => result? }
-            let mut lists = tokio::time::interval(run.poll_interval);
-            let mut session = tokio::time::interval(run.session_interval);
-            lists.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            session.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            let mut schedule = panel_schedule(&run, index, started);
             loop {
+                let Some((next, _)) = schedule.iter().enumerate().min_by_key(|(_, row)| row.2) else {
+                    stop.cancelled().await;
+                    return Ok(());
+                };
+                let (path, kind, deadline, period) = &mut schedule[next];
                 tokio::select! {
                     () = stop.cancelled() => return Ok(()),
-                    _ = lists.tick() => {
-                        // Each tab owns one sequential request stream and its own HTTP/TLS pool.
-                        for (path, kind) in [("/devices", "operator_devices"), ("/bindings", "operator_bindings"), ("/seats", "operator_seats"), ("/accounts", "operator_accounts"), ("/organizations", "operator_organizations"), ("/provisioning-window", "operator_provisioning"), ("/enrollment-reviews", "operator_enrollment")] {
-                            tokio::select! { () = stop.cancelled() => return Ok(()), result = operator.get(path, kind) => { if let Err(error) = result { tracing::warn!(tab = index, code = error.code(), "operator poll failed"); } } }
+                    () = tokio::time::sleep_until(*deadline) => {}
+                }
+                tokio::select! {
+                    () = stop.cancelled() => return Ok(()),
+                    result = operator.get(path, kind) => {
+                        if let Err(error) = result {
+                            tracing::warn!(tab = index, code = error.code(), "operator poll failed");
                         }
                     }
-                    _ = session.tick() => {
-                        tokio::select! { () = stop.cancelled() => return Ok(()), result = operator.get("/session", "operator_session") => { if let Err(error) = result { tracing::warn!(tab = index, code = error.code(), "operator session poll failed"); } } }
-                    }
                 }
+                *deadline += *period;
+                // Skip missed periods after an outage; keep the calibrated phase.
+                while *deadline < Instant::now() { *deadline += *period; }
             }
         });
     }
@@ -414,4 +489,39 @@ pub(crate) fn spawn(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn calibrated_tabs_preserve_rates_and_phase() -> Result<()> {
+        let mut run = crate::cli::tests::run();
+        run.operators = 2;
+        run.panel_rates = Some(
+            [
+                ("/devices".to_owned(), 10.616_666_666_666_667),
+                ("/session".to_owned(), 2.088_888_888_888_889),
+                ("/accounts".to_owned(), 0.0),
+            ]
+            .into(),
+        );
+        validate_rates(run.panel_rates.as_ref())?;
+        let start = Instant::now();
+        let first = panel_schedule(&run, 0, start);
+        let second = panel_schedule(&run, 1, start);
+        assert_eq!(first.len(), 2);
+        assert!((first[0].3.as_secs_f64() - 11.302_982_731_554_16).abs() < 1e-6);
+        assert_eq!(first[0].2, start);
+        assert!(
+            (second[0].2.duration_since(start).as_secs_f64() - first[0].3.as_secs_f64() / 2.0)
+                .abs()
+                < 1e-6
+        );
+        run.panel_rates = Some([("/secret".to_owned(), 1.0)].into());
+        assert!(validate_rates(run.panel_rates.as_ref()).is_err());
+        run.panel_rates = Some([("/devices".to_owned(), f64::NAN)].into());
+        assert!(validate_rates(run.panel_rates.as_ref()).is_err());
+        Ok(())
+    }
 }

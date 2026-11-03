@@ -85,6 +85,7 @@ hkdf = "0.13"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["service", "tokio"] }
 lopdf = { version = "=0.47.0", default-features = false }
+webp = { version = "0.3.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = [
   "png",
   "jpeg",

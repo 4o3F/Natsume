@@ -1,4 +1,8 @@
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+    time::Duration,
+};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
@@ -17,6 +21,10 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     Run(Box<Run>),
     Setup(crate::setup::Setup),
+    Probe(crate::probe::Probe),
+    Export(crate::probe::Export),
+    DecodeLogos(crate::probe::DecodeLogos),
+    GenerateLogos(crate::generate_logos::GenerateLogos),
 }
 
 #[derive(Clone, Copy, ValueEnum, Deserialize)]
@@ -39,6 +47,9 @@ pub(crate) struct Run {
     pub(crate) poll_interval: Duration,
     #[arg(long, value_parser = duration, default_value = "30s")]
     pub(crate) session_interval: Duration,
+    /// Aggregate GET requests/minute across all tabs, configured in the scenario.
+    #[arg(skip)]
+    pub(crate) panel_rates: Option<BTreeMap<String, f64>>,
     /// XLSX used by scheduled import actions unless the event specifies its own file.
     #[arg(long)]
     pub(crate) operator_roster: Option<PathBuf>,
@@ -68,6 +79,9 @@ pub(crate) struct Run {
     /// Measurement time after the last scheduled arrival.
     #[arg(long, value_parser = duration, default_value = "3m")]
     pub(crate) duration: Duration,
+    /// Begin arrivals and timed events at this Unix microsecond, after fleet preparation.
+    #[arg(long)]
+    pub(crate) start_at_unix_us: Option<u64>,
     /// Resource delay is uniform in [base, base + jitter].
     #[arg(long, value_parser = duration, default_value = "20ms")]
     pub(crate) resource_delay: Duration,
@@ -102,6 +116,7 @@ pub(crate) struct Run {
 
 impl Run {
     pub(crate) fn validate(&self) -> Result<Vec<String>> {
+        crate::operator::validate_rates(self.panel_rates.as_ref())?;
         if !crate::target::canonical_origin(&self.server) {
             return Err(Error::Invalid {
                 code: "SERVER_ORIGIN",

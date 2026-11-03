@@ -1,0 +1,21 @@
+name = "B2-N300-on"
+scenario = "capacity"
+devices = 300
+logo_interval_seconds = 60
+require_active = false
+
+[[actions]]
+at = 60
+kind = "probe"
+
+[panel_rates]
+"/accounts" = 0.022222222222222223
+"/bindings" = 0.11666666666666667
+"/devices" = 10.616666666666667
+"/seats" = 0.1111111111111111
+"/session" = 2.088888888888889
+
+[hosts]
+server = "icpc@10.12.13.166"
+loadgen = "icpc@10.12.13.20"
+server_url = "https://10.12.13.166:8443"

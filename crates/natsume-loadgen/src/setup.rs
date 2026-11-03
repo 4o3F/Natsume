@@ -34,6 +34,9 @@ pub(crate) struct Setup {
     /// Server `storage.organization_logos` directory, mounted locally if Server is remote.
     #[arg(long)]
     logo_directory: PathBuf,
+    /// Use synthetic files already present in logo-directory.
+    #[arg(long)]
+    reuse_logos: bool,
     #[arg(long, default_value_t = 600)]
     teams: usize,
     /// Defaults to ceil(teams / 3).
@@ -82,6 +85,9 @@ pub(crate) async fn execute(mut setup: Setup) -> Result<()> {
     let directory = setup.logo_directory.clone();
     let workbook = tokio::task::spawn_blocking(move || {
         for school in 0..schools {
+            if setup.reuse_logos {
+                continue;
+            }
             let image = logo(dimension, bytes, school)?;
             fs::OpenOptions::new()
                 .write(true)

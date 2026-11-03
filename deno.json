@@ -5,13 +5,16 @@
       "deno.json",
       "packaging/manifest.json",
       "tools/*.ts",
-      "bench/analyze/*.ts"
+      "bench/analyze/*.ts",
+      "bench/run/*.ts",
+      "bench/run/experiments/*.json"
     ]
   },
   "lint": {
     "include": [
       "tools/*.ts",
-      "bench/analyze/*.ts"
+      "bench/analyze/*.ts",
+      "bench/run/*.ts"
     ]
   },
   "tasks": {

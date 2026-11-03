@@ -148,3 +148,15 @@ prek run --all-files
 两版另执行 100 台设备、2 个面板的 30 秒补充场景：导入预览返回 201、提交返回 204、DOMjudge 导出返回 200；waiting 和 contest 均记录 100/100 Target 与 Actual，丢弃数为零。
 
 crate Clippy、15 项单元测试、cargo-deny、Deno 脚本检查和完整 prek 已通过。
+
+## 按路由校准面板与实验编排
+
+场景可设置 `[panel_rates]`，键为 `/devices`、`/session` 等上述 GET 路由，值为所有 `operators` 面板合计的每分钟请求数。每个面板使用独立 HTTP/1.1 连接池，按路由周期串行请求；面板间按周期等距错开，未指定或零频率的路由停用。存在此表时替代 `poll_interval` 和 `session_interval`；没有此表时保留原有默认频率。每次请求及失败继续进入 events CSV，run.json 保存生效的路由频率。
+
+`probe` 子命令接收 server、trust-root、operator 凭据文件和 output-dir，每隔 10 秒重新建立一个 operator 会话，共六次；记录登录与 devices 请求的时延和结果，用于观察 TLS 连接上限处的新连接准入。HTTPS 超时与连接错误分别记录 `HTTPS_TIMEOUT`、`HTTPS_CONNECT`。
+
+`generate-logos` 按聚合 profile 生成不同尺寸和字节预算的合成 WebP，支持带种子的图案细节、噪声分布和透明度纹理；`decode-logos` 测量逐文件与整组解码耗时；`setup --reuse-logos` 使用现有合成文件导入名单并检查公共 logo 路由。双机编排、资源采样、PTY bootstrap、CPU 火焰图和实验 TOML 见 [bench/run](../../bench/run/README.md)。
+
+`run --start-at-unix-us EPOCH` 在身份准备完成后等待指定的 Unix 微秒，再开始设备到达、持续时间和计划事件计时；起点已过或超过七天时退出。编排器预留准备时间，使用此选项对齐两机的重启和导出计划。TCP reset 与 TLS EOF 分别记录为 `TCP_RESET`、`TLS_EOF`。
+
+`export --at-unix-us EPOCH` 使用与 probe 相同的 server、trust-root、operator 凭据文件和 output-dir 参数，先登录，再在指定 Unix 微秒发起一次 DOMjudge 导出，将登录与完整导出的时延写入 events CSV。编排器在操作前重新测量时差，独立安排导出请求，避免 fleet 身份准备或 SSH 建连时间改变注入点。
