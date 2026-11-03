@@ -1,5 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
+use snafu::ResultExt as _;
+
 use crate::{
     component::{
         binding::BindingComponent,
@@ -20,7 +22,9 @@ use crate::{
     config::ServerConfig,
     db::Database,
     device_control::{DeviceControl, DeviceControlDependencies},
-    feature::{Infra, StartupError, journal::JournalFeature},
+    feature::{
+        Infra, PrintStorageSnafu, StartupError, journal::JournalFeature, print::PrintFeature,
+    },
     http::AccessRoutes,
     journal::{Journal, JournalComponent},
     lifecycle::ServerLifecycle,
@@ -36,6 +40,8 @@ use crate::{
 pub(crate) struct ServerState {
     /// Shared authentication owner also serving bounded display-name reads.
     operator: Arc<OperatorComponent>,
+    /// Transitional handle for HTTP authentication and background startup; removed in Step 11.
+    /// Business handlers obtain Print directly from their feature state.
     print: Arc<PrintComponent>,
     photo: PhotoComponent,
     contest: ContestComponent,
@@ -91,12 +97,12 @@ impl ServerState {
         )
         .map_err(map_gateway_load_error)?;
 
-        let print = PrintComponent::load(
+        let print = PrintFeature::load(
             database.clone(),
             config.print_documents_path().to_path_buf(),
         )
         .await
-        .map_err(|source| StartupError::PrintStorage { source })?;
+        .context(PrintStorageSnafu)?;
         let photo_database = database.clone();
         let photo_path = config.photo_initializations_path().to_path_buf();
         let photo =
@@ -118,7 +124,7 @@ impl ServerState {
         Ok(Self::from_parts(
             infra,
             journal,
-            print,
+            &print,
             photo,
             gateway,
             config.organization_logos_path().to_path_buf(),
@@ -129,7 +135,7 @@ impl ServerState {
     fn from_parts(
         infra: Infra,
         journal: JournalComponent,
-        print: PrintComponent,
+        print_feature: &PrintFeature,
         photo: PhotoComponent,
         gateway: GatewayComponent,
         logos: PathBuf,
@@ -170,11 +176,14 @@ impl ServerState {
             device_control.live_lease_view(),
             utc_offset,
         );
-        let routes = AccessRoutes::new().merge(journal_feature.routes());
+        let routes = AccessRoutes::new()
+            .merge(journal_feature.routes())
+            .merge(print_feature.routes());
+        let print = Arc::clone(print_feature.component());
         let runtime = ServerRuntime::new(lifecycle.clone(), Arc::clone(&device_control), journal);
         let state = Self {
             operator,
-            print: Arc::new(print),
+            print,
             photo,
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
             target_submission: TargetSubmissionComponent::new(database.clone(), emitter.clone()),
@@ -269,13 +278,14 @@ fn map_gateway_load_error(error: GatewayLoadError) -> StartupError {
 pub(crate) mod tests {
     use std::{fs, os::unix::fs::PermissionsExt as _, path::PathBuf, sync::Arc};
 
+    use snafu::ResultExt as _;
     use uuid::Uuid;
 
     use super::{LoadedServer, ServerState, map_gateway_load_error};
     use crate::{
-        component::{gateway::GatewayComponent, photo::PhotoComponent, print::PrintComponent},
+        component::{gateway::GatewayComponent, photo::PhotoComponent},
         db::Database,
-        feature::{Infra, StartupError},
+        feature::{Infra, PrintStorageSnafu, StartupError, print::PrintFeature},
         journal::{CAPACITY, JournalComponent},
         lifecycle::ServerLifecycle,
         vault,
@@ -339,8 +349,8 @@ pub(crate) mod tests {
             let gateway =
                 GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
             let photo_directory = documents.with_extension("photo-initializations");
-            let print = PrintComponent::for_test(database.clone(), documents)
-                .map_err(|source| StartupError::PrintStorage { source })?;
+            let print =
+                PrintFeature::for_test(database.clone(), documents).context(PrintStorageSnafu)?;
             let photo = PhotoComponent::new(database.clone(), &photo_directory)
                 .map_err(|source| StartupError::PhotoStorage { source })?;
             let infra = Infra {
@@ -352,7 +362,7 @@ pub(crate) mod tests {
             Ok(ServerState::from_parts(
                 infra,
                 journal,
-                print,
+                &print,
                 photo,
                 gateway,
                 logos,

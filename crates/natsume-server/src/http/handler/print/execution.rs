@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 
 use axum::{
@@ -11,13 +13,13 @@ use axum::{
     routing::{get, post, put},
 };
 
-use super::{ApiError, AppState, PrintPathId, middleware};
+use super::{ApiError, PrintComponent, PrintPathId, middleware};
 use crate::component::print::{
     ClientIdentity,
     execution::{AttemptReport, JobIdentity, PrintClaim, PrintRequeue},
 };
 
-pub(super) fn client_routes() -> Routes {
+pub(super) fn client_routes() -> Routes<Arc<PrintComponent>> {
     vec![
         ("/print/client/claims", post(claim)),
         ("/print/client/attempts/current", get(current)),
@@ -31,7 +33,7 @@ pub(super) fn client_routes() -> Routes {
     ]
 }
 
-pub(super) fn operator_routes() -> Routes {
+pub(super) fn operator_routes() -> Routes<Arc<PrintComponent>> {
     vec![
         (
             "/print/executions/{ready_sequence}/requeue",
@@ -42,42 +44,42 @@ pub(super) fn operator_routes() -> Routes {
 }
 
 async fn claim(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(client): Extension<ClientIdentity>,
     body: Result<Json<PrintClaim>, JsonRejection>,
 ) -> Response {
     let Ok(Json(input)) = body else {
         return ApiError::invalid_request("print_claim_json").into_response();
     };
-    match state.print().claim(client, input).await {
+    match state.claim(client, input).await {
         Ok(attempt) => Json(attempt).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 async fn current(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(client): Extension<ClientIdentity>,
 ) -> Response {
-    match state.print().current_attempt(client).await {
+    match state.current_attempt(client).await {
         Ok(attempt) => Json(attempt).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 async fn attempt(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(client): Extension<ClientIdentity>,
     PrintPathId(id): PrintPathId,
 ) -> Response {
-    match state.print().get_attempt(client, id).await {
+    match state.get_attempt(client, id).await {
         Ok(attempt) => Json(attempt).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 async fn register_job(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(client): Extension<ClientIdentity>,
     PrintPathId(id): PrintPathId,
     body: Result<Json<JobIdentity>, JsonRejection>,
@@ -85,14 +87,14 @@ async fn register_job(
     let Ok(Json(job)) = body else {
         return ApiError::invalid_request("print_job_json").into_response();
     };
-    match state.print().register_job(client, id, job).await {
+    match state.register_job(client, id, job).await {
         Ok(attempt) => Json(attempt).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 async fn report(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(client): Extension<ClientIdentity>,
     PrintPathId(id): PrintPathId,
     body: Result<Json<AttemptReport>, JsonRejection>,
@@ -100,25 +102,25 @@ async fn report(
     let Ok(Json(report)) = body else {
         return ApiError::invalid_request("print_report_json").into_response();
     };
-    match state.print().report_attempt(client, id, report).await {
+    match state.report_attempt(client, id, report).await {
         Ok(attempt) => Json(attempt).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 async fn document(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(client): Extension<ClientIdentity>,
     PrintPathId(id): PrintPathId,
 ) -> Response {
-    match state.print().attempt_document(client, id).await {
+    match state.attempt_document(client, id).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "application/pdf")], bytes).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 async fn requeue(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     path: Result<Path<i64>, PathRejection>,
     body: Result<Json<PrintRequeue>, JsonRejection>,
 ) -> Response {
@@ -128,14 +130,14 @@ async fn requeue(
     let Ok(Json(input)) = body else {
         return ApiError::invalid_request("print_requeue_json").into_response();
     };
-    match state.print().requeue(sequence, input).await {
+    match state.requeue(sequence, input).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
-async fn executions(State(state): State<AppState>) -> Response {
-    match state.print().list_executions().await {
+async fn executions(State(state): State<Arc<PrintComponent>>) -> Response {
+    match state.list_executions().await {
         Ok(executions) => Json(executions).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }

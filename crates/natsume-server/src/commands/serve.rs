@@ -93,7 +93,7 @@ where
     .map_err(|source| CommandError::Tls { source })?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
-    let background = start_background_tasks(&state)
+    let background = start_background_tasks(state.print())
         .await
         .context(crate::server_runtime::BackgroundSnafu)
         .context(super::error::RuntimeSnafu)?;

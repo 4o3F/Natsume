@@ -1,6 +1,7 @@
 //! Server composition layer; future `<Name>Feature` types belong in `feature/` submodules.
 
 pub(crate) mod journal;
+pub(crate) mod print;
 
 use std::sync::Arc;
 
@@ -30,7 +31,11 @@ pub(crate) enum StartupError {
     Configuration { source: crate::config::ConfigError },
     #[snafu(display("vault startup failed"))]
     Vault { source: crate::vault::VaultError },
-    #[snafu(display("print document storage startup failed"))]
+    /// Storage startup failure owned by `PrintFeature`.
+    #[snafu(
+        visibility(pub(crate)),
+        display("print document storage startup failed")
+    )]
     PrintStorage {
         source: crate::component::print::PrintError,
     },

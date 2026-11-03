@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 use crate::http::middleware::audit::{RequestAudit, canonical_uuid};
 
@@ -22,10 +24,12 @@ use axum::{
 };
 use serde::Deserialize;
 
-use super::super::{AppState, error::ApiError, middleware};
-use crate::component::print::{DOCUMENT_LIMIT, PrintError, SourceIdentity, canonical_id};
+use super::super::{error::ApiError, middleware};
+use crate::component::print::{
+    DOCUMENT_LIMIT, PrintComponent, PrintError, SourceIdentity, canonical_id,
+};
 
-pub(in crate::http) fn source_routes() -> Routes {
+pub(crate) fn source_routes() -> Routes<Arc<PrintComponent>> {
     vec![
         ("/print/requests", post(register)),
         ("/print/requests/{request_id}", get(get_request)),
@@ -40,7 +44,7 @@ pub(in crate::http) fn source_routes() -> Routes {
     ]
 }
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<Arc<PrintComponent>> {
     let mut routes = vec![
         ("/print/queue", get(list_queue)),
         (
@@ -57,11 +61,11 @@ pub(in crate::http) fn operator_routes() -> Routes {
     routes
 }
 
-pub(in crate::http) fn public_routes(state: AppState) -> Routes {
+pub(crate) fn public_routes(state: Arc<PrintComponent>) -> Routes<Arc<PrintComponent>> {
     printers::public_routes(state)
 }
 
-pub(in crate::http) fn client_routes() -> Routes {
+pub(crate) fn client_routes() -> Routes<Arc<PrintComponent>> {
     execution::client_routes()
 }
 
@@ -86,8 +90,8 @@ impl<S: Send + Sync> FromRequestParts<S> for PrintPathId {
     }
 }
 
-pub(crate) async fn list_queue(State(state): State<AppState>) -> Response {
-    match state.print().list_queue().await {
+pub(crate) async fn list_queue(State(state): State<Arc<PrintComponent>>) -> Response {
+    match state.list_queue().await {
         Ok(queue) => Json(queue).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
@@ -95,13 +99,13 @@ pub(crate) async fn list_queue(State(state): State<AppState>) -> Response {
 
 pub(in crate::http) async fn create_source(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     body: Result<Json<PrintSourceCreate>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("print_json").into_response();
     };
-    match state.print().create_source(body.name).await {
+    match state.create_source(body.name).await {
         Ok(source) => {
             if let Some(id) = canonical_uuid(&source.source_id) {
                 audit.record_target(crate::journal::event::types::AuditTarget::PrintSource(id));
@@ -112,8 +116,8 @@ pub(in crate::http) async fn create_source(
     }
 }
 
-pub(crate) async fn list_sources(State(state): State<AppState>) -> Response {
-    match state.print().list_sources().await {
+pub(crate) async fn list_sources(State(state): State<Arc<PrintComponent>>) -> Response {
+    match state.list_sources().await {
         Ok(sources) => Json(
             sources
                 .into_iter()
@@ -126,42 +130,42 @@ pub(crate) async fn list_sources(State(state): State<AppState>) -> Response {
 }
 
 pub(crate) async fn revoke_source(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     PrintPathId(id): PrintPathId,
 ) -> Response {
-    match state.print().revoke_source(id).await {
+    match state.revoke_source(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError::from_print(e).into_response(),
     }
 }
 
 pub(in crate::http) async fn register(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(source): Extension<SourceIdentity>,
     body: Result<Json<PrintRegistration>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("print_json").into_response();
     };
-    match state.print().register(source, body.into()).await {
+    match state.register(source, body.into()).await {
         Ok(request) => Json(PrintRequest::from(request)).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 pub(crate) async fn get_request(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(source): Extension<SourceIdentity>,
     PrintPathId(id): PrintPathId,
 ) -> Response {
-    match state.print().get(source, id).await {
+    match state.get(source, id).await {
         Ok(request) => Json(PrintRequest::from(request)).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 pub(crate) async fn generation_failure(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(source): Extension<SourceIdentity>,
     PrintPathId(id): PrintPathId,
     body: Result<Json<PrintGenerationFailure>, JsonRejection>,
@@ -169,18 +173,14 @@ pub(crate) async fn generation_failure(
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("print_json").into_response();
     };
-    match state
-        .print()
-        .generation_failure(source, id, body.into())
-        .await
-    {
+    match state.generation_failure(source, id, body.into()).await {
         Ok(request) => Json(PrintRequest::from(request)).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
 pub(crate) async fn upload(
-    State(state): State<AppState>,
+    State(state): State<Arc<PrintComponent>>,
     Extension(source): Extension<SourceIdentity>,
     PrintPathId(id): PrintPathId,
     headers: axum::http::HeaderMap,
@@ -200,7 +200,7 @@ pub(crate) async fn upload(
         }
         Err(_) => return ApiError::invalid_request("print_pdf_body").into_response(),
     };
-    match state.print().upload(source, id, bytes.to_vec()).await {
+    match state.upload(source, id, bytes.to_vec()).await {
         Ok(request) => Json(PrintRequest::from(request)).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }

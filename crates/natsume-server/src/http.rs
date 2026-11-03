@@ -31,6 +31,17 @@ pub(crate) type AppState = Arc<ServerState>;
 
 pub(crate) type Routes<S = AppState> = Vec<(&'static str, MethodRouter<S>)>;
 
+/// Binds a feature's narrow state to each of its routes.
+pub(crate) fn bind_routes<S>(routes: Routes<S>, state: &S) -> Routes<()>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    routes
+        .into_iter()
+        .map(|(path, methods)| (path, methods.with_state(state.clone())))
+        .collect()
+}
+
 pub(crate) struct AccessRoutes {
     /// Mounted without principal authentication.
     pub(crate) public: Routes<()>,
@@ -144,7 +155,6 @@ fn legacy_routes(state: &AppState) -> AccessRoutes {
         handler::session::public_routes(),
         handler::operator::public_routes(state.clone()),
         handler::contest::public_routes(),
-        handler::print::public_routes(state.clone()),
         handler::photo::enrollment_routes(),
     ]
     .into_iter()
@@ -160,7 +170,6 @@ fn legacy_routes(state: &AppState) -> AccessRoutes {
         handler::target_submission::operator_routes(),
         handler::session::operator_routes(),
         handler::operator::operator_routes(),
-        handler::print::operator_routes(),
         handler::photo::operator_routes(),
     ]
     .into_iter()
@@ -170,14 +179,7 @@ fn legacy_routes(state: &AppState) -> AccessRoutes {
     AccessRoutes {
         public,
         operator,
-        source: handler::print::source_routes()
-            .into_iter()
-            .map(|(path, methods)| (path, methods.with_state(state.clone())))
-            .collect(),
-        client: handler::print::client_routes()
-            .into_iter()
-            .map(|(path, methods)| (path, methods.with_state(state.clone())))
-            .collect(),
+        ..AccessRoutes::new()
     }
 }
 

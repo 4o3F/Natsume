@@ -5,7 +5,7 @@ use time::UtcOffset;
 use crate::{
     component::operator::OperatorComponent,
     device_control::LiveLeaseView,
-    http::{AccessRoutes, handler::journal},
+    http::{AccessRoutes, bind_routes, handler::journal},
     journal::read::JournalReader,
     journal_query::JournalQuery,
 };
@@ -34,10 +34,7 @@ impl JournalFeature {
 
     pub(crate) fn routes(&self) -> AccessRoutes {
         AccessRoutes {
-            operator: journal::operator_routes()
-                .into_iter()
-                .map(|(path, methods)| (path, methods.with_state(self.query.clone())))
-                .collect(),
+            operator: bind_routes(journal::operator_routes(), &self.query),
             ..AccessRoutes::new()
         }
     }
