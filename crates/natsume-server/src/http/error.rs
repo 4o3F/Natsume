@@ -91,6 +91,87 @@ pub(super) struct ApiError {
 }
 
 impl ApiError {
+    pub(super) fn from_photo_delivery(error: crate::photo_delivery::Error) -> Self {
+        use crate::{component::photo::DeliveryError, photo_delivery::Error};
+        match error {
+            Error::Stopping
+            | Error::Photo {
+                source: DeliveryError::Interrupted | DeliveryError::Busy,
+            } => Self::unavailable("photo_delivery_unavailable"),
+            Error::Photo {
+                source: DeliveryError::NotFound,
+            } => Self::not_found("photo_not_found"),
+            Error::Photo {
+                source: DeliveryError::Invalid,
+            } => Self::invalid_request("photo_delivery_request"),
+            Error::Photo {
+                source: DeliveryError::Names,
+            } => Self::conflict("photo_export_names"),
+            Error::Photo {
+                source: DeliveryError::Limit,
+            } => Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Payload Too Large",
+                ApiErrorCode::PayloadTooLarge,
+                "photo_export_limit",
+            ),
+            Error::Photo {
+                source: DeliveryError::Persistence { ref source },
+            } if source.is_transient() => {
+                Self::unavailable("photo_delivery_database_busy").report_from(error)
+            }
+            Error::Roster {
+                source: ContestError::PersistenceFailed { ref source },
+            } if source.is_transient() => {
+                Self::unavailable("photo_delivery_database_busy").report_from(error)
+            }
+            error => Self::internal_error_from(error, "photo_delivery_failed"),
+        }
+    }
+
+    pub(super) fn from_photo_acceptance(error: crate::photo_acceptance::Error) -> Self {
+        use crate::{
+            component::photo::{AcceptanceError, ValidationError},
+            photo_acceptance::Error,
+        };
+        match error {
+            Error::Photo {
+                source: AcceptanceError::NotFound,
+            } => Self::not_found("photo_import_not_found"),
+            Error::Photo {
+                source: AcceptanceError::Conflict,
+            } => Self::conflict("photo_acceptance_conflict"),
+            Error::Photo {
+                source: AcceptanceError::Invalid,
+            } => Self::invalid_request("photo_decision"),
+            Error::Photo {
+                source:
+                    AcceptanceError::Validation {
+                        source: ValidationError::Authorization | ValidationError::Signature { .. },
+                    },
+            } => Self::authorization_denied("photo_acceptance_source"),
+            Error::Photo {
+                source: AcceptanceError::Persistence { ref source },
+            } if source.is_transient() => {
+                Self::unavailable("photo_acceptance_database_busy").report_from(error)
+            }
+            Error::Photo {
+                source:
+                    AcceptanceError::Validation {
+                        source: ValidationError::Persistence { ref source },
+                    },
+            } if source.is_transient() => {
+                Self::unavailable("photo_acceptance_database_busy").report_from(error)
+            }
+            Error::Roster {
+                source: ContestError::PersistenceFailed { ref source },
+            } if source.is_transient() => {
+                Self::unavailable("photo_acceptance_database_busy").report_from(error)
+            }
+            error => Self::internal_error_from(error, "photo_acceptance_failed"),
+        }
+    }
+
     pub(super) fn from_photo_import(error: crate::component::photo::ImportError) -> Self {
         use crate::component::photo::ImportError;
         match error {

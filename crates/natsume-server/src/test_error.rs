@@ -2,6 +2,14 @@ use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 pub(crate) enum TestError {
+    #[snafu(context(false), display("test Photo result contract failed"))]
+    PhotoResult {
+        source: natsume_photo_protocol::results::ResultError,
+    },
+    #[snafu(context(false), display("test background operation failed"))]
+    Background {
+        source: crate::background::BackgroundError,
+    },
     #[snafu(context(false), display("test Photo enrollment failed"))]
     PhotoEnrollment {
         source: crate::component::photo::EnrollmentError,

@@ -15,6 +15,12 @@ pub(crate) enum PhotoLogoError {
 }
 
 impl ContestComponent {
+    pub(crate) fn photo_roster_in(
+        tx: &mut crate::db::Transaction<'_>,
+    ) -> Result<Vec<PhotoTeam>, ContestError> {
+        db::photo_roster(tx).map_err(ContestError::from)
+    }
+
     pub(crate) async fn photo_roster(&self) -> Result<Vec<PhotoTeam>, ContestError> {
         self.database
             .read(db::photo_roster)

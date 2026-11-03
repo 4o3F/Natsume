@@ -116,6 +116,12 @@ pub(in crate::component::photo) fn read(
                     "limit" => Ok(ImportFailure::Limit),
                     "input" => Ok(ImportFailure::Input),
                     "storage" => Ok(ImportFailure::Storage),
+                    "archive" => Ok(ImportFailure::Archive),
+                    "signature" => Ok(ImportFailure::Signature),
+                    "authorization" => Ok(ImportFailure::Authorization),
+                    "image" => Ok(ImportFailure::Image),
+                    "conflict" => Ok(ImportFailure::Conflict),
+                    "interrupted" => Ok(ImportFailure::Interrupted),
                     _ => Err(PersistenceError::invalid("Photo import failure")),
                 })
                 .transpose()?;

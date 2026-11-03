@@ -36,6 +36,13 @@ pub(in crate::http) fn classify(path: &str) -> Option<AuditRoute> {
         "/photo/sources" => AuditRoute::PhotoSources,
         "/photo/imports" => AuditRoute::PhotoImports,
         "/photo/imports/{import_id}" => AuditRoute::PhotoImport,
+        "/photo/imports/{import_id}/preview" => AuditRoute::PhotoImportPreview,
+        "/photo/imports/{import_id}/commit" => AuditRoute::PhotoImportCommit,
+        "/photo/imports/{import_id}/decisions" => AuditRoute::PhotoImportDecision,
+        "/photo/submissions" => AuditRoute::PhotoSubmissions,
+        "/photo/photos" => AuditRoute::PhotoPhotos,
+        "/photo/photos/{account_id}/image" => AuditRoute::PhotoImage,
+        "/photo/exports" => AuditRoute::PhotoExports,
         "/photo/sources/{source_id}/pairing-code" => AuditRoute::PhotoPairingCode,
         "/photo/sources/{source_id}/reset-enrollment" => AuditRoute::PhotoEnrollmentReset,
         "/photo/sources/{source_id}/state" => AuditRoute::PhotoSourceState,
@@ -72,7 +79,10 @@ pub(super) fn path_target(route: AuditRoute, params: &RawPathParams) -> Option<A
         AuditRoute::Import | AuditRoute::ImportCommit => {
             canonical_uuid(value("import_id")?).map(AuditTarget::Import)
         }
-        AuditRoute::PhotoImport => {
+        AuditRoute::PhotoImport
+        | AuditRoute::PhotoImportPreview
+        | AuditRoute::PhotoImportCommit
+        | AuditRoute::PhotoImportDecision => {
             canonical_uuid(value("import_id")?).map(AuditTarget::PhotoImport)
         }
         AuditRoute::PrintSource => {
@@ -104,6 +114,10 @@ pub(super) fn path_target(route: AuditRoute, params: &RawPathParams) -> Option<A
         | AuditRoute::PrintSources
         | AuditRoute::PhotoSources
         | AuditRoute::PhotoImports
+        | AuditRoute::PhotoSubmissions
+        | AuditRoute::PhotoPhotos
+        | AuditRoute::PhotoImage
+        | AuditRoute::PhotoExports
         | AuditRoute::Provisioning
         | AuditRoute::TargetSubmission => None,
     }

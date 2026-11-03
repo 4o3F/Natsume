@@ -111,6 +111,48 @@ const INVENTORY: &[Route] = &[
     Route {
         principal: Principal::Operator,
         admin: true,
+        method: Method::GET,
+        path: "/photo/imports/{import_id}/preview",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
+        path: "/photo/imports/{import_id}/commit",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
+        path: "/photo/imports/{import_id}/decisions",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::GET,
+        path: "/photo/submissions",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::GET,
+        path: "/photo/photos",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::GET,
+        path: "/photo/photos/{account_id}/image",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
+        path: "/photo/exports",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
         method: Method::POST,
         path: "/photo/sources",
     },

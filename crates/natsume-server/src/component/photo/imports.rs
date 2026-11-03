@@ -35,6 +35,12 @@ pub(crate) enum ImportFailure {
     Limit,
     Input,
     Storage,
+    Archive,
+    Signature,
+    Authorization,
+    Image,
+    Conflict,
+    Interrupted,
 }
 
 #[derive(Debug, Snafu)]
@@ -171,6 +177,7 @@ impl PhotoComponent {
         })
         .await
         .context(WorkerSnafu)??;
+        self.validation_wake.notify_one();
         self.read_import(id).await
     }
 }

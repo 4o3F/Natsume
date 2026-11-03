@@ -5,7 +5,7 @@ CREATE TABLE photo_import_jobs (
     verified_images INTEGER NOT NULL DEFAULT 0 CHECK (verified_images BETWEEN 0 AND 2000),
     source_id TEXT REFERENCES photo_sources(source_id),
     initialization_id TEXT REFERENCES photo_initializations(initialization_id),
-    manifest_id TEXT UNIQUE,
+    manifest_id TEXT,
     manifest_sha256 TEXT,
     manifest_json TEXT CHECK (length(CAST(manifest_json AS BLOB)) <= 4194304),
     failure_code TEXT,
@@ -15,6 +15,8 @@ CREATE TABLE photo_import_jobs (
     CHECK (state NOT IN ('ready', 'committed') OR
         (source_id IS NOT NULL AND initialization_id IS NOT NULL AND manifest_id IS NOT NULL AND manifest_json IS NOT NULL))
 ) STRICT;
+
+CREATE INDEX photo_import_jobs_by_manifest ON photo_import_jobs(manifest_id);
 
 CREATE TABLE photo_objects (
     image_sha256 TEXT NOT NULL PRIMARY KEY CHECK (length(image_sha256) = 64 AND image_sha256 NOT GLOB '*[^0-9a-f]*'),
@@ -45,9 +47,11 @@ CREATE INDEX photo_submissions_by_state ON photo_submissions(state, source_id, s
 
 CREATE TABLE team_photos (
     account_id TEXT NOT NULL PRIMARY KEY CHECK (length(account_id) > 0),
-    source_id TEXT NOT NULL,
-    submission_id TEXT NOT NULL,
+    account TEXT NOT NULL CHECK (length(account) > 0),
+    source_id TEXT,
+    submission_id TEXT,
     revision INTEGER NOT NULL CHECK (revision > 0),
+    CHECK ((source_id IS NULL) = (submission_id IS NULL)),
     FOREIGN KEY (source_id, submission_id) REFERENCES photo_submissions(source_id, submission_id),
     UNIQUE (source_id, submission_id)
 ) STRICT;

@@ -111,6 +111,7 @@ impl ServerFixture {
             &photo_directory,
             &photo_results_directory,
             Arc::clone(contest.component()),
+            infra.lifecycle.clone(),
         )
         .context(PhotoStorageSnafu)?;
         let captured = assemble(

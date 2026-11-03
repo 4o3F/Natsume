@@ -1,4 +1,6 @@
 //! Phase-specific Photo authentication; no Operator credential reaches a client.
+pub(crate) mod acceptance;
+pub(crate) mod delivery;
 pub(crate) mod imports;
 use axum::{
     Extension, Json,

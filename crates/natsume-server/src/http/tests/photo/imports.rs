@@ -4,7 +4,7 @@ use super::super::{
 use super::*;
 use std::{fs, io, os::unix::fs::PermissionsExt as _};
 
-async fn admin() -> Result<(Fixture, String), TestError> {
+pub(super) async fn admin() -> Result<(Fixture, String), TestError> {
     let fixture = Fixture::new().await?;
     seed_operator(&fixture.database.database, LOGIN_NAME, PASSWORD).await?;
     let login = drive(&fixture.app, login_request(LOGIN_NAME, PASSWORD)?).await?;
@@ -16,7 +16,7 @@ async fn admin() -> Result<(Fixture, String), TestError> {
     Ok((fixture, cookie))
 }
 
-fn upload(cookie: &str, body: Body) -> Result<Request<Body>, axum::http::Error> {
+pub(super) fn upload(cookie: &str, body: Body) -> Result<Request<Body>, axum::http::Error> {
     Request::builder()
         .method(Method::POST)
         .uri("/api/v2/photo/imports")

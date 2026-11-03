@@ -871,6 +871,7 @@ pub(crate) mod tests {
                     diesel::insert_into(team_photos::table)
                         .values((
                             team_photos::account_id.eq("target"),
+                            team_photos::account.eq("target-account"),
                             team_photos::source_id.eq("source"),
                             team_photos::submission_id.eq("missing"),
                             team_photos::revision.eq(1)
@@ -881,6 +882,7 @@ pub(crate) mod tests {
                 diesel::insert_into(team_photos::table)
                     .values((
                         team_photos::account_id.eq("target"),
+                        team_photos::account.eq("target-account"),
                         team_photos::source_id.eq("source"),
                         team_photos::submission_id.eq("submission"),
                         team_photos::revision.eq(1),
@@ -890,6 +892,7 @@ pub(crate) mod tests {
                     diesel::insert_into(team_photos::table)
                         .values((
                             team_photos::account_id.eq("target"),
+                            team_photos::account.eq("target-account"),
                             team_photos::source_id.eq("source"),
                             team_photos::submission_id.eq("submission"),
                             team_photos::revision.eq(2)

@@ -357,8 +357,9 @@ diesel::table! {
 diesel::table! {
     team_photos (account_id) {
         account_id -> Text,
-        source_id -> Text,
-        submission_id -> Text,
+        account -> Text,
+        source_id -> Nullable<Text>,
+        submission_id -> Nullable<Text>,
         revision -> BigInt,
     }
 }

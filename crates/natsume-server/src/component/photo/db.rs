@@ -1,5 +1,8 @@
 //! Typed persistence operations; authorization and transitions belong to Photo.
+pub(super) mod acceptance;
+pub(super) mod delivery;
 pub(super) mod imports;
+pub(super) mod validation;
 use diesel::{ExpressionMethods as _, OptionalExtension as _, QueryDsl as _, RunQueryDsl as _};
 
 use super::SourceState;

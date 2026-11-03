@@ -27,9 +27,12 @@ use crate::{
 
 type TestResult = Result<(), TestError>;
 
+mod acceptance;
 mod client_interop;
+mod delivery;
 mod imports;
 mod recovery;
+mod validation;
 
 #[tokio::test]
 async fn real_feature_load_checks_result_directories_and_error_sources() -> TestResult {
@@ -52,6 +55,7 @@ async fn real_feature_load_checks_result_directories_and_error_sources() -> Test
             initializations.clone(),
             results.clone(),
             Arc::clone(server.contest.component()),
+            server.loaded.lifecycle.clone(),
         )
     };
     let loaded = load().await;

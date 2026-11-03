@@ -16,6 +16,12 @@ pub(crate) enum BackgroundError {
     PrintExpiry { source: ExpiryError },
     #[snafu(display("print expiry did not initialize"))]
     PrintInitialization { source: oneshot::error::RecvError },
+    #[snafu(display("Photo result validation failed"))]
+    PhotoValidation {
+        source: crate::component::photo::ValidationError,
+    },
+    #[snafu(display("Photo result validation did not initialize"))]
+    PhotoInitialization { source: oneshot::error::RecvError },
 }
 
 /// Owns Server background tasks separately from shared state.
@@ -48,6 +54,31 @@ pub(crate) async fn start_background_tasks(
 }
 
 impl BackgroundTasks {
+    pub(crate) async fn with_photo(
+        mut self,
+        photo: std::sync::Arc<crate::component::photo::PhotoComponent>,
+    ) -> Result<Self, BackgroundError> {
+        let stop = self.shutdown.token().clone();
+        let (ready, initialized) = oneshot::channel();
+        self.tasks.spawn(
+            async move {
+                let result = photo.maintain_results(stop, ready).await;
+                if let Err(ref error) = result {
+                    // Only the typed summary is safe; archive/JSON sources can contain input.
+                    tracing::error!(%error, "Photo validation background task stopped");
+                }
+                result.context(PhotoValidationSnafu)
+            }
+            .in_current_span()
+            .with_subscriber(tracing::dispatcher::get_default(Clone::clone)),
+        );
+        if let Err(source) = initialized.await {
+            self.shutdown().await?;
+            return Err(source).context(PhotoInitializationSnafu);
+        }
+        Ok(self)
+    }
+
     pub(crate) async fn shutdown(mut self) -> Result<(), BackgroundError> {
         self.shutdown.token().cancel();
         let mut first_error = None;

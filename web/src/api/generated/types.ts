@@ -123,6 +123,13 @@ export type AuditRoute =
   | "photo_sources"
   | "photo_imports"
   | "photo_import"
+  | "photo_import_preview"
+  | "photo_import_commit"
+  | "photo_import_decision"
+  | "photo_submissions"
+  | "photo_photos"
+  | "photo_image"
+  | "photo_exports"
   | "photo_pairing_code"
   | "photo_enrollment_reset"
   | "photo_source_state"
@@ -482,6 +489,14 @@ export type ConnectionStateResponse =
 export type ConvergenceStatusResponse =
   "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
 
+export type CurrentPhoto = {
+  account: string;
+  source_id: string;
+  submission_id: string;
+  revision: number;
+  image_sha256: string;
+};
+
 /**  Current durable targets and latest validated Actual for one Device. */
 export type DeviceConvergenceResponse =
   DeviceConvergenceResponse_Serialize | DeviceConvergenceResponse_Deserialize;
@@ -770,6 +785,12 @@ export type EvidenceQualityResponse = "medium" | "strong";
 export type ExecutionState =
   "queued" | "active" | "waiting" | "completed" | "exhausted";
 
+export type ExpectedPhoto = {
+  source_id: string;
+  submission_id: string;
+  revision: number;
+};
+
 export type ExportFailure = "journal_read_failed";
 
 /**  Tagged `JSONL` records for exported events, pruning metadata or terminal failure. */
@@ -885,7 +906,16 @@ export type ImportBindingImpactResponse = {
   blocks_commit: boolean;
 };
 
-export type ImportFailure = "limit" | "input" | "storage";
+export type ImportFailure =
+  | "limit"
+  | "input"
+  | "storage"
+  | "archive"
+  | "signature"
+  | "authorization"
+  | "image"
+  | "conflict"
+  | "interrupted";
 
 export type ImportJob = {
   import_id: string;
@@ -921,6 +951,12 @@ export type ImportPendingSummary = {
   candidate_id: string;
   expires_at_unix_ms: number;
   diff: ImportRedactedDiff;
+};
+
+export type ImportPreview = {
+  import_id: string;
+  committed: boolean;
+  entries: PhotoPreviewEntry[];
 };
 
 export type ImportPreviewResponse = {
@@ -1191,10 +1227,52 @@ export type PasswordResetIssued = Record<string, never>;
 
 export type PauseReason = "disk_budget";
 
+export type PendingPhoto = {
+  source_id: string;
+  submission_id: string;
+  import_id: string;
+  account_id: string;
+  account: string;
+  image_sha256: string;
+  state: SubmissionState;
+  revision: number;
+};
+
+export type PendingPhotoCursor = {
+  after_source_id: string;
+  after_submission_id: string;
+};
+
+export type PendingPhotoPage = {
+  entries: PendingPhoto[];
+  next: PendingPhotoCursor | null;
+};
+
+export type PendingPhotoQuery = {
+  after_source_id: string | null;
+  after_submission_id: string | null;
+  limit: number | null;
+};
+
+export type PhotoAction =
+  | { action: "reject" }
+  | {
+      action: "activate";
+      account_id: string;
+      account: string;
+      expected_current: ExpectedPhoto | null;
+    };
+
 /**  Confirms that the issued enrollment is bound to the original signing key. */
 export type PhotoConfirmation = {
   enrollment_id: string;
   signing_public_key: SigningPublicKey;
+};
+
+export type PhotoDecision = {
+  submission_id: string;
+  expected_submission_revision: number;
+  decision: PhotoAction;
 };
 
 /**  Contains a secret: intentionally has no Debug implementation. */
@@ -1228,6 +1306,11 @@ export type PhotoLogo = {
   size_bytes: number;
 };
 
+export type PhotoPage = {
+  entries: PhotoRecord[];
+  next: string | null;
+};
+
 /**  First enrollment request. The one-time code is sensitive. */
 export type PhotoPairRequest = {
   code: string;
@@ -1242,6 +1325,34 @@ export type PhotoPairingCode = {
 };
 
 export type PhotoPairingCodeRequest = Record<string, never>;
+
+export type PhotoPreviewEntry = {
+  submission_id: string;
+  result_id: string;
+  account_id: string;
+  account: string;
+  image_sha256: string;
+  state: SubmissionState;
+  submission_revision: number;
+  current: CurrentPhoto | null;
+  active_account_id: string | null;
+};
+
+export type PhotoQuery = {
+  after_account_id: string | null;
+  limit: number | null;
+};
+
+export type PhotoRecord = {
+  account_id: string;
+  account: string;
+  source_id: string;
+  submission_id: string;
+  revision: number;
+  image_sha256: Sha256Digest;
+  image_format: string;
+  image_bytes: number;
+};
 
 /**  Public source projection used by Operators and the enrollment confirmation. */
 export type PhotoSource = {
@@ -1595,6 +1706,9 @@ export type SigningPublicKey = string;
 
 /**  Source lifecycle; authority remains entirely on Server. */
 export type SourceState = "enabled" | "disabled" | "revoked";
+
+export type SubmissionState =
+  "active" | "pending_review" | "needs_association" | "rejected" | "superseded";
 
 export type TargetAction =
   "set_foreground" | "terminate_session" | "reset_home" | "power_off";

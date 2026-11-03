@@ -67,6 +67,125 @@ pub(super) fn prepare(directory: &Path) -> Result<ResultsStore, ResultsStorageEr
 }
 
 impl ResultsStore {
+    pub(super) fn open_object(
+        &self,
+        photo: &super::delivery::PhotoRecord,
+    ) -> Result<File, ResultsStorageError> {
+        private_file(
+            &self.directory("objects")?,
+            &format!("{}.{}", photo.image_sha256, photo.image_format.extension()),
+        )
+    }
+
+    pub(super) fn export_file(&self) -> Result<File, ResultsStorageError> {
+        let directory = self.directory("exports")?;
+        // Anonymous inode: closing the last descriptor cleans up even after a
+        // disconnected download or process termination; no name is later unlinked.
+        let file = File::from(
+            openat(
+                &directory,
+                ".",
+                OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(std::io::Error::from)
+            .context(IoSnafu)?,
+        );
+        Ok(file)
+    }
+    pub(super) fn worker_lease(&self) -> Result<Arc<File>, ResultsStorageError> {
+        let file = checked_directory(File::from(
+            openat(self.root.as_ref(), ".", DIRECTORY, Mode::empty())
+                .map_err(std::io::Error::from)
+                .context(IoSnafu)?,
+        ))?;
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .map_err(std::io::Error::from)
+            .context(IoSnafu)?;
+        Ok(Arc::new(file))
+    }
+
+    pub(super) fn open_upload(&self, id: uuid::Uuid) -> Result<File, ResultsStorageError> {
+        let directory = self.directory("uploads")?;
+        private_file(&directory, &format!("{id}.zip"))
+    }
+
+    fn directory(&self, name: &str) -> Result<File, ResultsStorageError> {
+        checked_directory(File::from(
+            openat(self.root.as_ref(), name, DIRECTORY, Mode::empty())
+                .map_err(std::io::Error::from)
+                .context(IoSnafu)?,
+        ))
+    }
+
+    pub(super) fn stage(&self) -> Result<Staging, ResultsStorageError> {
+        let parent = self.directory("staging")?;
+        let name = uuid::Uuid::now_v7().to_string();
+        mkdirat(&parent, name.as_str(), Mode::RUSR | Mode::WUSR | Mode::XUSR)
+            .map_err(std::io::Error::from)
+            .context(IoSnafu)?;
+        let directory = checked_directory(File::from(
+            openat(&parent, name.as_str(), DIRECTORY, Mode::empty())
+                .map_err(std::io::Error::from)
+                .context(IoSnafu)?,
+        ))?;
+        parent.sync_all().context(IoSnafu)?;
+        Ok(Staging {
+            parent,
+            directory,
+            name,
+            files: Vec::new(),
+            live: true,
+        })
+    }
+
+    pub(super) fn publish(
+        &self,
+        stage: &Staging,
+        image: &natsume_photo_protocol::results::TeamResult,
+    ) -> Result<(), ResultsStorageError> {
+        use sha2::Digest as _;
+        use std::io::Read as _;
+        let objects = self.directory("objects")?;
+        let name = object_name(image);
+        match rustix::fs::linkat(
+            &stage.directory,
+            name.as_str(),
+            &objects,
+            name.as_str(),
+            rustix::fs::AtFlags::empty(),
+        ) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::EXIST) => {
+                let mut file = private_file(&objects, &name)?;
+                ensure!(
+                    file.metadata().context(IoSnafu)?.len() == image.image_bytes,
+                    CorruptSnafu
+                );
+                let mut hash = sha2::Sha256::new();
+                let mut buffer = vec![0; 64 * 1024];
+                let mut remaining = image.image_bytes;
+                while remaining != 0 {
+                    let count = file.read(&mut buffer).context(IoSnafu)?;
+                    ensure!(count != 0, CorruptSnafu);
+                    remaining = remaining
+                        .checked_sub(u64::try_from(count).map_err(|_| CorruptSnafu.build())?)
+                        .ok_or_else(|| CorruptSnafu.build())?;
+                    hash.update(&buffer[..count]);
+                }
+                ensure!(
+                    hex::encode(hash.finalize()) == image.image_sha256.as_str(),
+                    CorruptSnafu
+                );
+            }
+            Err(source) => return Err(std::io::Error::from(source)).context(IoSnafu),
+        }
+        Ok(())
+    }
+
+    pub(super) fn sync_objects(&self) -> Result<(), ResultsStorageError> {
+        self.directory("objects")?.sync_all().context(IoSnafu)
+    }
     pub(super) fn create_upload(&self, id: uuid::Uuid) -> Result<UploadFile, ResultsStorageError> {
         let directory = checked_directory(File::from(
             openat(self.root.as_ref(), "uploads", DIRECTORY, Mode::empty())
@@ -92,6 +211,8 @@ impl ResultsStore {
                 .map_err(std::io::Error::from)
                 .context(IoSnafu)?,
         ))?;
+        // A persisted task ID is not sufficient authority to unlink a substituted entry.
+        let _file = private_file(&directory, &format!("{id}.zip"))?;
         rustix::fs::unlinkat(
             &directory,
             format!("{id}.zip").as_str(),
@@ -100,6 +221,93 @@ impl ResultsStore {
         .map_err(std::io::Error::from)
         .context(IoSnafu)?;
         directory.sync_all().context(IoSnafu)
+    }
+}
+
+fn private_file(directory: &File, name: &str) -> Result<File, ResultsStorageError> {
+    let file = File::from(
+        openat(
+            directory,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)
+        .context(IoSnafu)?,
+    );
+    let metadata = file.metadata().context(IoSnafu)?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == rustix::process::geteuid().as_raw()
+            && Mode::from_raw_mode(metadata.mode()).intersection(Mode::from_raw_mode(0o777))
+                == Mode::RUSR | Mode::WUSR,
+        CorruptSnafu
+    );
+    Ok(file)
+}
+
+fn object_name(image: &natsume_photo_protocol::results::TeamResult) -> String {
+    format!("{}.{}", image.image_sha256, image.image_format.extension())
+}
+
+pub(super) struct Staging {
+    parent: File,
+    directory: File,
+    name: String,
+    files: Vec<String>,
+    live: bool,
+}
+
+impl Staging {
+    pub(super) fn create(
+        &mut self,
+        image: &natsume_photo_protocol::results::TeamResult,
+    ) -> Result<File, ResultsStorageError> {
+        let name = object_name(image);
+        let file = File::from(
+            openat(
+                &self.directory,
+                name.as_str(),
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(std::io::Error::from)
+            .context(IoSnafu)?,
+        );
+        self.files.push(name);
+        Ok(file)
+    }
+
+    fn clear(&mut self) -> Result<(), ResultsStorageError> {
+        while let Some(name) = self.files.last() {
+            rustix::fs::unlinkat(&self.directory, name.as_str(), rustix::fs::AtFlags::empty())
+                .map_err(std::io::Error::from)
+                .context(IoSnafu)?;
+            self.files.pop();
+        }
+        rustix::fs::unlinkat(
+            &self.parent,
+            self.name.as_str(),
+            rustix::fs::AtFlags::REMOVEDIR,
+        )
+        .map_err(std::io::Error::from)
+        .context(IoSnafu)?;
+        self.live = false;
+        self.parent.sync_all().context(IoSnafu)
+    }
+
+    pub(super) fn cleanup(mut self) -> Result<(), ResultsStorageError> {
+        self.clear()
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if self.live
+            && let Err(error) = self.clear()
+        {
+            tracing::error!(%error, "Photo staging cleanup failed");
+        }
     }
 }
 

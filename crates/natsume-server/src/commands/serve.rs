@@ -82,6 +82,7 @@ where
         routes,
         operator,
         print,
+        photo,
         journal,
         lifecycle,
     } = load_server(&config, utc_offset).await?;
@@ -96,6 +97,11 @@ where
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
     let background = start_background_tasks(&print)
+        .await
+        .context(crate::server_runtime::BackgroundSnafu)
+        .context(super::error::RuntimeSnafu)?;
+    let background = background
+        .with_photo(photo)
         .await
         .context(crate::server_runtime::BackgroundSnafu)
         .context(super::error::RuntimeSnafu)?;

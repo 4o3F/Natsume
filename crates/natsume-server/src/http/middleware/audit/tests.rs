@@ -715,6 +715,73 @@ async fn photo_upload_is_audited_with_its_own_identity_and_admin_boundary() -> T
 }
 
 #[tokio::test]
+async fn photo_export_has_an_admin_only_audit_fact_without_request_contents() -> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let mut f = Fixture::new().await?;
+    for (cookie, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(f.viewer_cookie.clone()), StatusCode::FORBIDDEN),
+        (Some(f.admin_cookie.clone()), StatusCode::OK),
+    ] {
+        let response = f
+            .request(
+                Method::POST,
+                "/api/v2/photo/exports",
+                cookie.as_deref(),
+                "private-export-canary",
+            )
+            .await?;
+        assert_eq!(response.status(), status);
+        let _bytes = axum::body::to_bytes(response.into_body(), 4096).await?;
+        let records = f.records();
+        let record = request_record(&records, AuditRoute::PhotoExports, status);
+        assert!(!record.details().contains("canary"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn photo_acceptance_routes_keep_admin_authority_and_audit_mutations_without_body_contents()
+-> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let mut f = Fixture::new().await?;
+    let id = Uuid::now_v7();
+    for (method, action, route) in [
+        (Method::GET, "preview", AuditRoute::PhotoImportPreview),
+        (Method::POST, "commit", AuditRoute::PhotoImportCommit),
+        (Method::POST, "decisions", AuditRoute::PhotoImportDecision),
+    ] {
+        let path = format!("/api/v2/photo/imports/{id}/{action}");
+        let body = r#"{"submission_id":"private-photo-decision-canary","expected_submission_revision":1,"decision":{"action":"reject"}}"#;
+        for (cookie, status) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some(f.viewer_cookie.clone()), StatusCode::FORBIDDEN),
+            (Some(f.admin_cookie.clone()), StatusCode::NOT_FOUND),
+        ] {
+            assert_eq!(
+                f.request(method.clone(), &path, cookie.as_deref(), body)
+                    .await?
+                    .status(),
+                status
+            );
+            let records = f.records();
+            if method == Method::GET {
+                assert!(
+                    records.is_empty(),
+                    "read-only requests follow the existing audit policy"
+                );
+            } else {
+                let record = request_record(&records, route, status);
+                let details: Value = serde_json::from_str(&record.details())?;
+                assert_eq!(details["targets"], json!([{"photo_import":id}]));
+                assert!(!record.details().contains("canary"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn photo_administrator_mutations_are_audited_without_credentials() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let mut f = Fixture::new().await?;

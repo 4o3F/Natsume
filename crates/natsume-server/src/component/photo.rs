@@ -1,14 +1,21 @@
 //! Photo-only enrollment and immutable initialization; no daily online workflow.
+mod acceptance;
 mod db;
+mod delivery;
 mod enrollment;
 mod imports;
 mod initialization;
 mod results_storage;
 mod storage;
+mod validation;
 
+pub(crate) use acceptance::{AcceptanceError, ImportPreview, PhotoDecision};
+pub(crate) use acceptance::{PendingPhotoPage, PendingPhotoQuery};
+pub(crate) use delivery::{DeliveryError, PhotoPage, PhotoQuery, PreparedDownload};
 pub(crate) use enrollment::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState};
 pub(crate) use imports::{ImportError, ImportJob, ImportState};
 pub(crate) use initialization::{InitializationError, Preparation, SnapshotDownload};
+pub(crate) use validation::ValidationError;
 
 use std::{
     path::Path,
@@ -36,6 +43,9 @@ pub(crate) struct PhotoComponent {
     storage: storage::PhotoStore,
     results: results_storage::ResultsStore,
     upload_work: Arc<Semaphore>,
+    export_work: Arc<Semaphore>,
+    result_download_work: Arc<Semaphore>,
+    validation_wake: Arc<tokio::sync::Notify>,
     pairing_attempts: Mutex<super::pairing::PairingBudget>,
     snapshot_work: Arc<Semaphore>,
     download_work: Arc<Semaphore>,
@@ -53,6 +63,9 @@ impl PhotoComponent {
             storage: storage::PhotoStore::open(initializations).context(InitializationSnafu)?,
             results,
             upload_work: Arc::new(Semaphore::new(1)),
+            export_work: Arc::new(Semaphore::new(1)),
+            result_download_work: Arc::new(Semaphore::new(2)),
+            validation_wake: Arc::new(tokio::sync::Notify::new()),
             pairing_attempts: Mutex::new(super::pairing::PairingBudget::default()),
             snapshot_work: Arc::new(Semaphore::new(1)),
             download_work: Arc::new(Semaphore::new(2)),
