@@ -51,7 +51,7 @@ jobs:
           module: scripts
           rust: false
       - name: Download verified module packages
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8.0.2
         with:
           pattern: package-*-amd64
           merge-multiple: true
