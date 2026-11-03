@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 
 use axum::{
@@ -8,11 +10,14 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::component::{contest::BindingFacts, operator::OperatorIdentity};
+use crate::component::{
+    contest::{BindingFacts, ContestComponent},
+    operator::OperatorIdentity,
+};
 
-use super::{super::super::error::ApiError, AppState};
+use super::super::super::error::ApiError;
 
-pub(super) fn operator_routes() -> Routes {
+pub(super) fn operator_routes() -> Routes<Arc<ContestComponent>> {
     vec![("/bindings", get(list_bindings))]
 }
 
@@ -41,10 +46,10 @@ impl From<BindingFacts> for BindingResponse {
 }
 
 pub(crate) async fn list_bindings(
-    State(state): State<AppState>,
+    State(state): State<Arc<ContestComponent>>,
     Extension(_identity): Extension<OperatorIdentity>,
 ) -> Response {
-    match state.contest().list_bindings().await {
+    match state.list_bindings().await {
         Ok(facts) => {
             let response = facts
                 .into_iter()

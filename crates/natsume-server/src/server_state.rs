@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use snafu::ResultExt as _;
 
@@ -11,7 +11,6 @@ use crate::{
         home::HomeComponent,
         import::ImportComponent,
         operator::OperatorComponent,
-        photo::PhotoComponent,
         power::PowerControlComponent,
         print::PrintComponent,
         runtime::RuntimeConfigComponent,
@@ -22,7 +21,8 @@ use crate::{
     db::Database,
     device_control::{DeviceControl, DeviceControlDependencies},
     feature::{
-        Infra, PrintStorageSnafu, StartupError, journal::JournalFeature, operator::OperatorFeature,
+        Infra, PhotoStorageSnafu, PrintStorageSnafu, StartupError, contest::ContestFeature,
+        journal::JournalFeature, operator::OperatorFeature, photo::PhotoFeature,
         print::PrintFeature, provisioning::ProvisioningFeature,
     },
     http::AccessRoutes,
@@ -44,8 +44,8 @@ pub(crate) struct ServerState {
     /// Transitional handle for HTTP authentication and background startup; removed in Step 11.
     /// Business handlers obtain Print directly from their feature state.
     print: Arc<PrintComponent>,
-    photo: PhotoComponent,
-    contest: ContestComponent,
+    /// Transitional handle for the two Import candidate routes; removed in Step 10.
+    contest: Arc<ContestComponent>,
     import: ImportComponent,
     device: Arc<DeviceComponent>,
     /// Shared Binding owner used directly by single-component entrypoints.
@@ -80,8 +80,10 @@ impl ServerState {
         config: &ServerConfig,
         utc_offset: time::UtcOffset,
     ) -> Result<LoadedServer, StartupError> {
-        let vault = vault::load(config.vault_master_key_path())
-            .map_err(|source| StartupError::Vault { source })?;
+        let vault = Arc::new(
+            vault::load(config.vault_master_key_path())
+                .map_err(|source| StartupError::Vault { source })?,
+        );
         let ca_certificate_path = config
             .origin_ca_certificate_path()
             .map_err(|source| StartupError::Configuration { source })?;
@@ -103,32 +105,29 @@ impl ServerState {
         )
         .await
         .context(PrintStorageSnafu)?;
-        let photo_database = database.clone();
-        let photo_path = config.photo_initializations_path().to_path_buf();
-        let photo =
-            tokio::task::spawn_blocking(move || PhotoComponent::new(photo_database, &photo_path))
-                .await
-                .map_err(|source| StartupError::PhotoStorage {
-                    source: crate::component::photo::InitializationError::Worker { source },
-                })?
-                .map_err(|source| StartupError::PhotoStorage { source })?;
+        let contest = ContestFeature::load(
+            database.clone(),
+            Arc::clone(&vault),
+            config.organization_logos_path().to_path_buf(),
+        );
+        let photo = PhotoFeature::load(
+            database.clone(),
+            config.photo_initializations_path().to_path_buf(),
+            Arc::clone(contest.component()),
+        )
+        .await
+        .context(PhotoStorageSnafu)?;
         let lifecycle = ServerLifecycle::new();
         let journal =
             JournalComponent::start(config.journal_path().to_owned(), config.journal().clone());
         let infra = Infra {
             database,
-            vault: Arc::new(vault),
+            vault,
             journal: journal.emitter(),
             lifecycle,
         };
         Ok(Self::from_parts(
-            infra,
-            journal,
-            &print,
-            photo,
-            gateway,
-            config.organization_logos_path().to_path_buf(),
-            utc_offset,
+            infra, journal, &print, &contest, &photo, gateway, utc_offset,
         ))
     }
 
@@ -136,9 +135,9 @@ impl ServerState {
         infra: Infra,
         journal: JournalComponent,
         print_feature: &PrintFeature,
-        photo: PhotoComponent,
+        contest: &ContestFeature,
+        photo: &PhotoFeature,
         gateway: GatewayComponent,
-        logos: PathBuf,
         utc_offset: time::UtcOffset,
     ) -> LoadedServer {
         let Infra {
@@ -180,14 +179,15 @@ impl ServerState {
             .merge(journal_feature.routes())
             .merge(print_feature.routes())
             .merge(operator_feature.routes())
-            .merge(provisioning_feature.routes());
+            .merge(provisioning_feature.routes())
+            .merge(contest.routes())
+            .merge(photo.routes());
         let print = Arc::clone(print_feature.component());
         let runtime = ServerRuntime::new(lifecycle.clone(), Arc::clone(&device_control), journal);
         let state = Self {
             operator: Arc::clone(operator_feature.component()),
             print,
-            photo,
-            contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
+            contest: Arc::clone(contest.component()),
             target_submission: TargetSubmissionComponent::new(database.clone(), emitter.clone()),
             import: ImportComponent::new(database, vault),
             device,
@@ -219,23 +219,11 @@ impl ServerState {
         &self.print
     }
 
-    pub(crate) fn photo_initialization(
-        &self,
-    ) -> crate::photo_initialization::PreparePhotoInitialization<'_> {
-        crate::photo_initialization::PreparePhotoInitialization {
-            photo: &self.photo,
-            contest: &self.contest,
-        }
-    }
-    pub(crate) const fn photo(&self) -> &PhotoComponent {
-        &self.photo
-    }
-
     pub(crate) fn operator(&self) -> &Arc<OperatorComponent> {
         &self.operator
     }
 
-    pub(crate) const fn contest(&self) -> &ContestComponent {
+    pub(crate) const fn contest(&self) -> &Arc<ContestComponent> {
         &self.contest
     }
 
@@ -280,9 +268,12 @@ pub(crate) mod tests {
 
     use super::{LoadedServer, ServerState, map_gateway_load_error};
     use crate::{
-        component::{gateway::GatewayComponent, photo::PhotoComponent},
+        component::gateway::GatewayComponent,
         db::Database,
-        feature::{Infra, PrintStorageSnafu, StartupError, print::PrintFeature},
+        feature::{
+            Infra, PhotoStorageSnafu, PrintStorageSnafu, StartupError, contest::ContestFeature,
+            photo::PhotoFeature, print::PrintFeature,
+        },
         journal::{CAPACITY, JournalComponent},
         lifecycle::ServerLifecycle,
         vault,
@@ -297,6 +288,15 @@ pub(crate) mod tests {
         logos: PathBuf,
         /// Optional journal owner supplied by the test.
         journal: Option<JournalComponent>,
+    }
+
+    pub(crate) struct ServerWithFeatures {
+        /// Complete server with production feature routes.
+        pub(crate) loaded: LoadedServer,
+        /// Contest owner shared with Photo and the transitional Import routes.
+        pub(crate) contest: ContestFeature,
+        /// Photo owner used by the routes and test setup.
+        pub(crate) photo: PhotoFeature,
     }
 
     impl ServerStateFixture {
@@ -320,6 +320,10 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn build(self) -> Result<LoadedServer, StartupError> {
+            Ok(self.build_with_features()?.loaded)
+        }
+
+        pub(crate) fn build_with_features(self) -> Result<ServerWithFeatures, StartupError> {
             let Self {
                 database,
                 documents,
@@ -348,23 +352,42 @@ pub(crate) mod tests {
             let photo_directory = documents.with_extension("photo-initializations");
             let print =
                 PrintFeature::for_test(database.clone(), documents).context(PrintStorageSnafu)?;
-            let photo = PhotoComponent::new(database.clone(), &photo_directory)
-                .map_err(|source| StartupError::PhotoStorage { source })?;
             let infra = Infra {
                 database,
                 vault: Arc::new(vault),
                 journal: journal.emitter(),
                 lifecycle: ServerLifecycle::new(),
             };
-            Ok(ServerState::from_parts(
+            let contest =
+                ContestFeature::load(infra.database.clone(), Arc::clone(&infra.vault), logos);
+            let photo = PhotoFeature::for_test(
+                infra.database.clone(),
+                &photo_directory,
+                Arc::clone(contest.component()),
+            )
+            .context(PhotoStorageSnafu)?;
+            let loaded = ServerState::from_parts(
                 infra,
                 journal,
                 &print,
-                photo,
+                &contest,
+                &photo,
                 gateway,
-                logos,
                 time::UtcOffset::UTC,
-            ))
+            );
+            let features = ServerWithFeatures {
+                loaded,
+                contest,
+                photo,
+            };
+            assert!(
+                Arc::ptr_eq(
+                    features.contest.component(),
+                    features.loaded.state.contest()
+                ),
+                "Import routes must share the Contest feature instance"
+            );
+            Ok(features)
         }
     }
 }

@@ -1,7 +1,9 @@
 //! Server composition layer; future `<Name>Feature` types belong in `feature/` submodules.
 
+pub(crate) mod contest;
 pub(crate) mod journal;
 pub(crate) mod operator;
+pub(crate) mod photo;
 pub(crate) mod print;
 pub(crate) mod provisioning;
 
@@ -25,7 +27,8 @@ pub(crate) struct Infra {
 
 #[derive(Debug, Snafu)]
 pub(crate) enum StartupError {
-    #[snafu(display("Photo storage startup failed"))]
+    /// Storage startup failure owned by `PhotoFeature`.
+    #[snafu(visibility(pub(crate)), display("Photo storage startup failed"))]
     PhotoStorage {
         source: crate::component::photo::InitializationError,
     },

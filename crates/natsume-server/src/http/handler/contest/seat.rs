@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 
 use axum::{
@@ -8,11 +10,14 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::component::{contest::SeatFacts, operator::OperatorIdentity};
+use crate::component::{
+    contest::{ContestComponent, SeatFacts},
+    operator::OperatorIdentity,
+};
 
-use super::{super::super::error::ApiError, AppState};
+use super::super::super::error::ApiError;
 
-pub(super) fn operator_routes() -> Routes {
+pub(super) fn operator_routes() -> Routes<Arc<ContestComponent>> {
     vec![("/seats", get(list_seats))]
 }
 
@@ -31,10 +36,10 @@ impl From<SeatFacts> for SeatResponse {
 }
 
 pub(crate) async fn list_seats(
-    State(state): State<AppState>,
+    State(state): State<Arc<ContestComponent>>,
     Extension(_identity): Extension<OperatorIdentity>,
 ) -> Response {
-    match state.contest().list_seats().await {
+    match state.list_seats().await {
         Ok(facts) => {
             let response = facts
                 .into_iter()

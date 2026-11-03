@@ -25,14 +25,14 @@ async fn photo_client_initializes_against_real_server_tls_and_then_runs_offline(
         .ok_or_else(|| TestError::missing("native Windows initialization test executable"))?;
     let f = Fixture::new().await?;
     let source = f
-        .state
-        .photo()
+        .photo
+        .component()
         .create_source("Real Windows client".into())
         .await?
         .source_id;
     let code = f
-        .state
-        .photo()
+        .photo
+        .component()
         .issue_code(source.clone(), PendingEnrollment::Preserve)
         .await?;
     let identity = crate::tls::tests::TestIdentity::new(Ipv4Addr::LOCALHOST)?;
@@ -75,8 +75,8 @@ async fn photo_client_initializes_against_real_server_tls_and_then_runs_offline(
         "native Windows initialization test failed"
     );
     assert!(
-        f.state
-            .photo()
+        f.photo
+            .component()
             .list_sources()
             .await?
             .into_iter()

@@ -152,20 +152,17 @@ fn legacy_routes(state: &AppState) -> AccessRoutes {
     let public = [
         handler::health::public_routes(),
         handler::device_control::public_routes(),
-        handler::contest::public_routes(),
-        handler::photo::enrollment_routes(),
     ]
     .into_iter()
     .flatten()
     .map(|(path, methods)| (path, methods.with_state(state.clone())))
     .collect();
     let operator = [
-        handler::contest::operator_routes(),
+        handler::contest::organization::import_candidate_routes(),
         handler::device::operator_routes(),
         handler::enrollment::operator_routes(),
         handler::import::operator_routes(),
         handler::target_submission::operator_routes(),
-        handler::photo::operator_routes(),
     ]
     .into_iter()
     .flatten()

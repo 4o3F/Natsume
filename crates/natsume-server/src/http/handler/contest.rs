@@ -1,4 +1,6 @@
-use crate::http::Routes;
+use std::sync::Arc;
+
+use crate::{component::contest::ContestComponent, http::Routes};
 
 use super::super::{AppState, middleware};
 
@@ -7,7 +9,7 @@ pub(crate) mod binding;
 pub(crate) mod organization;
 pub(crate) mod seat;
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<Arc<ContestComponent>> {
     [
         seat::operator_routes(),
         account::operator_routes(),
@@ -19,6 +21,6 @@ pub(in crate::http) fn operator_routes() -> Routes {
     .collect()
 }
 
-pub(in crate::http) fn public_routes() -> Routes {
+pub(crate) fn public_routes() -> Routes<Arc<ContestComponent>> {
     organization::public_routes()
 }

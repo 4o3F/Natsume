@@ -4,7 +4,7 @@ use crate::component::{
     photo::{InitializationError, PhotoComponent, Preparation, SnapshotDownload},
 };
 use snafu::{ResultExt as _, Snafu};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Snafu)]
 pub(crate) enum Error {
@@ -15,11 +15,22 @@ pub(crate) enum Error {
     #[snafu(display("Photo logo could not be prepared"))]
     Logo { source: PhotoLogoError },
 }
-pub(crate) struct PreparePhotoInitialization<'a> {
-    pub photo: &'a PhotoComponent,
-    pub contest: &'a ContestComponent,
+#[derive(Clone)]
+pub(crate) struct PreparePhotoInitialization {
+    /// The single Photo instance used for enrollment and snapshot publication.
+    photo: Arc<PhotoComponent>,
+    /// Shared Contest facts and logo cache used to build initialization snapshots.
+    contest: Arc<ContestComponent>,
 }
-impl PreparePhotoInitialization<'_> {
+impl PreparePhotoInitialization {
+    pub(crate) const fn new(photo: Arc<PhotoComponent>, contest: Arc<ContestComponent>) -> Self {
+        Self { photo, contest }
+    }
+
+    pub(crate) const fn photo(&self) -> &Arc<PhotoComponent> {
+        &self.photo
+    }
+
     pub(crate) async fn run(&self, token: &str) -> Result<SnapshotDownload, Error> {
         let mut draft = match self
             .photo

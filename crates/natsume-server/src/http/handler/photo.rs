@@ -15,8 +15,9 @@ use serde::Deserialize;
 use crate::http::middleware::audit::{RequestAudit, canonical_uuid};
 use crate::{
     component::photo::{CredentialUse, PendingEnrollment, SourceState},
-    http::{AppState, Routes, error::ApiError, middleware},
+    http::{Routes, error::ApiError, middleware},
     journal::event::types::AuditTarget,
+    photo_initialization::PreparePhotoInitialization,
     tls::PeerAddress,
 };
 
@@ -37,7 +38,7 @@ pub(crate) use natsume_photo_protocol::{
     PhotoConfirmation, PhotoInitializationComplete, PhotoPairRequest,
 };
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<PreparePhotoInitialization> {
     vec![
         (
             "/photo/sources",
@@ -60,7 +61,7 @@ pub(in crate::http) fn operator_routes() -> Routes {
 
 /// Publicly mounted, like Print confirmation. Every route except pairing
 /// authenticates its Photo-only credential before accessing protected state.
-pub(in crate::http) fn enrollment_routes() -> Routes {
+pub(crate) fn enrollment_routes() -> Routes<PreparePhotoInitialization> {
     vec![
         ("/photo/enrollment/pair", post(pair)),
         ("/photo/enrollment/confirm", post(confirm)),
@@ -86,7 +87,7 @@ fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
 
 async fn create_source(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<PreparePhotoInitialization>,
     body: Result<Json<PhotoSourceCreate>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
@@ -102,14 +103,14 @@ async fn create_source(
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
 }
-async fn list_sources(State(state): State<AppState>) -> Response {
+async fn list_sources(State(state): State<PreparePhotoInitialization>) -> Response {
     match state.photo().list_sources().await {
         Ok(sources) => Json(sources).into_response(),
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
 }
 async fn issue_code(
-    State(state): State<AppState>,
+    State(state): State<PreparePhotoInitialization>,
     path: Result<Path<natsume_photo_protocol::SourceId>, PathRejection>,
     body: Result<Json<PhotoPairingCodeRequest>, JsonRejection>,
 ) -> Response {
@@ -129,7 +130,7 @@ async fn issue_code(
     }
 }
 async fn reset_enrollment(
-    State(state): State<AppState>,
+    State(state): State<PreparePhotoInitialization>,
     path: Result<Path<natsume_photo_protocol::SourceId>, PathRejection>,
 ) -> Response {
     let Ok(Path(id)) = path else {
@@ -145,7 +146,7 @@ async fn reset_enrollment(
     }
 }
 async fn update_state(
-    State(state): State<AppState>,
+    State(state): State<PreparePhotoInitialization>,
     path: Result<Path<natsume_photo_protocol::SourceId>, PathRejection>,
     body: Result<Json<PhotoSourceStateUpdate>, JsonRejection>,
 ) -> Response {
@@ -160,7 +161,7 @@ async fn update_state(
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
 }
-async fn pair(State(state): State<AppState>, request: Request) -> Response {
+async fn pair(State(state): State<PreparePhotoInitialization>, request: Request) -> Response {
     let Some(ConnectInfo(PeerAddress(peer))) =
         request.extensions().get::<ConnectInfo<PeerAddress>>()
     else {
@@ -178,7 +179,7 @@ async fn pair(State(state): State<AppState>, request: Request) -> Response {
     }
 }
 async fn mutation_token(
-    state: &AppState,
+    state: &PreparePhotoInitialization,
     headers: &HeaderMap,
     purpose: CredentialUse,
 ) -> Result<String, ApiError> {
@@ -190,7 +191,7 @@ async fn mutation_token(
         .map_err(ApiError::from_photo_enrollment)?;
     Ok(token)
 }
-async fn confirm(State(state): State<AppState>, request: Request) -> Response {
+async fn confirm(State(state): State<PreparePhotoInitialization>, request: Request) -> Response {
     let token = match mutation_token(&state, request.headers(), CredentialUse::Initialization).await
     {
         Ok(token) => token,
@@ -204,12 +205,15 @@ async fn confirm(State(state): State<AppState>, request: Request) -> Response {
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
 }
-async fn initialization(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn initialization(
+    State(state): State<PreparePhotoInitialization>,
+    headers: HeaderMap,
+) -> Response {
     let token = match bearer(&headers) {
         Ok(token) => token,
         Err(error) => return error.into_response(),
     };
-    match state.photo_initialization().run(token).await {
+    match state.run(token).await {
         Ok(download) => (
             [
                 (header::CONTENT_TYPE, "application/json".to_owned()),
@@ -225,7 +229,7 @@ async fn initialization(State(state): State<AppState>, headers: HeaderMap) -> Re
     }
 }
 async fn resource(
-    State(state): State<AppState>,
+    State(state): State<PreparePhotoInitialization>,
     path: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
 ) -> Response {
@@ -254,7 +258,7 @@ async fn resource(
         Err(error) => initialization_error(error),
     }
 }
-async fn complete(State(state): State<AppState>, request: Request) -> Response {
+async fn complete(State(state): State<PreparePhotoInitialization>, request: Request) -> Response {
     let token = match mutation_token(&state, request.headers(), CredentialUse::Completion).await {
         Ok(token) => token,
         Err(error) => return error.into_response(),
