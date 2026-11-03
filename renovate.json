@@ -15,6 +15,11 @@
   "automergeStrategy": "squash",
   "packageRules": [
     {
+      "description": "Wait two days before updating npm dependencies",
+      "matchDatasources": ["npm"],
+      "minimumReleaseAge": "2 days"
+    },
+    {
       "description": "Update the coupled Specta crates together",
       "matchManagers": ["cargo"],
       "matchPackageNames": [
