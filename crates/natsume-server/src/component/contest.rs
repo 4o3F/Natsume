@@ -11,6 +11,7 @@ use crate::{
 mod db;
 mod export;
 mod logo_cache;
+mod logo_http_cache;
 mod logo_io;
 mod logos;
 mod photo;
@@ -56,6 +57,7 @@ pub(crate) struct ContestComponent {
     logo_directory: PathBuf,
     image_work: Arc<Semaphore>,
     logo_validation: Arc<logo_cache::LogoValidationCache>,
+    logo_http: Arc<logo_http_cache::LogoHttpCache>,
     export_work: Arc<Semaphore>,
 }
 
@@ -71,6 +73,7 @@ impl ContestComponent {
             logo_directory,
             image_work: Arc::new(Semaphore::new(4)),
             logo_validation: Arc::new(logo_cache::LogoValidationCache::default()),
+            logo_http: Arc::new(logo_http_cache::LogoHttpCache::default()),
             export_work: Arc::new(Semaphore::new(1)),
         }
     }
@@ -80,6 +83,17 @@ impl ContestComponent {
     ) -> Result<Vec<OrganizationDetails>, ContestError> {
         self.database
             .read(db::list_organizations)
+            .await
+            .map_err(TransactionError::into_error)
+            .map_err(ContestError::from)
+    }
+
+    pub(crate) async fn find_organization(
+        &self,
+        id: i64,
+    ) -> Result<Option<OrganizationDetails>, ContestError> {
+        self.database
+            .read(move |transaction| db::find_organization(transaction, id))
             .await
             .map_err(TransactionError::into_error)
             .map_err(ContestError::from)
