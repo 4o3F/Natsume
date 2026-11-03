@@ -11,5 +11,6 @@
   "addLabels": ["bot:renovate"],
   "automergeType": "pr",
   "platformAutomerge": true,
+  "rebaseWhen": "conflicted",
   "automergeStrategy": "squash"
 }
