@@ -659,6 +659,62 @@ async fn panic_and_shutdown_refusal_keep_the_captured_request_trace() -> TestRes
 }
 
 #[tokio::test]
+async fn photo_upload_is_audited_with_its_own_identity_and_admin_boundary() -> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let mut f = Fixture::new().await?;
+    for (cookie, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(f.viewer_cookie.as_str()), StatusCode::FORBIDDEN),
+    ] {
+        let mut builder = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/api/v2/photo/imports")
+            .header(header::CONTENT_TYPE, "application/zip");
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let response = f
+            .app
+            .clone()
+            .oneshot(builder.body(Body::from("private photo upload canary"))?)
+            .await?;
+        assert_eq!(response.status(), expected);
+    }
+    let refusals = f.records();
+    assert_eq!(
+        refusals
+            .iter()
+            .filter(|record| matches!(record.event, Event::OperatorRequest(_)))
+            .count(),
+        2
+    );
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            HttpRequest::builder()
+                .method(Method::POST)
+                .uri("/api/v2/photo/imports")
+                .header(header::COOKIE, &f.admin_cookie)
+                .header(header::CONTENT_TYPE, "application/zip")
+                .body(Body::from("private photo upload canary"))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job: Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 8192).await?)?;
+    let id = job["import_id"]
+        .as_str()
+        .ok_or(TestError::missing("import ID"))?;
+    let records = f.records();
+    let record = request_record(&records, AuditRoute::PhotoImports, StatusCode::ACCEPTED);
+    let details: Value = serde_json::from_str(&record.details())?;
+    assert_eq!(details["targets"], json!([{"photo_import": id}]));
+    assert!(!record.details().contains("canary"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn photo_administrator_mutations_are_audited_without_credentials() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let mut f = Fixture::new().await?;

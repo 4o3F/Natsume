@@ -91,6 +91,27 @@ pub(super) struct ApiError {
 }
 
 impl ApiError {
+    pub(super) fn from_photo_import(error: crate::component::photo::ImportError) -> Self {
+        use crate::component::photo::ImportError;
+        match error {
+            ImportError::Busy => Self::unavailable("photo_upload_busy"),
+            ImportError::NotFound => Self::not_found("photo_import_not_found"),
+            ImportError::Limit => Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Payload Too Large",
+                ApiErrorCode::PayloadTooLarge,
+                "photo_upload_limit",
+            ),
+            ImportError::Input { .. } | ImportError::Empty => {
+                Self::invalid_request("photo_upload_input")
+            }
+            ImportError::Persistence { ref source } if source.is_transient() => {
+                Self::unavailable("photo_upload_database_busy").report_from(error)
+            }
+            error => Self::internal_error_from(error, "photo_upload_failed"),
+        }
+    }
+
     pub(super) fn from_photo_enrollment(error: crate::component::photo::EnrollmentError) -> Self {
         use crate::component::photo::EnrollmentError;
         match error {

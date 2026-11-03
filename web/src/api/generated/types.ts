@@ -121,6 +121,8 @@ export type AuditRoute =
   | "print_sources"
   | "print_source"
   | "photo_sources"
+  | "photo_imports"
+  | "photo_import"
   | "photo_pairing_code"
   | "photo_enrollment_reset"
   | "photo_source_state"
@@ -135,6 +137,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -149,6 +152,7 @@ export type AuditTarget =
       import?: never;
       invitation?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -163,6 +167,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -178,6 +183,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -191,6 +197,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -205,6 +212,7 @@ export type AuditTarget =
       import?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -220,6 +228,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -233,6 +242,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -248,6 +258,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       printer?: never;
@@ -262,6 +273,22 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ photo_import: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -276,6 +303,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -290,6 +318,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_source?: never;
       printer?: never;
@@ -303,6 +332,7 @@ export type AuditTarget =
       import?: never;
       invitation?: never;
       operator?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -855,6 +885,16 @@ export type ImportBindingImpactResponse = {
   blocks_commit: boolean;
 };
 
+export type ImportFailure = "limit" | "input" | "storage";
+
+export type ImportJob = {
+  import_id: string;
+  state: ImportState;
+  uploaded_bytes: number;
+  verified_images: number;
+  failure_code: ImportFailure | null;
+};
+
 export type ImportMappingChangeResponse = {
   seat_code: string;
   current_domjudge_username: string | null;
@@ -904,6 +944,15 @@ export type ImportRedactedDiff = {
   organization_changes: ImportOrganizationChangeResponse[];
   team_changes: ImportTeamChangeResponse[];
 };
+
+export type ImportState =
+  | "uploading"
+  | "uploaded"
+  | "validating"
+  | "ready"
+  | "committed"
+  | "failed"
+  | "interrupted";
 
 export type ImportTeamChangeResponse = {
   account: string;

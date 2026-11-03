@@ -100,6 +100,18 @@ const INVENTORY: &[Route] = &[
         principal: Principal::Operator,
         admin: true,
         method: Method::POST,
+        path: "/photo/imports",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::GET,
+        path: "/photo/imports/{import_id}",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
         path: "/photo/sources",
     },
     Route {

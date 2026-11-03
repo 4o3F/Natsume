@@ -57,9 +57,14 @@ impl PhotoFeature {
     }
 
     pub(crate) fn routes(&self) -> AccessRoutes {
+        let mut operator = bind_routes(photo::operator_routes(), &self.initialization);
+        operator.extend(bind_routes(
+            photo::imports::routes(),
+            self.initialization.photo(),
+        ));
         AccessRoutes {
             public: bind_routes(photo::enrollment_routes(), &self.initialization),
-            operator: bind_routes(photo::operator_routes(), &self.initialization),
+            operator,
             ..AccessRoutes::new()
         }
     }

@@ -97,7 +97,15 @@ The additive migration creates `photo_server_metadata`, `photo_sources` and `pho
 
 Optional absolute `[storage].photo_results` selects a separate result-storage root. By default, the database extension is replaced by `.photo-results` (for example, `/var/lib/natsume-server/natsume.photo-results`). It must not overlap the initialization directory. Startup creates and validates private, service-owned `0700` directories: `uploads/`, `staging/`, `objects/`, and `exports/`. Symlink roots/subdirectories and directories accessible to other users are rejected; startup does not change existing permissions or delete existing files.
 
-The additive result migration creates `photo_import_jobs`, `photo_objects`, `photo_submissions`, and `team_photos`. Pictures belong on disk; these tables hold task facts, verified image metadata, stable submissions, and each team's current photo reference. There is no foreign key into existing accounts or teams, so removed identities can remain pending without blocking roster changes. Existing roster tables are unchanged. ZIP upload, verification, commit/decision, and export APIs are not implemented by this foundation.
+The additive result migration creates `photo_import_jobs`, `photo_objects`, `photo_submissions`, and `team_photos`. Pictures belong on disk; these tables hold task facts, verified image metadata, stable submissions, and each team's current photo reference. There is no foreign key into existing accounts or teams, so removed identities can remain pending without blocking roster changes. Existing roster tables are unchanged.
+
+### Photo result upload
+
+Administrators can `POST /api/v2/photo/imports` with an `application/zip` raw body and query `GET /api/v2/photo/imports/{import_id}` using their Operator session. Uploads use a fixed 64 KiB copy buffer, enforce the actual 8 GiB limit without requiring Content-Length, and record progress after each MiB. Idle reads time out after 30 seconds and an upload has a 15-minute deadline. Files are created exclusively with mode `0600` beneath the retained private directory handle. A 202 response reports `uploaded` only after file/directory sync and the database transition; it does not report signature validation or business acceptance.
+
+One upload operation and one durable unprocessed upload are admitted at a time; capacity rejection returns 503 with Retry-After. Broken/empty inputs clean up their owned partial file and record failure. Actual blocking work holds its permit through completion, HTTP completion remains tracked after caller cancellation, and Server shutdown interrupts stalled input before waiting for cleanup. Upload audit records use distinct Photo import route and target identities.
+
+Package validation, background validation/restart recovery, commit/decision, and photo export remain unimplemented. In this intermediate stage, a successfully uploaded package remains `uploaded` and blocks another package until the later validation stage is implemented; a process crash may leave an `uploading` task requiring that recovery stage. These endpoints are not a complete production import workflow.
 
 ## DOMjudge print admission
 

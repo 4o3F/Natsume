@@ -28,6 +28,7 @@ use crate::{
 type TestResult = Result<(), TestError>;
 
 mod client_interop;
+mod imports;
 mod recovery;
 
 #[tokio::test]

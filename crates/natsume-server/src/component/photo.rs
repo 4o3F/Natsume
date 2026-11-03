@@ -1,11 +1,13 @@
 //! Photo-only enrollment and immutable initialization; no daily online workflow.
 mod db;
 mod enrollment;
+mod imports;
 mod initialization;
 mod results_storage;
 mod storage;
 
 pub(crate) use enrollment::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState};
+pub(crate) use imports::{ImportError, ImportJob, ImportState};
 pub(crate) use initialization::{InitializationError, Preparation, SnapshotDownload};
 
 use std::{
@@ -32,6 +34,8 @@ pub(crate) enum PhotoStorageError {
 pub(crate) struct PhotoComponent {
     database: Database,
     storage: storage::PhotoStore,
+    results: results_storage::ResultsStore,
+    upload_work: Arc<Semaphore>,
     pairing_attempts: Mutex<super::pairing::PairingBudget>,
     snapshot_work: Arc<Semaphore>,
     download_work: Arc<Semaphore>,
@@ -43,14 +47,12 @@ impl PhotoComponent {
         initializations: &Path,
         results: &Path,
     ) -> Result<Self, PhotoStorageError> {
-        results_storage::prepare(results).context(ResultsSnafu)?;
-        Self::new(database, initializations).context(InitializationSnafu)
-    }
-
-    pub(crate) fn new(database: Database, directory: &Path) -> Result<Self, InitializationError> {
+        let results = results_storage::prepare(results).context(ResultsSnafu)?;
         Ok(Self {
             database,
-            storage: storage::PhotoStore::open(directory)?,
+            storage: storage::PhotoStore::open(initializations).context(InitializationSnafu)?,
+            results,
+            upload_work: Arc::new(Semaphore::new(1)),
             pairing_attempts: Mutex::new(super::pairing::PairingBudget::default()),
             snapshot_work: Arc::new(Semaphore::new(1)),
             download_work: Arc::new(Semaphore::new(2)),

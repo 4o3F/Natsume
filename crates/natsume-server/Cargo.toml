@@ -56,7 +56,7 @@ tempfile.workspace = true
 time = { workspace = true, features = ["local-offset"] }
 tokio.workspace = true
 tokio-rustls.workspace = true
-tokio-util = { workspace = true, features = ["time"] }
+tokio-util = { workspace = true, features = ["time", "io", "io-util"] }
 toml.workspace = true
 tower-http.workspace = true
 tracing-opentelemetry.workspace = true

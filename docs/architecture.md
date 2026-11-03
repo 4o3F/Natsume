@@ -2426,7 +2426,9 @@ Client 在创建初始化目录之前取得目标同级排他锁；只有没有�
 
 ### 23.6 成果包、接收与外部图片交付
 
-Server 成果持久化基础采用独立可选配置 `[storage].photo_results`，默认由数据库路径替换扩展名为 `.photo-results`，不能与初始化缓存目录相同或互相包含。启动校验并创建服务账号拥有的 `0700` 根目录及 uploads、staging、objects、exports 子目录，使用目录句柄拒绝根目录或子目录符号链接，不修改已有权限或删除现存文件。新增 photo_import_jobs、photo_objects、photo_submissions、team_photos 四张 Photo 自有表；图片在磁盘，任务、对象元数据、稳定成果及当前关联在数据库。与现有账号不建外键或级联，避免阻碍名单删除并保留失效身份待处理。当前只落地配置、目录及 schema，下面的成果上传／接收／导出流程仍待实现，不以建表完成宣称闭环。
+Server 成果持久化基础采用独立可选配置 `[storage].photo_results`，默认由数据库路径替换扩展名为 `.photo-results`，不能与初始化缓存目录相同或互相包含。启动校验并创建服务账号拥有的 `0700` 根目录及 uploads、staging、objects、exports 子目录，使用目录句柄拒绝根目录或子目录符号链接，不修改已有权限或删除现存文件。新增 photo_import_jobs、photo_objects、photo_submissions、team_photos 四张 Photo 自有表；图片在磁盘，任务、对象元数据、稳定成果及当前关联在数据库。与现有账号不建外键或级联，避免阻碍名单删除并保留失效身份待处理。
+
+当前上传入口为 admin Operator 会话的 `POST /photo/imports`，以 application/zip 请求体经 64 KiB 固定缓冲写盘；可用 `GET /photo/imports/{import_id}` 查询上传事实。实际字节限制 8 GiB，空输入拒绝，空闲读取上限三十秒、整体十五分钟，文件及目录同步且上传状态提交后才返回 202/uploaded。组件持有成果根目录句柄；一次只准入一个上传及一个尚未处理的包，容量拒绝为 503/Retry-After，失败清理只删除本任务独占创建的临时文件。HTTP 沿用 mutation completion，阻塞任务持有容量令牌；关闭信号中断停滞输入，清理和失败状态落库后结束。审计使用独立 PhotoImports/PhotoImport 分类。此阶段尚未实现包验证、后台恢复、接收及导出；uploaded 不表示已验签或已接收，未处理包和崩溃遗留 uploading 会阻止继续准入，不能将此中间阶段当作完整生产流程。
 
 只有确认成品交付。Photo Client 仅首次初始化联网，之后全程离线；Manifest、签名与成品图片组成一个 ZIP，经 Web Panel 一次上传。Server 使用有界流式解压和验证，限制压缩包、条目、解压总量与图像解码资源，不整包加载到内存。成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希，由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
 

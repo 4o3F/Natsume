@@ -5,6 +5,7 @@ use std::{
     fs::{DirBuilder, File},
     os::unix::fs::{DirBuilderExt as _, MetadataExt as _},
     path::Path,
+    sync::Arc,
 };
 
 const DIRECTORY: OFlags = OFlags::RDONLY
@@ -20,7 +21,17 @@ pub(crate) enum ResultsStorageError {
     Io { source: std::io::Error },
 }
 
-pub(super) fn prepare(directory: &Path) -> Result<(), ResultsStorageError> {
+#[derive(Clone)]
+pub(super) struct ResultsStore {
+    root: Arc<File>,
+}
+
+pub(super) struct UploadFile {
+    pub file: File,
+    pub directory: File,
+}
+
+pub(super) fn prepare(directory: &Path) -> Result<ResultsStore, ResultsStorageError> {
     ensure!(directory.is_absolute(), CorruptSnafu);
     match DirBuilder::new().mode(0o700).create(directory) {
         Ok(()) => {}
@@ -49,7 +60,47 @@ pub(super) fn prepare(directory: &Path) -> Result<(), ResultsStorageError> {
     File::open(directory.parent().ok_or_else(|| CorruptSnafu.build())?)
         .context(IoSnafu)?
         .sync_all()
-        .context(IoSnafu)
+        .context(IoSnafu)?;
+    Ok(ResultsStore {
+        root: Arc::new(root),
+    })
+}
+
+impl ResultsStore {
+    pub(super) fn create_upload(&self, id: uuid::Uuid) -> Result<UploadFile, ResultsStorageError> {
+        let directory = checked_directory(File::from(
+            openat(self.root.as_ref(), "uploads", DIRECTORY, Mode::empty())
+                .map_err(std::io::Error::from)
+                .context(IoSnafu)?,
+        ))?;
+        let file = File::from(
+            openat(
+                &directory,
+                format!("{id}.zip").as_str(),
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(std::io::Error::from)
+            .context(IoSnafu)?,
+        );
+        Ok(UploadFile { file, directory })
+    }
+
+    pub(super) fn remove_upload(&self, id: uuid::Uuid) -> Result<(), ResultsStorageError> {
+        let directory = checked_directory(File::from(
+            openat(self.root.as_ref(), "uploads", DIRECTORY, Mode::empty())
+                .map_err(std::io::Error::from)
+                .context(IoSnafu)?,
+        ))?;
+        rustix::fs::unlinkat(
+            &directory,
+            format!("{id}.zip").as_str(),
+            rustix::fs::AtFlags::empty(),
+        )
+        .map_err(std::io::Error::from)
+        .context(IoSnafu)?;
+        directory.sync_all().context(IoSnafu)
+    }
 }
 
 fn checked_directory(file: File) -> Result<File, ResultsStorageError> {
