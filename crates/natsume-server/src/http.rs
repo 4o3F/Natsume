@@ -152,8 +152,6 @@ fn legacy_routes(state: &AppState) -> AccessRoutes {
     let public = [
         handler::health::public_routes(),
         handler::device_control::public_routes(),
-        handler::session::public_routes(),
-        handler::operator::public_routes(state.clone()),
         handler::contest::public_routes(),
         handler::photo::enrollment_routes(),
     ]
@@ -166,10 +164,7 @@ fn legacy_routes(state: &AppState) -> AccessRoutes {
         handler::device::operator_routes(),
         handler::enrollment::operator_routes(),
         handler::import::operator_routes(),
-        handler::provisioning::operator_routes(),
         handler::target_submission::operator_routes(),
-        handler::session::operator_routes(),
-        handler::operator::operator_routes(),
         handler::photo::operator_routes(),
     ]
     .into_iter()

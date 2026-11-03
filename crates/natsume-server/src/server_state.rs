@@ -14,7 +14,6 @@ use crate::{
         photo::PhotoComponent,
         power::PowerControlComponent,
         print::PrintComponent,
-        provisioning::ProvisioningComponent,
         runtime::RuntimeConfigComponent,
         session::SessionControlComponent,
         target_submission::TargetSubmissionComponent,
@@ -23,7 +22,8 @@ use crate::{
     db::Database,
     device_control::{DeviceControl, DeviceControlDependencies},
     feature::{
-        Infra, PrintStorageSnafu, StartupError, journal::JournalFeature, print::PrintFeature,
+        Infra, PrintStorageSnafu, StartupError, journal::JournalFeature, operator::OperatorFeature,
+        print::PrintFeature, provisioning::ProvisioningFeature,
     },
     http::AccessRoutes,
     journal::{Journal, JournalComponent},
@@ -38,7 +38,8 @@ use crate::{
 /// HTTP receives their shared handles; Device Control and actors never depend on
 /// this composition object.
 pub(crate) struct ServerState {
-    /// Shared authentication owner also serving bounded display-name reads.
+    /// Transitional HTTP authentication handle; removed in Step 11.
+    /// Business handlers obtain Operator directly from their feature state.
     operator: Arc<OperatorComponent>,
     /// Transitional handle for HTTP authentication and background startup; removed in Step 11.
     /// Business handlers obtain Print directly from their feature state.
@@ -46,7 +47,6 @@ pub(crate) struct ServerState {
     photo: PhotoComponent,
     contest: ContestComponent,
     import: ImportComponent,
-    provisioning: Arc<ProvisioningComponent>,
     device: Arc<DeviceComponent>,
     /// Shared Binding owner used directly by single-component entrypoints.
     binding: Arc<BindingComponent>,
@@ -147,7 +147,8 @@ impl ServerState {
             journal: emitter,
             lifecycle,
         } = infra;
-        let provisioning = Arc::new(ProvisioningComponent::new());
+        let operator_feature = OperatorFeature::load(database.clone(), emitter.clone());
+        let provisioning_feature = ProvisioningFeature::load();
         let device = Arc::new(DeviceComponent::new(database.clone(), emitter.clone()));
         let binding = Arc::new(BindingComponent::new(
             database.clone(),
@@ -158,7 +159,7 @@ impl ServerState {
         let home = Arc::new(HomeComponent::new(database.clone()));
         let power = Arc::new(PowerControlComponent::new(database.clone()));
         let device_control = Arc::new(DeviceControl::new(DeviceControlDependencies {
-            provisioning: Arc::clone(&provisioning),
+            provisioning: Arc::clone(provisioning_feature.component()),
             device: Arc::clone(&device),
             gateway,
             binding: Arc::clone(&binding),
@@ -169,26 +170,26 @@ impl ServerState {
             journal: emitter.clone(),
             lifecycle: lifecycle.clone(),
         }));
-        let operator = Arc::new(OperatorComponent::new(database.clone(), emitter.clone()));
         let journal_feature = JournalFeature::load(
             journal.reader(),
-            Arc::clone(&operator),
+            Arc::clone(operator_feature.component()),
             device_control.live_lease_view(),
             utc_offset,
         );
         let routes = AccessRoutes::new()
             .merge(journal_feature.routes())
-            .merge(print_feature.routes());
+            .merge(print_feature.routes())
+            .merge(operator_feature.routes())
+            .merge(provisioning_feature.routes());
         let print = Arc::clone(print_feature.component());
         let runtime = ServerRuntime::new(lifecycle.clone(), Arc::clone(&device_control), journal);
         let state = Self {
-            operator,
+            operator: Arc::clone(operator_feature.component()),
             print,
             photo,
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
             target_submission: TargetSubmissionComponent::new(database.clone(), emitter.clone()),
             import: ImportComponent::new(database, vault),
-            provisioning,
             device,
             binding,
             session,
@@ -240,10 +241,6 @@ impl ServerState {
 
     pub(crate) const fn import(&self) -> &ImportComponent {
         &self.import
-    }
-
-    pub(crate) fn provisioning(&self) -> &ProvisioningComponent {
-        &self.provisioning
     }
 
     pub(crate) fn device(&self) -> &DeviceComponent {

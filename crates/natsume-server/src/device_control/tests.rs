@@ -1216,11 +1216,7 @@ async fn cancelled_http_mutation_commits_and_publishes_the_complete_target()
         &credentials.hash_password()?,
     )
     .await?;
-    let application = crate::http::router(
-        Arc::clone(&fixture.state),
-        crate::http::AccessRoutes::new(),
-        std::path::Path::new("/nonexistent/completion-web"),
-    );
+    let application = fixture.application.clone();
     let login = application.clone().oneshot(Request::builder().method("POST").uri("/api/v2/session").header(header::CONTENT_TYPE, "application/json").body(Body::from(serde_json::json!({"login_name":"completion-admin", "password":"completion-password1!"}).to_string()))?).await?;
     assert_eq!(login.status(), StatusCode::OK);
     let cookie = login.headers()[header::SET_COOKIE]
@@ -2174,7 +2170,7 @@ async fn closed_window_allows_manual_enrollment_and_a_complete_target() {
 async fn open_window_automatically_enrolls_without_operator_approval() {
     let mut recorded = journal::RecordedFixture::new().await;
     let fixture = &recorded.fixture;
-    fixture.state.provisioning().open_window();
+    fixture.state.device_control().provisioning.open_window();
     let (mut socket, server) = connect(fixture).await;
     submit_enrollment_proof(&mut socket).await;
     let (_, session_id) = finish_enrollment(&mut socket).await;
@@ -2206,7 +2202,7 @@ async fn open_window_automatically_enrolls_without_operator_approval() {
 #[tokio::test]
 async fn automatic_approval_wait_does_not_block_pending_heartbeats() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window();
+    fixture.state.device_control().provisioning.open_window();
     let approval = fixture
         .state
         .device_control()
@@ -2254,7 +2250,7 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
             .is_empty()
     );
 
-    fixture.state.provisioning().open_window();
+    fixture.state.device_control().provisioning.open_window();
     let (_, session_id) = finish_enrollment(&mut socket).await;
     assert!(
         fixture
@@ -2272,8 +2268,8 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
 #[tokio::test]
 async fn closing_window_restores_manual_review_for_new_connections() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window();
-    fixture.state.provisioning().close_window();
+    fixture.state.device_control().provisioning.open_window();
+    fixture.state.device_control().provisioning.close_window();
     let (mut socket, server) = connect(&fixture).await;
     let session_id = enroll(&fixture, &mut socket).await;
     send_active_heartbeat(&mut socket, &session_id).await;
@@ -2287,7 +2283,7 @@ async fn automatic_key_replacement_evicts_the_old_lease_before_activation_delive
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x72; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
     let (_session_id, _handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
-    fixture.state.provisioning().open_window();
+    fixture.state.device_control().provisioning.open_window();
     let (mut socket, server) = connect(&fixture).await;
     submit_enrollment_proof(&mut socket).await;
     let (_, session_id) = finish_enrollment(&mut socket).await;
@@ -2741,11 +2737,7 @@ async fn connect(fixture: &Fixture) -> (TestSocket, tokio::task::JoinHandle<()>)
     let address = listener
         .local_addr()
         .unwrap_or_else(|error| panic!("test listener address failed: {error}"));
-    let application = crate::http::router(
-        Arc::clone(&fixture.state),
-        crate::http::AccessRoutes::new(),
-        std::path::Path::new("/natsume-wss-test-unused-web-root"),
-    );
+    let application = fixture.application.clone();
     let server = tokio::spawn(async move {
         let _ = axum::serve(
             listener,
@@ -3408,6 +3400,7 @@ struct Fixture {
     database: Database,
     state: Arc<ServerState>,
     runtime: crate::server_runtime::ServerRuntime,
+    application: axum::Router,
 }
 
 impl Fixture {
@@ -3444,15 +3437,25 @@ impl Fixture {
             Some(journal) => fixture.journal(journal),
             None => fixture,
         };
-        let crate::server_state::LoadedServer { state, runtime, .. } = fixture
+        let crate::server_state::LoadedServer {
+            state,
+            runtime,
+            routes,
+        } = fixture
             .build()
             .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}"));
         let state = Arc::new(state);
+        let application = crate::http::router(
+            Arc::clone(&state),
+            routes,
+            std::path::Path::new("/natsume-wss-test-unused-web-root"),
+        );
         Self {
             path,
             database,
             state,
             runtime,
+            application,
         }
     }
 
@@ -3597,7 +3600,7 @@ async fn automatic_approval_failure_is_reported_once_when_activation_wins() {
         .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error))).write(|tx| {
         tx.connection().batch_execute("CREATE TRIGGER reject_activation BEFORE INSERT ON devices BEGIN SELECT RAISE(ABORT, 'automatic activation evidence'); END;").map_err(PersistenceError::from)
     }).await.map_err(crate::db::TransactionError::into_error).unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
-    fixture.state.provisioning().open_window();
+    fixture.state.device_control().provisioning.open_window();
     let (mut socket, server) = connect(fixture).await;
     submit_enrollment_proof(&mut socket).await;
     assert_closed(&mut socket).await;

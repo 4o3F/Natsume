@@ -744,13 +744,13 @@ WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过 `
 
 ```rust
 pub(crate) struct ServerState {
+    // Step 11 删除的过渡句柄，仅供 HTTP 认证使用；业务 handler 直接取得 Operator。
     operator: Arc<OperatorComponent>,
     // Step 11 删除的过渡句柄，供 HTTP 认证与后台任务启动使用。
     print: Arc<PrintComponent>,
     photo: PhotoComponent,
     contest: ContestComponent,
     import: ImportComponent,
-    provisioning: Arc<ProvisioningComponent>,
     device: Arc<DeviceComponent>,
     binding: Arc<BindingComponent>,
     session: Arc<SessionControlComponent>,
@@ -777,6 +777,8 @@ pub(crate) struct ServerRuntime {
 `ServerRuntime` 持有同一 `ServerLifecycle` 的克隆、同一 `Arc<DeviceControl>` 和唯一的 `JournalComponent` writer 所有者，统一执行关闭顺序。HTTP 状态只持有 `Journal` emit 句柄，并通过 `JournalQuery` 使用 reader。Journal 查询由 `feature::journal::JournalFeature` 接收 reader、共享 Operator、`LiveLeaseView` 和时区偏移后组装，handler 直接提取 `State<JournalQuery>`。已绑定查询状态的 operator 路由经 `LoadedServer.routes` 传入 HTTP 组装入口，与旧路由合并后交给 `http::mount`。
 
 Print 由 `feature::print::PrintFeature` 加载唯一的 `Arc<PrintComponent>`，将其绑定到 public、operator、source 和 client 四组路由，经 `LoadedServer.routes` 交给 HTTP 组装入口；handler 和配对限流中间件直接提取 `State<Arc<PrintComponent>>`。后台到期任务入口接收 `&PrintComponent`，与路由及认证共享同一实例。
+
+Operator 由 `feature::operator::OperatorFeature` 构造唯一的 `Arc<OperatorComponent>`，绑定 operator 管理和登录 session 的 public、operator 路由，并与认证层及 Journal 查询共享；`ServerState.operator` 是 Step 11 删除的认证过渡句柄，业务 handler 直接提取 `State<Arc<OperatorComponent>>`。Provisioning 由 `feature::provisioning::ProvisioningFeature` 构造唯一的 `Arc<ProvisioningComponent>`，绑定 operator 路由并把同一共享句柄传给 `DeviceControlDependencies.provisioning`；handler 直接提取 `State<Arc<ProvisioningComponent>>`。
 
 `DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件，以及`Journal` emit句柄和`ServerLifecycle`，并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。它只负责跨组件编排或需要Registry、fence、actor等运行时状态的用例，不为单组件mutation增加一对一转发。HTTP也使用的Provisioning、Device、Binding、Session、Home共享同一`Arc`实例；Gateway、Runtime Config和Power目前只有协调器消费，构造时将Power句柄交给它，`ServerState`不保留无消费者的副本或accessor。分层、调用路径和事件归属统一遵循§10.6。
 
@@ -869,13 +871,13 @@ Database + ServerConfig + startup UtcOffset
       → JournalComponent::start { writer + ServerStarted }
       → Infra { Database + Arc<VaultSession> + Journal emit + lifecycle }
       → ServerState::from_parts
-          → concrete business components { Database / Vault / Journal }
+          → OperatorFeature + ProvisioningFeature + remaining concrete business components { Database / Vault / Journal }
           → Arc<DeviceControl> { concrete dependencies, DeviceRegistry, Journal, lifecycle }
           → JournalFeature { JournalQuery { journal reader, Arc<OperatorComponent>, LiveLeaseView, startup UtcOffset } }
   → LoadedServer
       → Arc<ServerState> { shared handles + Journal emit + lifecycle }
       → ServerRuntime { shared lifecycle + Arc<DeviceControl> + JournalComponent writer }
-      → AccessRoutes { Journal operator routes bound to JournalQuery + Print routes bound to Arc<PrintComponent> }
+      → AccessRoutes { Journal routes bound to JournalQuery + Print / Operator / Provisioning routes bound to their shared Arc }
   → TLS listener
   → background::start_background_tasks(&PrintComponent) { Print attempt expiry }
       → BackgroundTasks { cancellation + JoinSet }
@@ -884,7 +886,7 @@ Database + ServerConfig + startup UtcOffset
           → Device WSS { Arc<DeviceControl> }
 ```
 
-Journal HTTP handler直接持有JournalQuery，Print HTTP handler直接持有共享的Arc<PrintComponent>，尚未迁移的HTTP handler通过组合对象取得各自依赖；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
+Journal HTTP handler直接持有JournalQuery，Print、Operator（含登录 session）和Provisioning HTTP handler直接持有各自组件的共享Arc，尚未迁移的HTTP handler通过组合对象取得各自依赖；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
 
 `ServerRuntime::serve_until`在收到关闭信号或HTTP服务结束后，按以下顺序关闭：
 

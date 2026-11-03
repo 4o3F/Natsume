@@ -269,7 +269,7 @@ async fn session_read_rejects_account_deleted_after_authentication() -> TestResu
         .await?;
     assert_eq!(deletion.status, StatusCode::NO_CONTENT);
     let response = crate::http::handler::session::read_session(
-        axum::extract::State(f.state),
+        axum::extract::State(std::sync::Arc::clone(f.state.operator())),
         axum::Extension(identity),
     )
     .await;

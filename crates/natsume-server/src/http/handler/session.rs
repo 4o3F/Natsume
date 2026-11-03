@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::http::Routes;
 use crate::http::middleware::audit::RequestAudit;
 
@@ -11,15 +13,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::component::operator::OperatorIdentity;
+use crate::component::operator::{OperatorComponent, OperatorIdentity};
 
-use super::super::{AppState, cookie, error::ApiError};
+use super::super::{cookie, error::ApiError};
 
-pub(in crate::http) fn public_routes() -> Routes {
+pub(crate) fn public_routes() -> Routes<Arc<OperatorComponent>> {
     vec![("/session", post(create_session).delete(delete_session))]
 }
 
-pub(in crate::http) fn operator_routes() -> Routes {
+pub(crate) fn operator_routes() -> Routes<Arc<OperatorComponent>> {
     vec![("/session", get(read_session))]
 }
 
@@ -42,14 +44,13 @@ pub(crate) struct SessionResponse {
 
 pub(in crate::http) async fn create_session(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     request: Request,
 ) -> Response {
     let Ok(Json(request)) = Json::<SessionRequest>::from_request(request, &state).await else {
         return ApiError::invalid_request("session_request_body_rejected").into_response();
     };
     let signed_in = match state
-        .operator()
         .sign_in(&request.login_name, request.password, audit.context())
         .await
     {
@@ -69,7 +70,7 @@ pub(in crate::http) async fn create_session(
 }
 
 pub(crate) async fn read_session(
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     Extension(identity): Extension<OperatorIdentity>,
 ) -> Response {
     identity_response(&state, identity, None).await
@@ -77,12 +78,11 @@ pub(crate) async fn read_session(
 
 pub(in crate::http) async fn delete_session(
     Extension(audit): Extension<RequestAudit>,
-    State(state): State<AppState>,
+    State(state): State<Arc<OperatorComponent>>,
     headers: HeaderMap,
 ) -> Response {
     let response = match cookie::session_credential(&headers) {
         Ok(wire_credential) => match state
-            .operator()
             .terminate_session(wire_credential, audit.context())
             .await
         {
@@ -101,11 +101,11 @@ pub(in crate::http) async fn delete_session(
 }
 
 async fn identity_response(
-    state: &AppState,
+    state: &Arc<OperatorComponent>,
     identity: OperatorIdentity,
     session_cookie: Option<HeaderValue>,
 ) -> Response {
-    let username = match state.operator().session_username(identity).await {
+    let username = match state.session_username(identity).await {
         Ok(username) => username,
         Err(error) => return ApiError::from_operator(error).into_response(),
     };

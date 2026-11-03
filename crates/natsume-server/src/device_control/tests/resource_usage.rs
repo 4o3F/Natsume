@@ -196,11 +196,7 @@ async fn run_mixed_probe() -> ProbeResult {
     )
     .await?;
     let address = listener.local_addr()?;
-    let application = crate::http::router(
-        Arc::clone(&fixture.state),
-        crate::http::AccessRoutes::new(),
-        std::path::Path::new("/nonexistent-resource-probe-web"),
-    );
+    let application = fixture.application.clone();
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         axum::serve(

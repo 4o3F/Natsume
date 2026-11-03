@@ -826,7 +826,8 @@ async fn new_methods_inherit_each_groups_authentication_without_an_opt_in_wrappe
         source: vec![("/new-source", post(|| async { StatusCode::NO_CONTENT }))],
         client: vec![("/new-client", post(|| async { StatusCode::NO_CONTENT }))],
         ..AccessRoutes::new()
-    };
+    }
+    .merge(loaded.routes);
     let application = mount(
         routes,
         state.operator().clone(),

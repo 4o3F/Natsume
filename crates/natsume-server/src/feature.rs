@@ -1,7 +1,9 @@
 //! Server composition layer; future `<Name>Feature` types belong in `feature/` submodules.
 
 pub(crate) mod journal;
+pub(crate) mod operator;
 pub(crate) mod print;
+pub(crate) mod provisioning;
 
 use std::sync::Arc;
 
