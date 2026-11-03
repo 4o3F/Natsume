@@ -47,7 +47,7 @@ runs:
 
     - name: Setup pnpm 12
       if: inputs.module == 'server' || inputs.module == 'web'
-      uses: pnpm/action-setup@v6.1.0
+      uses: pnpm/action-setup@v6.1.1
       with:
         version: "12"
         package_json_file: web/package.json
