@@ -88,7 +88,7 @@ image = { version = "0.25.10", default-features = false, features = [
 ] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 inquire = { version = "0.9.4", default-features = false, features = ["crossterm", "date"] }
-resvg = { version = "0.48", default-features = false, features = [
+resvg = { version = "0.49", default-features = false, features = [
   "text",
   "system-fonts",
   "raster-images"
