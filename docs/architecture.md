@@ -2428,6 +2428,14 @@ Client 在创建初始化目录之前取得目标同级排他锁；只有没有�
 
 只有确认成品交付。Photo Client 仅首次初始化联网，之后全程离线；Manifest、签名与成品图片组成一个 ZIP，经 Web Panel 一次上传。Server 使用有界流式解压和验证，限制压缩包、条目、解压总量与图像解码资源，不整包加载到内存。成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希，由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
 
+首期成果契约位于 `natsume-photo-protocol::results`。`manifest.json` 是封闭字段的 `{ "manifest": { ... }, "signature": "..." }` 信封；manifest 包含数值 `format_version: 1`、仅允许 `team_results` 的 kind、manifest_id、context、signing_public_key 和 results。context 使用现有 source_id、dataset_id、initialization_id 及初始化原始 JSON 的 initialization_sha256，不另造同义身份。results 每项包含持久化 result_id、submission_id、account_id、外部 account、image_sha256、image_bytes、image_format（jpeg/png）、width、height；不包含本地路径、座位、原片、凭据或默认图片用途。
+
+签名输入为 UTF-8 领域前缀 `Natsume/Photo/team-results/v1`、一个零字节，再拼接 RFC 8785 JCS 编码的完整 manifest 对象；Ed25519 签名编码为 128 个小写十六进制字符。JSON 属性按 JCS 规则规范化，results 数组按 account_id 的 UTF-8 字节序严格升序；不在验签时重排数组或修剪账号。未知／重复 JSON 字段、重复队伍／外部 account／result_id／submission_id 整体拒绝。验签必须对照外部可信的初始化上下文和登记公钥，不能把信封中自带的公钥当成来源授权。
+
+输入 Manifest 在解析前限制为 4 MiB、1～2000 项。单图非零且最多 50 MiB、最多 8000 万像素；相同哈希的格式、尺寸和字节数必须一致，文件路径只由哈希和封闭格式生成 `images/<sha256>.jpg/png`。完整 ZIP 与累计解压总量分别最多 8 GiB，最多 2001 个文件条目，目录元数据最多 4 MiB；清单按去重后图片字节累计，并在 8 GiB 中预留 4 MiB Manifest 和 4 MiB ZIP 元数据。归档写入／接收仍须检查实际字节，协议预算不代替流式计数、实际图片校验或来源状态检查。
+
+相同 manifest_id 的业务内容必须固定；同一成果重复导出沿用已经持久化的 result_id、submission_id，补拍成功产生新身份。Client 导出前固定当前成果及读取句柄，记录非秘密内容指纹与 Manifest 身份以供重试；完整关包并安全发布后才报告本地导出成功。签名不证明现场实际呈现或选手满意，Client 导出成功也不表示 Server 已接收。
+
 先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值， 显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理， 其他有效项继续接收，不按队名、校名或复用账号猜测 identity。 人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。
 
 Server 管理当前成品和待处理候选，不做原片云盘、全量历史、历史回滚或协作编辑。 签名成果包与按 `TeamID.jpg/png` 的外部图片交付不同：Client 导出自身成果，Server 汇总当前成品。 现有导出以 `account` 为外部 Team ID，内部队伍身份沿用 `account_id`，不是座位号或新 UUID。 实际 DOMjudge／Pyrite 的 ID、扩展名与路径仍需核对；检测 Windows 保留名、大小写冲突等， 不能静默改名、覆盖或漏图后声称成功。成品方向、尺寸、格式与元数据策略在确认前确定。

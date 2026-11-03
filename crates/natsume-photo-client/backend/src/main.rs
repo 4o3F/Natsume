@@ -1,4 +1,10 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 use std::process::ExitCode;
+
+#[cfg(windows)]
+#[path = "../../ui/mod.rs"]
+mod gui;
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt().with_target(false).init();
@@ -21,10 +27,13 @@ mod application {
     use std::{path::PathBuf, process::ExitCode};
 
     #[derive(clap::Parser)]
-    #[command(version, about = "Natsume Photo Client offline photography backend")]
+    #[command(
+        version,
+        about = "Natsume Photo Client offline photography workstation"
+    )]
     struct Arguments {
         #[command(subcommand)]
-        command: Command,
+        command: Option<Command>,
     }
     #[derive(clap::Subcommand)]
     enum Command {
@@ -38,9 +47,17 @@ mod application {
         },
         /// Validate local workspace data and authorization without contacting Server.
         Doctor { path: PathBuf },
+        /// Export current confirmed photos to one signed ZIP without contacting Server.
+        Export { path: PathBuf, output: PathBuf },
     }
     #[derive(Debug, Snafu)]
     enum Error {
+        #[snafu(display("Photo window could not run: {source}"))]
+        Gui { source: super::gui::Error },
+        #[snafu(display("offline Photo export failed: {source}"))]
+        Export {
+            source: natsume_photo_client::export::ExportError,
+        },
         #[snafu(display("Photo command blocking task failed"))]
         Worker { source: tokio::task::JoinError },
         #[snafu(display("invalid command arguments; use --help"))]
@@ -60,6 +77,14 @@ mod application {
     }
     async fn execute(command: Command) -> Result<(), Error> {
         match command {
+            Command::Export { path, output } => {
+                let workspace = natsume_photo_client::workspace::Workspace::open(&path)
+                    .await
+                    .context(WorkspaceSnafu)?;
+                natsume_photo_client::export::export_results(&workspace, &output, &VaultSecrets)
+                    .await
+                    .context(ExportSnafu)?;
+            }
             Command::Initialize {
                 path,
                 server,
@@ -131,9 +156,13 @@ mod application {
     pub(super) fn run() -> ExitCode {
         let result = (|| {
             let arguments = Arguments::try_parse().context(ArgumentsSnafu)?;
-            tokio::runtime::Runtime::new()
-                .context(RuntimeSnafu)?
-                .block_on(execute(arguments.command))
+            if let Some(command) = arguments.command {
+                tokio::runtime::Runtime::new()
+                    .context(RuntimeSnafu)?
+                    .block_on(execute(command))
+            } else {
+                super::gui::run().context(GuiSnafu)
+            }
         })();
         match result {
             Ok(()) => ExitCode::SUCCESS,

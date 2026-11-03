@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf, time::Duration};
 
 use crate::capture_session::CaptureSession;
 use crate::{
-    capture_session::{Error as HotFolderError, HotFolderSnapshot, IngestionState},
+    capture_session::{Error as HotFolderError, HotFolderSnapshot, IngestionState, PhotoCandidate},
     roster::Roster,
     workspace::Workspace,
 };
@@ -16,15 +16,268 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Snafu)]
 enum Error {
-    Io { source: std::io::Error },
-    Roster { source: crate::roster::Error },
-    Workspace { source: crate::workspace::Error },
-    HotFolder { source: HotFolderError },
-    Image { source: image::ImageError },
+    Time {
+        source: chrono::ParseError,
+    },
+    Io {
+        source: std::io::Error,
+    },
+    Roster {
+        source: crate::roster::Error,
+    },
+    Workspace {
+        source: crate::workspace::Error,
+    },
+    HotFolder {
+        source: HotFolderError,
+    },
+    Image {
+        source: image::ImageError,
+    },
+    Candidate {
+        source: crate::capture_session::CandidateError,
+    },
+    Database {
+        source: diesel::ConnectionError,
+    },
+    Query {
+        source: diesel::result::Error,
+    },
     Timeout,
     Fixture,
 }
+
+fn write_timed_png(path: &std::path::Path, time: &[u8]) -> Result<()> {
+    let modified =
+        chrono::NaiveDateTime::parse_from_str(&String::from_utf8_lossy(time), "%Y:%m:%d %H:%M:%S")
+            .context(TimeSnafu)?
+            .and_utc();
+    image::RgbImage::from_pixel(8, 6, image::Rgb([30; 3]))
+        .save(path)
+        .context(ImageSnafu)?;
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .context(IoSnafu)?;
+    file.set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::from(modified)))
+        .context(IoSnafu)
+}
+
+#[tokio::test]
+async fn candidate_selection_uses_file_time_and_resumes_latest_on_new_images() -> Result {
+    use crate::capture_session::{CandidateSelection, PhotoTimeSource};
+    let fixture = fixture().await?;
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
+        .await
+        .context(HotFolderSnafu)?;
+    folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+    let group = folder.start_group().await.context(HotFolderSnafu)?;
+    assert_eq!(
+        folder.snapshot().context(HotFolderSnafu)?.selection,
+        CandidateSelection::Automatic { photo_id: None }
+    );
+
+    write_timed_png(&fixture.hot.join("new.png"), b"2026:10:31 10:00:02")?;
+    let snapshot = wait(&folder, |s| {
+        s.candidates().count() == 1 && s.pending_tasks == 0
+    })
+    .await?;
+    let newer = snapshot.selection.photo_id().context(FixtureSnafu)?;
+    assert_eq!(
+        snapshot
+            .candidates()
+            .next()
+            .context(FixtureSnafu)?
+            .captured_at()
+            .source(),
+        PhotoTimeSource::FileModified
+    );
+
+    // This older exposure finishes processing later; it must not steal selection.
+    write_timed_png(&fixture.hot.join("old.png"), b"2026:10:31 10:00:01")?;
+    let snapshot = wait(&folder, |s| {
+        s.candidates().count() == 2 && s.pending_tasks == 0
+    })
+    .await?;
+    assert_eq!(snapshot.selection.photo_id(), Some(newer));
+    let older = snapshot
+        .candidates()
+        .last()
+        .context(FixtureSnafu)?
+        .photo_id();
+    folder
+        .select_candidate(group, older)
+        .await
+        .context(HotFolderSnafu)?;
+    assert_eq!(
+        folder.snapshot().context(HotFolderSnafu)?.selection,
+        CandidateSelection::Manual { photo_id: older }
+    );
+
+    write_timed_png(&fixture.hot.join("latest.png"), b"2026:10:31 10:00:03")?;
+    let snapshot = wait(&folder, |s| {
+        s.candidates().count() == 3 && s.pending_tasks == 0
+    })
+    .await?;
+    let latest = snapshot
+        .candidates()
+        .next()
+        .context(FixtureSnafu)?
+        .photo_id();
+    assert_eq!(
+        snapshot.selection,
+        CandidateSelection::Automatic {
+            photo_id: Some(latest)
+        }
+    );
+    assert!(matches!(
+        folder.select_candidate(group, uuid::Uuid::now_v7()).await,
+        Err(HotFolderError::CandidateUnavailable)
+    ));
+    assert_eq!(
+        folder
+            .snapshot()
+            .context(HotFolderSnafu)?
+            .selection
+            .photo_id(),
+        Some(latest)
+    );
+    folder
+        .use_latest_candidate(group)
+        .await
+        .context(HotFolderSnafu)?;
+    assert_eq!(
+        folder.snapshot().context(HotFolderSnafu)?.selection,
+        CandidateSelection::Automatic {
+            photo_id: Some(latest)
+        }
+    );
+
+    folder.abandon_group(group).await.context(HotFolderSnafu)?;
+    folder.shutdown().await.context(HotFolderSnafu)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn candidate_selection_rejects_previous_groups_and_resets_manual_mode() -> Result {
+    use crate::capture_session::CandidateSelection;
+    let fixture = fixture().await?;
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
+        .await
+        .context(HotFolderSnafu)?;
+    folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+    let group = folder.start_group().await.context(HotFolderSnafu)?;
+    write_timed_png(&fixture.hot.join("one.png"), b"2026:10:31 10:00:00")?;
+    let state = wait(&folder, |s| {
+        s.candidates().count() == 1 && s.pending_tasks == 0
+    })
+    .await?;
+    let older = state.selection.photo_id().context(FixtureSnafu)?;
+
+    folder
+        .select_candidate(group, older)
+        .await
+        .context(HotFolderSnafu)?;
+    folder.abandon_group(group).await.context(HotFolderSnafu)?;
+    folder.select_team(TEAM_B).await.context(HotFolderSnafu)?;
+    let next = folder.start_group().await.context(HotFolderSnafu)?;
+    assert_eq!(
+        folder.snapshot().context(HotFolderSnafu)?.selection,
+        CandidateSelection::Automatic { photo_id: None }
+    );
+    assert!(matches!(
+        folder.select_candidate(group, older).await,
+        Err(HotFolderError::CandidateUnavailable)
+    ));
+    assert!(matches!(
+        folder.select_candidate(next, older).await,
+        Err(HotFolderError::CandidateUnavailable)
+    ));
+    assert!(matches!(
+        folder.use_latest_candidate(group).await,
+        Err(HotFolderError::CandidateUnavailable)
+    ));
+    folder.abandon_group(next).await.context(HotFolderSnafu)?;
+    folder.shutdown().await.context(HotFolderSnafu)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn equal_capture_times_have_a_stable_identity_order() -> Result {
+    let fixture = fixture().await?;
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
+        .await
+        .context(HotFolderSnafu)?;
+    folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+    let group = folder.start_group().await.context(HotFolderSnafu)?;
+    write_timed_png(&fixture.hot.join("one.png"), b"2026:10:31 10:00:00")?;
+    write_timed_png(&fixture.hot.join("two.png"), b"2026:10:31 10:00:00")?;
+    let state = wait(&folder, |s| {
+        s.candidates().count() == 2 && s.pending_tasks == 0
+    })
+    .await?;
+    let actual: Vec<_> = state.candidates().map(PhotoCandidate::photo_id).collect();
+    let mut sorted = actual.clone();
+    sorted.sort_unstable_by(|left, right| right.cmp(left));
+    assert_eq!(actual, sorted);
+    assert_eq!(state.selection.photo_id(), actual.first().copied());
+    assert_eq!(
+        folder
+            .snapshot()
+            .context(HotFolderSnafu)?
+            .candidates()
+            .map(PhotoCandidate::photo_id)
+            .collect::<Vec<_>>(),
+        actual
+    );
+    folder.abandon_group(group).await.context(HotFolderSnafu)?;
+    folder.shutdown().await.context(HotFolderSnafu)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fallback_time_comes_from_the_source_version_not_the_archive_creation() -> Result {
+    use crate::capture_session::PhotoTimeSource;
+    use image::ImageEncoder as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let fixture = fixture().await?;
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
+        .await
+        .context(HotFolderSnafu)?;
+    folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+    let group = folder.start_group().await.context(HotFolderSnafu)?;
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0)
+        .open(fixture.hot.join("no-exif.png"))
+        .context(IoSnafu)?;
+    image::codecs::png::PngEncoder::new(&file)
+        .write_image(&[0; 12], 2, 2, image::ExtendedColorType::Rgb8)
+        .context(ImageSnafu)?;
+    let modified = std::time::UNIX_EPOCH + Duration::from_secs(1_000);
+    file.set_times(fs::FileTimes::new().set_modified(modified))
+        .context(IoSnafu)?;
+    drop(file);
+    let state = wait(&folder, |s| {
+        s.candidates().count() == 1 && s.pending_tasks == 0
+    })
+    .await?;
+    let candidate = state.candidates().next().context(FixtureSnafu)?;
+    assert_eq!(candidate.captured_at().instant(), modified);
+    assert_eq!(
+        candidate.captured_at().source(),
+        PhotoTimeSource::FileModified
+    );
+    assert_eq!(state.photos[0].modified, modified);
+    folder.abandon_group(group).await.context(HotFolderSnafu)?;
+    folder.shutdown().await.context(HotFolderSnafu)?;
+    Ok(())
+}
 type Result<T = ()> = std::result::Result<T, Error>;
+
+#[path = "presentation_session.rs"]
+mod presentation_tests;
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -144,7 +397,10 @@ async fn real_native_notifications_and_automatic_archive_preserve_source_and_dat
     let group = folder.start_group().await.context(HotFolderSnafu)?;
     let path = fixture.hot.join("真实照片.PNG");
     image::RgbImage::new(8, 6).save(&path).context(ImageSnafu)?;
-    let state = wait(&folder, |state| state.photos.len() == 1).await?;
+    let state = wait(&folder, |state| {
+        state.photos.len() == 1 && state.photo_checks.len() == 1
+    })
+    .await?;
     // WinRT coalesces notifications and may miss the first immediate change.
     // Verify archival independently, then require a real notification from a
     // bounded sequence of subsequent changes (these files are never imported).
@@ -169,6 +425,28 @@ async fn real_native_notifications_and_automatic_archive_preserve_source_and_dat
         "native notifications must reach the ingestion worker"
     );
     let photo = &state.photos[0];
+    assert_eq!(state.photo_checks[0].photo_id(), photo.id);
+    let candidate = state.candidates().next().context(FixtureSnafu)?;
+    assert_eq!(candidate.photo_id(), photo.id);
+    assert!(candidate.image().path().is_file());
+    assert!(candidate.thumbnail().path().is_file());
+    assert!(
+        candidate
+            .image()
+            .path()
+            .starts_with(fixture.workspace.root())
+    );
+    assert_eq!(
+        state.photo_checks[0]
+            .result()
+            .map(crate::capture_session::PhotoCandidate::source_dimensions)
+            .ok(),
+        Some(crate::capture_session::PhotoDimensions {
+            width: 8,
+            height: 6,
+            format: crate::capture_session::PhotoFormat::Png,
+        })
+    );
     assert_eq!(photo.group_id, Some(group));
     assert_eq!(photo.source.file_name(), path.file_name());
     assert_eq!(state.account_id.as_deref(), Some(TEAM_A));
@@ -183,6 +461,96 @@ async fn real_native_notifications_and_automatic_archive_preserve_source_and_dat
     folder.shutdown().await.context(HotFolderSnafu)?;
     assert!(path.is_file());
     assert!(photo.path.is_file());
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_photos_do_not_block_valid_decodes_and_checks_are_scoped_to_the_active_group()
+-> Result {
+    use crate::capture_session::PhotoValidationError;
+
+    let fixture = fixture().await?;
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
+        .await
+        .context(HotFolderSnafu)?;
+    folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+    let group_a = folder.start_group().await.context(HotFolderSnafu)?;
+    let bad = fixture.hot.join("broken.jpg");
+    fs::write(&bad, b"not a real JPEG").context(IoSnafu)?;
+    let good = fixture.hot.join("valid.png");
+    image::RgbImage::new(4, 3).save(&good).context(ImageSnafu)?;
+    let state = wait(&folder, |state| {
+        state.photo_checks.len() == 2 && state.pending_tasks == 0
+    })
+    .await?;
+    assert!(!state.paused);
+    assert_eq!(state.candidates().count(), 1);
+    assert_eq!(
+        state
+            .photo_checks
+            .iter()
+            .filter(|check| check.result().is_ok())
+            .count(),
+        1
+    );
+    assert_eq!(
+        state
+            .photo_checks
+            .iter()
+            .filter(|check| matches!(check.result(), Err(PhotoValidationError::Format)))
+            .count(),
+        1
+    );
+    assert!(
+        state
+            .photos
+            .iter()
+            .all(|photo| photo.group_id == Some(group_a))
+    );
+    folder
+        .abandon_group(group_a)
+        .await
+        .context(HotFolderSnafu)?;
+    assert!(
+        folder
+            .snapshot()
+            .context(HotFolderSnafu)?
+            .photo_checks
+            .is_empty()
+    );
+    folder.select_team(TEAM_B).await.context(HotFolderSnafu)?;
+    let group_b = folder.start_group().await.context(HotFolderSnafu)?;
+    assert!(
+        folder
+            .snapshot()
+            .context(HotFolderSnafu)?
+            .photo_checks
+            .is_empty()
+    );
+    let next = fixture.hot.join("next.png");
+    image::RgbImage::new(2, 2).save(&next).context(ImageSnafu)?;
+    let state = wait(&folder, |state| {
+        state.photo_checks.len() == 1 && state.pending_tasks == 0
+    })
+    .await?;
+    let check = &state.photo_checks[0];
+    assert!(check.result().is_ok());
+    assert_eq!(
+        state
+            .photos
+            .iter()
+            .find(|photo| photo.id == check.photo_id())
+            .context(FixtureSnafu)?
+            .group_id,
+        Some(group_b)
+    );
+    assert_eq!(fs::read(&bad).context(IoSnafu)?, b"not a real JPEG");
+    assert!(good.is_file() && next.is_file());
+    folder
+        .abandon_group(group_b)
+        .await
+        .context(HotFolderSnafu)?;
+    folder.shutdown().await.context(HotFolderSnafu)?;
     Ok(())
 }
 
@@ -224,66 +592,53 @@ async fn segmented_windows_write_blocks_group_closure_until_writer_closes() -> R
 }
 
 #[tokio::test]
-async fn arrivals_without_group_and_reused_path_across_groups_stay_for_review() -> Result {
+async fn arrivals_without_group_and_reused_path_never_enter_the_next_group() -> Result {
     let fixture = fixture().await?;
     let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     let waiting = fixture.hot.join("before-selection.jpg");
     fs::write(&waiting, b"unknown team").context(IoSnafu)?;
-    let initial = wait(&folder, |state| state.photos.len() == 1).await?;
-    assert!(initial.photos[0].group_id.is_none());
     folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
     let first = folder.start_group().await.context(HotFolderSnafu)?;
-    folder
-        .assign_reviewed(initial.photos[0].id, first)
-        .await
-        .context(HotFolderSnafu)?;
-    assert!(
-        folder
-            .assign_reviewed(initial.photos[0].id, first)
-            .await
-            .is_err()
-    );
     let reused = fixture.hot.join("same-name.jpg");
     fs::write(&reused, b"first group").context(IoSnafu)?;
-    wait(&folder, |state| state.photos.len() == 2).await?;
+    wait(&folder, |state| {
+        state.photos.len() == 1 && state.pending_tasks == 0
+    })
+    .await?;
     folder.abandon_group(first).await.context(HotFolderSnafu)?;
-    // A file physically present before starting the next group is found by the
-    // boundary reconciliation even if native notification delivery is delayed.
     fs::write(fixture.hot.join("between.jpg"), b"late arrival").context(IoSnafu)?;
     folder.select_team(TEAM_B).await.context(HotFolderSnafu)?;
     let second = folder.start_group().await.context(HotFolderSnafu)?;
     fs::write(&reused, b"overwritten across boundary").context(IoSnafu)?;
-    let state = wait(&folder, |state| state.photos.len() == 4).await?;
+    fs::write(fixture.hot.join("new-team.jpg"), b"second group").context(IoSnafu)?;
+    let state = wait(&folder, |state| {
+        state.photos.len() == 2 && state.pending_tasks == 0
+    })
+    .await?;
     assert_eq!(
         state
             .photos
             .iter()
             .filter(|photo| photo.group_id == Some(first))
             .count(),
-        2
+        1
     );
     assert_eq!(
         state
             .photos
             .iter()
-            .filter(|photo| photo.group_id.is_none())
+            .filter(|photo| photo.group_id == Some(second))
             .count(),
-        2
+        1
     );
-    assert!(
-        state
-            .photos
-            .iter()
-            .all(|photo| photo.group_id != Some(second))
+    assert!(state.photos.iter().all(|photo| photo.group_id.is_some()));
+    assert!(waiting.is_file());
+    assert_eq!(
+        fs::read(reused).context(IoSnafu)?,
+        b"overwritten across boundary"
     );
-    for photo in state.photos.iter().filter(|photo| photo.group_id.is_none()) {
-        folder
-            .assign_reviewed(photo.id, second)
-            .await
-            .context(HotFolderSnafu)?;
-    }
     Ok(())
 }
 
@@ -326,8 +681,7 @@ async fn archive_failure_pauses_and_automatic_retry_keeps_group_identity() -> Re
 }
 
 #[tokio::test]
-async fn removed_monitor_directory_pauses_then_rewatches_and_quarantines_uncertain_files() -> Result
-{
+async fn removed_monitor_directory_recovers_without_importing_uncertain_files() -> Result {
     let fixture = fixture().await?;
     let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
@@ -346,13 +700,13 @@ async fn removed_monitor_directory_pauses_then_rewatches_and_quarantines_uncerta
         b"uncertain owner",
     )
     .context(IoSnafu)?;
-    let state = wait(&folder, |state| !state.paused && state.photos.len() == 1).await?;
+    let state = wait(&folder, |state| !state.paused && state.pending_tasks == 0).await?;
     assert_eq!(state.group_id, Some(group));
-    assert!(state.photos[0].group_id.is_none());
-    folder
-        .assign_reviewed(state.photos[0].id, group)
-        .await
-        .context(HotFolderSnafu)?;
+    assert!(state.photos.is_empty());
+    fs::write(fixture.hot.join("after-recovery.jpg"), b"known owner").context(IoSnafu)?;
+    let state = wait(&folder, |state| state.photos.len() == 1).await?;
+    assert_eq!(state.photos[0].group_id, Some(group));
+    assert!(fixture.hot.join("during-disconnect.png").is_file());
     Ok(())
 }
 
@@ -394,6 +748,8 @@ async fn unknown_extensions_are_not_imported_but_remain_in_source_folder() -> Re
     let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
+    folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+    folder.start_group().await.context(HotFolderSnafu)?;
     fs::write(fixture.hot.join("camera.raw"), b"raw bytes").context(IoSnafu)?;
     fs::write(fixture.hot.join("supported.jpeg"), b"jpeg input").context(IoSnafu)?;
     let state = wait(&folder, |state| state.photos.len() == 1).await?;
@@ -447,8 +803,7 @@ async fn worker_reports_deleted_and_renamed_pending_sources_without_stalling() -
         assert_eq!(loss.missing_sources[0].group_id, Some(group));
         assert_eq!(loss.pending_tasks, 0);
         if rename {
-            let archived = wait(&folder, |s| s.photos.len() == 1).await?;
-            assert!(archived.photos[0].group_id.is_none());
+            assert!(folder.snapshot().context(HotFolderSnafu)?.photos.is_empty());
             assert!(renamed.is_file());
         }
         folder.abandon_group(group).await.context(HotFolderSnafu)?;

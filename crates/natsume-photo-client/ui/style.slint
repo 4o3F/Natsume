@@ -1,0 +1,177 @@
+export global Palette {
+    out property <color> paper: #f4f3ef;
+    out property <color> ink: #111111;
+    out property <color> muted: #5a5a5a;
+    out property <color> rule: #d6d4ce;
+    out property <color> signal: #e2231a;
+    out property <color> ok: #0b7a3e;
+    out property <color> warn: #c77700;
+    out property <color> error: #b00020;
+}
+
+export component Label inherits Text {
+    color: Palette.ink;
+    font-size: 14px;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+export component Eyebrow inherits Label {
+    color: Palette.muted;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    height: 16px;
+}
+
+export component Title inherits Label {
+    font-size: 40px;
+    font-weight: 700;
+    height: 52px;
+}
+
+export component Rule inherits Rectangle {
+    background: Palette.rule;
+    height: 1px;
+}
+
+export component Action inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    in property <string> reason;
+    in property <bool> signal;
+    in property <bool> outline;
+    callback clicked;
+    height: 40px;
+    min-width: 90px;
+    border-width: 2px;
+    border-color: root.reason != "" ? Palette.rule : root.signal ? Palette.signal : Palette.ink;
+    background: root.reason != "" ? #e1dfda : root.outline && !touch.has-hover ? transparent : root.signal ? (touch.has-hover ? #c71d15 : Palette.signal) : Palette.ink;
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 16px; spacing: 16px;
+        Label { text: root.text; horizontal-alignment: center; font-weight: 700; color: root.reason != "" ? Palette.muted : root.outline && !touch.has-hover ? Palette.ink : Palette.paper; }
+        if root.hint != "": Label { text: root.hint; font-family: "Cascadia Mono"; font-size: 12px; color: root.reason != "" ? Palette.muted : root.outline && !touch.has-hover ? Palette.muted : #aaaaaa; horizontal-stretch: 0; }
+    }
+    touch := TouchArea { enabled: root.reason == ""; clicked => { root.clicked(); } }
+}
+
+export component ProgressPanel inherits Rectangle {
+    in property <int> step;
+    in property <float> value;
+    in property <bool> known;
+    in property <string> label;
+    in property <string> count;
+    height: 100px;
+    VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout { height: 24px; Label { text: root.label; font-weight: 700; } Label { text: root.count; horizontal-alignment: right; color: Palette.muted; font-family: "Cascadia Mono"; } }
+        HorizontalLayout {
+            spacing: 12px; height: 48px;
+            for title[i] in ["准备", "处理", "校验", "完成"]: VerticalLayout {
+                spacing: 8px;
+                Rectangle {
+                    height: 8px; background: i < root.step ? Palette.ok : i == root.step ? #e2231a33 : transparent;
+                    border-width: i > root.step ? 1px : 0px; border-color: Palette.rule;
+                    Rectangle {
+                        x: 0px; y: 0px; clip: true; height: parent.height;
+                        width: i < root.step ? parent.width : i == root.step ? parent.width * (root.known ? root.value : 1.0) : 0px;
+                        background: i < root.step ? Palette.ok : Palette.signal;
+                        for stripe in 80: Path { x: stripe * 12px; width: 12px; height: 8px; commands: "M 0 0 L 4 0 L 12 8 L 8 8 Z"; fill: #ffffff44; }
+                        animate width { duration: 150ms; }
+                    }
+                }
+                Label { text: "0" + (i + 1) + "  " + title; height: 24px; font-size: 12px; font-weight: i == root.step ? 700 : 400; color: i == root.step ? Palette.ink : Palette.muted; }
+            }
+        }
+    }
+}
+
+export component PairDigit inherits Rectangle {
+    in property <string> character;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback edited(string);
+    callback navigate(string);
+    callback activated;
+    width: 48px; height: 56px;
+    border-width: 2px;
+    border-color: !root.enabled ? Palette.rule : input.has-focus ? Palette.signal : Palette.ink;
+    background: root.enabled ? white : #d6d4ce66;
+    changed active => { if root.active { input.focus(); input.select-all(); } }
+    changed character => { input.text = root.character; }
+    input := TextInput {
+        width: parent.width; height: parent.height;
+        text: root.character;
+        enabled: root.enabled;
+        font-family: "Cascadia Mono"; font-size: 28px; font-weight: 700;
+        color: Palette.ink;
+        horizontal-alignment: center; vertical-alignment: center;
+        changed has-focus => { if self.has-focus { root.activated(); self.select-all(); } }
+        edited => { root.edited(self.text); self.text = root.character; }
+        key-pressed(event) => {
+            if event.text == Key.Backspace || event.text == Key.LeftArrow || event.text == Key.RightArrow {
+                root.navigate(event.text);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> secret;
+    in property <bool> enabled: true;
+    callback edited(string);
+    border-width: 2px;
+    border-color: input.has-focus ? Palette.signal : Palette.ink;
+    background: white;
+    height: 40px;
+    input := TextInput {
+        x: 12px; width: parent.width - 24px; height: parent.height;
+        text <=> root.text;
+        enabled: root.enabled;
+        input-type: root.secret ? InputType.password : InputType.text;
+        color: Palette.ink;
+        font-size: 14px;
+        vertical-alignment: center;
+        edited => { root.edited(self.text); }
+    }
+    if root.text == "": Label { x: 12px; width: parent.width - 24px; height: parent.height; text: root.placeholder; color: #999999; }
+}
+
+export component FormRow inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    height: 96px;
+    HorizontalLayout {
+        padding-top: 24px; padding-bottom: 24px; spacing: 24px;
+        VerticalLayout {
+            width: 32%; spacing: 4px;
+            Label { text: root.label; font-size: 16px; font-weight: 700; height: 24px; }
+            Label { text: root.hint; color: Palette.muted; font-size: 12px; wrap: word-wrap; height: 40px; }
+            Rectangle { vertical-stretch: 1; }
+        }
+        VerticalLayout { spacing: 12px; @children }
+    }
+    Rule { x: 0px; y: parent.height - 1px; width: parent.width; }
+}
+
+export struct TeamRow {
+    id: string,
+    account: string,
+    school: string,
+    school-en: string,
+    name: string,
+    name-en: string,
+    final: bool,
+}
+
+export struct PhotoRow {
+    id: string,
+    title: string,
+    note: string,
+    thumbnail: image,
+    selected: bool,
+}

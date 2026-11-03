@@ -13,6 +13,7 @@ enum TestError {
     Capture { source: capture::Error },
     HotFolder { source: Error },
     Archive { source: archive::ArchiveError },
+    Workspace { source: crate::workspace::Error },
     Fixture,
 }
 type TestResult<T = ()> = std::result::Result<T, TestError>;
@@ -24,6 +25,13 @@ fn fixture() -> TestResult<(tempfile::TempDir, Inner)> {
     fs::create_dir(&hot_folder).context(IoSnafu)?;
     fs::create_dir(&archive).context(IoSnafu)?;
     let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
+    let workspace = Workspace::create_with_logos(
+        directory.path().join("store-fixture"),
+        roster.teams().to_vec(),
+        directory.path(),
+        Vec::new(),
+    )
+    .context(WorkspaceSnafu)?;
     Ok((
         directory,
         Inner {
@@ -42,6 +50,13 @@ fn fixture() -> TestResult<(tempfile::TempDir, Inner)> {
                 uncertain: false,
             },
             tasks: BTreeMap::new(),
+            photo_checks: BTreeMap::new(),
+            validation_tasks: BTreeMap::new(),
+            manual_selection: None,
+            presentation: Presentation::new(),
+            finals: workspace.final_store(),
+            confirmed: None,
+            cleanup: crate::capture_session::Cleanup::default(),
         },
     ))
 }
@@ -66,6 +81,108 @@ fn settle(inner: &mut Inner) -> TestResult {
         pending.stable_since = Instant::now().checked_sub(INTERVAL).context(FixtureSnafu)?;
     }
     inner.scan().context(HotFolderSnafu)
+}
+
+#[test]
+fn inactive_arrivals_are_baselined_without_creating_archives_or_candidates() -> TestResult {
+    let (_directory, mut inner) = fixture()?;
+    let source = inner.ingestion.hot_folder.join("between.jpg");
+    fs::write(&source, b"outside a group").context(IoSnafu)?;
+    settle(&mut inner)?;
+    assert!(inner.ingestion.photos.is_empty());
+    assert_eq!(
+        fs::read_dir(&inner.ingestion.archive)
+            .context(IoSnafu)?
+            .count(),
+        0
+    );
+    start(&mut inner, 0)?;
+    settle(&mut inner)?;
+    assert!(inner.ingestion.photos.is_empty());
+    assert!(inner.photo_checks.is_empty());
+    assert_eq!(fs::read(source).context(IoSnafu)?, b"outside a group");
+    Ok(())
+}
+
+#[test]
+fn validation_is_bounded_cached_and_missing_archives_release_group_tasks() -> TestResult {
+    let (_directory, mut inner) = fixture()?;
+    let group = start(&mut inner, 0)?;
+    fs::write(
+        inner.ingestion.hot_folder.join("one.jpg"),
+        b"first invalid image",
+    )
+    .context(IoSnafu)?;
+    fs::write(
+        inner.ingestion.hot_folder.join("two.jpg"),
+        b"second invalid image",
+    )
+    .context(IoSnafu)?;
+    settle(&mut inner)?;
+    assert_eq!(inner.ingestion.photos.len(), 2);
+    assert_eq!(
+        inner.photo_checks.len(),
+        1,
+        "at most one full decode per worker turn"
+    );
+    assert!(matches!(
+        inner.session.abandon_group(group),
+        Err(capture::Error::PendingTasks { count: 1 })
+    ));
+    let first = inner
+        .photo_checks
+        .values()
+        .next()
+        .context(FixtureSnafu)?
+        .clone();
+    assert!(
+        matches!(
+            inner.apply(Action::SelectCandidate(group, first.photo_id()), true),
+            Err(Error::CandidateUnavailable)
+        ),
+        "rejected content is never selectable"
+    );
+    let missing = inner
+        .ingestion
+        .photos
+        .iter()
+        .find(|photo| !inner.photo_checks.contains_key(&photo.id))
+        .context(FixtureSnafu)?
+        .clone();
+    assert!(
+        matches!(
+            inner.apply(Action::SelectCandidate(group, missing.id), true),
+            Err(Error::CandidateUnavailable)
+        ),
+        "an archived but unprocessed photo is not selectable"
+    );
+    fs::remove_file(&missing.path).context(IoSnafu)?;
+    inner.reconcile();
+    assert_eq!(inner.photo_checks.len(), 2);
+    let missing_check = inner.photo_checks.get(&missing.id).context(FixtureSnafu)?;
+    assert!(matches!(
+        missing_check.result(),
+        Err(PhotoValidationError::Io { .. })
+    ));
+    assert!(!missing_check.retryable());
+    assert_eq!(
+        inner.session.group().context(FixtureSnafu)?.pending_tasks(),
+        0
+    );
+    inner.reconcile();
+    let cached = inner
+        .photo_checks
+        .get(&first.photo_id())
+        .context(FixtureSnafu)?;
+    assert!(
+        std::ptr::eq(
+            first.result().err().context(FixtureSnafu)?,
+            cached.result().err().context(FixtureSnafu)?
+        ),
+        "unchanged rejected content must not be decoded every reconciliation"
+    );
+    inner.session.abandon_group(group).context(CaptureSnafu)?;
+    Ok(())
 }
 
 #[test]
@@ -127,7 +244,8 @@ fn deleting_a_pending_source_releases_its_task_without_losing_archives() -> Test
 }
 
 #[test]
-fn renaming_a_pending_source_releases_the_old_task_and_requires_review() -> TestResult {
+fn renaming_a_pending_source_releases_the_old_task_without_importing_the_renamed_file() -> TestResult
+{
     let (_directory, mut inner) = fixture()?;
     start(&mut inner, 0)?;
     let original = inner.ingestion.hot_folder.join("temporary.jpg");
@@ -148,7 +266,7 @@ fn renaming_a_pending_source_releases_the_old_task_and_requires_review() -> Test
             .context(FixtureSnafu)?
             .owner
             .is_none(),
-        "a new path observed during source loss must require photographer review"
+        "a new path observed during source loss must not receive group ownership"
     );
     settle(&mut inner)?;
     inner.reconcile();
@@ -157,8 +275,7 @@ fn renaming_a_pending_source_releases_the_old_task_and_requires_review() -> Test
         inner.session.group().context(FixtureSnafu)?.pending_tasks(),
         0
     );
-    assert_eq!(inner.ingestion.photos.len(), 1);
-    assert!(inner.ingestion.photos[0].group_id.is_none());
+    assert!(inner.ingestion.photos.is_empty());
     assert_eq!(
         fs::read(renamed).context(IoSnafu)?,
         b"camera renamed this source"
@@ -167,7 +284,7 @@ fn renaming_a_pending_source_releases_the_old_task_and_requires_review() -> Test
 }
 
 #[test]
-fn reappearing_lost_source_requires_review_even_after_starting_a_group() -> TestResult {
+fn reappearing_lost_source_is_ignored_even_after_starting_a_group() -> TestResult {
     let (_directory, mut inner) = fixture()?;
     let source = inner.ingestion.hot_folder.join("unowned.png");
     fs::write(&source, b"unowned source").context(IoSnafu)?;
@@ -177,17 +294,11 @@ fn reappearing_lost_source_requires_review_even_after_starting_a_group() -> Test
     assert_eq!(inner.ingestion.state, IngestionState::Running);
     assert_eq!(inner.ingestion.missing_sources.len(), 1);
     assert!(inner.ingestion.missing_sources[0].group_id.is_none());
-    let group = start(&mut inner, 0)?;
+    start(&mut inner, 0)?;
     fs::write(&source, b"new observation").context(IoSnafu)?;
     settle(&mut inner)?;
-    assert_eq!(inner.ingestion.photos.len(), 1);
-    assert!(inner.ingestion.photos[0].group_id.is_none());
+    assert!(inner.ingestion.photos.is_empty());
     assert!(inner.ingestion.missing_sources.is_empty());
-    let photo = inner.ingestion.photos[0].id;
-    inner
-        .apply(Action::Assign(photo, group), true)
-        .context(HotFolderSnafu)?;
-    assert_eq!(inner.ingestion.photos[0].group_id, Some(group));
     Ok(())
 }
 
@@ -290,7 +401,7 @@ fn identical_bytes_can_share_file_without_merging_group_ownership() -> TestResul
 }
 
 #[test]
-fn same_path_overwrite_across_groups_requires_review() -> TestResult {
+fn same_path_overwrite_across_groups_is_ignored() -> TestResult {
     let (_directory, mut inner) = fixture()?;
     let first = start(&mut inner, 0)?;
     let path = inner.ingestion.hot_folder.join("reused.jpg");
@@ -300,9 +411,8 @@ fn same_path_overwrite_across_groups_requires_review() -> TestResult {
     start(&mut inner, 1)?;
     fs::write(&path, b"second version").context(IoSnafu)?;
     settle(&mut inner)?;
-    assert_eq!(inner.ingestion.photos.len(), 2);
+    assert_eq!(inner.ingestion.photos.len(), 1);
     assert_eq!(inner.ingestion.photos[0].group_id, Some(first));
-    assert!(inner.ingestion.photos[1].group_id.is_none());
     assert_eq!(
         fs::read(&inner.ingestion.photos[0].path).context(IoSnafu)?,
         b"first team"
@@ -470,7 +580,7 @@ fn missing_source_acknowledgement_does_not_erase_reappearance_uncertainty() -> T
     start(&mut inner, 1)?;
     fs::write(source, b"returning A photo").context(IoSnafu)?;
     settle(&mut inner)?;
-    assert!(inner.ingestion.photos[0].group_id.is_none());
+    assert!(inner.ingestion.photos.is_empty());
     Ok(())
 }
 
@@ -534,14 +644,13 @@ fn bounded_audit_detects_same_length_content_with_restored_timestamps() -> TestR
         .context(FixtureSnafu)? = inner.ingestion.last_audit;
     inner.scan().context(HotFolderSnafu)?;
     settle(&mut inner)?;
-    assert_eq!(inner.ingestion.photos.len(), 2);
-    assert_ne!(
-        inner.ingestion.photos[0].sha256,
-        inner.ingestion.photos[1].sha256
-    );
+    assert_eq!(inner.ingestion.photos.len(), 1);
+    let observed = inner.ingestion.seen.get(&source).context(FixtureSnafu)?;
+    assert_ne!(original.sha256, observed.version.sha256);
     assert!(
-        inner.ingestion.photos[1].group_id.is_none(),
+        observed.owner.is_none(),
         "a rewritten old source must not become B's photo automatically"
     );
+    assert_eq!(fs::read(source).context(IoSnafu)?, b"photo-B");
     Ok(())
 }

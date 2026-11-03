@@ -12,8 +12,10 @@ use diesel_migrations::{EmbeddedMigrations, MigrationHarness as _, embed_migrati
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use snafu::{IntoError as _, ResultExt as _, Snafu};
 
+use super::final_photos::ConfirmedPhoto;
 use super::resources::Cache;
-use crate::diesel_schema::{photo_roster, photo_workspace};
+use crate::diesel_schema::{photo_roster, photo_team_results, photo_workspace};
+use crate::photo::{ConfirmationId, PhotoDimensions, PhotoFormat, ResultId, SubmissionId};
 use natsume_photo_protocol::PhotoTeam;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
@@ -21,6 +23,14 @@ const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'/').remove(b':');
 
 #[derive(Debug, Snafu)]
 pub enum PersistenceError {
+    #[snafu(display("confirmed result identity or digest is invalid"))]
+    FinalValue {
+        source: natsume_photo_protocol::ValueError,
+    },
+    #[snafu(display("confirmed result number is invalid"))]
+    FinalNumber { source: std::num::TryFromIntError },
+    #[snafu(display("confirmed result metadata is invalid"))]
+    FinalMetadata,
     #[snafu(display("cannot encode the workspace database path"))]
     Path,
     #[snafu(display("cannot connect to the existing workspace database"))]
@@ -41,6 +51,85 @@ pub enum PersistenceError {
     Worker { source: tokio::task::JoinError },
 }
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
+fn final_rows(tx: &mut Transaction<'_>, account: Option<&str>) -> Result<Vec<ConfirmedPhoto>> {
+    type Row = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        String,
+        i32,
+        i32,
+        i64,
+    );
+    let mut query = photo_team_results::table.into_boxed();
+    if let Some(account) = account {
+        query = query.filter(photo_team_results::account_id.eq(account));
+    }
+    let rows: Vec<Row> = query
+        .select((
+            photo_team_results::account_id,
+            photo_team_results::confirmation_id,
+            photo_team_results::result_id,
+            photo_team_results::submission_id,
+            photo_team_results::image_path,
+            photo_team_results::image_sha256,
+            photo_team_results::image_bytes,
+            photo_team_results::image_format,
+            photo_team_results::width,
+            photo_team_results::height,
+            photo_team_results::revision,
+        ))
+        .order(photo_team_results::account_id)
+        .load(tx.connection())?;
+    rows.into_iter()
+        .map(
+            |(
+                account_id,
+                confirmation,
+                result,
+                submission,
+                path,
+                sha256,
+                bytes,
+                format,
+                width,
+                height,
+                revision,
+            )| {
+                let format = match format.as_str() {
+                    "jpeg" => PhotoFormat::Jpeg,
+                    "png" => PhotoFormat::Png,
+                    _ => return FinalMetadataSnafu.fail(),
+                };
+                if revision < 1 {
+                    return FinalMetadataSnafu.fail();
+                }
+                let _: natsume_photo_protocol::Sha256Digest =
+                    sha256.parse().context(FinalValueSnafu)?;
+                Ok(ConfirmedPhoto {
+                    account_id,
+                    confirmation_id: ConfirmationId::try_from(confirmation)
+                        .context(FinalValueSnafu)?,
+                    result_id: ResultId::try_from(result).context(FinalValueSnafu)?,
+                    submission_id: SubmissionId::try_from(submission).context(FinalValueSnafu)?,
+                    path: path.into(),
+                    sha256,
+                    bytes: u64::try_from(bytes).context(FinalNumberSnafu)?,
+                    dimensions: PhotoDimensions {
+                        width: u32::try_from(width).context(FinalNumberSnafu)?,
+                        height: u32::try_from(height).context(FinalNumberSnafu)?,
+                        format,
+                    },
+                    revision,
+                })
+            },
+        )
+        .collect()
+}
 impl From<diesel::result::Error> for PersistenceError {
     fn from(source: diesel::result::Error) -> Self {
         QuerySnafu.into_error(source)
@@ -67,6 +156,76 @@ enum ConnectionMode {
     Writable,
 }
 impl Database {
+    pub(super) fn roster_ids(&self) -> Result<std::collections::BTreeSet<String>> {
+        self.write_blocking(|tx| {
+            let ids: Vec<String> = photo_roster::table
+                .select(photo_roster::account_id)
+                .load(tx.connection())?;
+            Ok(ids.into_iter().collect())
+        })
+    }
+    pub(super) fn final_photos(&self, account: Option<&str>) -> Result<Vec<ConfirmedPhoto>> {
+        self.write_blocking(|tx| final_rows(tx, account))
+    }
+    /// Atomically persists against the expected revision and existing roster reference.
+    pub(super) fn apply_final(&self, photo: &ConfirmedPhoto, baseline: i64) -> Result<bool> {
+        self.write_blocking(|tx| {
+            let revision = photo_team_results::table
+                .find(&photo.account_id)
+                .select(photo_team_results::revision)
+                .first::<i64>(tx.connection())
+                .optional()?;
+            let known = photo_roster::table
+                .find(&photo.account_id)
+                .select(photo_roster::account_id)
+                .first::<String>(tx.connection())
+                .optional()?;
+            if revision.unwrap_or(0) != baseline || known.is_none() {
+                return Ok(false);
+            }
+            let path = photo
+                .path
+                .to_str()
+                .ok_or_else(|| FinalMetadataSnafu.build())?;
+            let bytes = i64::try_from(photo.bytes).context(FinalNumberSnafu)?;
+            let width = i32::try_from(photo.dimensions.width).context(FinalNumberSnafu)?;
+            let height = i32::try_from(photo.dimensions.height).context(FinalNumberSnafu)?;
+            let format = match photo.dimensions.format {
+                PhotoFormat::Jpeg => "jpeg",
+                PhotoFormat::Png => "png",
+            };
+            diesel::insert_into(photo_team_results::table)
+                .values((
+                    photo_team_results::account_id.eq(&photo.account_id),
+                    photo_team_results::confirmation_id.eq(photo.confirmation_id.as_str()),
+                    photo_team_results::result_id.eq(photo.result_id.as_str()),
+                    photo_team_results::submission_id.eq(photo.submission_id.as_str()),
+                    photo_team_results::image_path.eq(path),
+                    photo_team_results::image_sha256.eq(&photo.sha256),
+                    photo_team_results::image_bytes.eq(bytes),
+                    photo_team_results::image_format.eq(format),
+                    photo_team_results::width.eq(width),
+                    photo_team_results::height.eq(height),
+                    photo_team_results::revision.eq(photo.revision),
+                ))
+                .on_conflict(photo_team_results::account_id)
+                .do_update()
+                .set((
+                    photo_team_results::confirmation_id.eq(photo.confirmation_id.as_str()),
+                    photo_team_results::result_id.eq(photo.result_id.as_str()),
+                    photo_team_results::submission_id.eq(photo.submission_id.as_str()),
+                    photo_team_results::image_path.eq(path),
+                    photo_team_results::image_sha256.eq(&photo.sha256),
+                    photo_team_results::image_bytes.eq(bytes),
+                    photo_team_results::image_format.eq(format),
+                    photo_team_results::width.eq(width),
+                    photo_team_results::height.eq(height),
+                    photo_team_results::revision.eq(photo.revision),
+                ))
+                .execute(tx.connection())?;
+            Ok(true)
+        })
+    }
     // Storage invokes connection and schema installation only inside spawn_blocking.
     pub(super) fn connect(path: &Path) -> Result<Self> {
         Self::connect_mode(path, ConnectionMode::Writable)

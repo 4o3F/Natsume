@@ -15,6 +15,22 @@ diesel::table! {
 }
 
 diesel::table! {
+    photo_team_results (account_id) {
+        account_id -> Text,
+        confirmation_id -> Text,
+        result_id -> Text,
+        submission_id -> Text,
+        image_path -> Text,
+        image_sha256 -> Text,
+        image_bytes -> BigInt,
+        image_format -> Text,
+        width -> Integer,
+        height -> Integer,
+        revision -> BigInt,
+    }
+}
+
+diesel::table! {
     photo_workspace (singleton) {
         singleton -> Integer,
         format_version -> Integer,
@@ -22,4 +38,4 @@ diesel::table! {
     }
 }
 
-diesel::allow_tables_to_appear_in_same_query!(photo_roster, photo_workspace,);
+diesel::allow_tables_to_appear_in_same_query!(photo_roster, photo_team_results, photo_workspace,);

@@ -23,6 +23,36 @@ enum TestError {
 }
 
 #[test]
+fn recovery_cleanup_only_removes_the_expected_directory_and_retains_the_lock() -> TestResult {
+    let directory = tempfile::tempdir().context(IoSnafu)?;
+    let parent = std::fs::canonicalize(directory.path()).context(IoSnafu)?;
+    let target = parent.join("workspace");
+    std::fs::create_dir(&target).context(IoSnafu)?;
+    let root = recovery_path(&target).context(InitializationSnafu)?;
+    std::fs::create_dir(&root).context(IoSnafu)?;
+    std::fs::write(root.join("cache"), b"download").context(IoSnafu)?;
+    std::fs::write(target.join("keep"), b"published").context(IoSnafu)?;
+    let lock_path = root.with_extension("photo-init.lock");
+    let lock = lock_initialization(&lock_path).context(InitializationSnafu)?;
+    assert!(remove_recovery_directory(&target, &target).is_err());
+    assert!(target.join("keep").exists());
+    remove_recovery_directory(&root, &target).context(InitializationSnafu)?;
+    assert!(!root.exists());
+    assert!(lock_path.is_file());
+    assert!(matches!(
+        lock_initialization(&lock_path),
+        Err(super::super::Error::Busy)
+    ));
+    drop(lock);
+    drop(lock_initialization(&lock_path).context(InitializationSnafu)?);
+    assert_eq!(
+        std::fs::read(target.join("keep")).context(IoSnafu)?,
+        b"published"
+    );
+    Ok(())
+}
+
+#[test]
 fn failed_temporary_write_leaves_no_published_file_or_partial_temporary() -> TestResult {
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let result = write_synced_temporary(directory.path(), |file| {

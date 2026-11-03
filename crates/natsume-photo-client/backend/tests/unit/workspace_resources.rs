@@ -21,13 +21,14 @@ async fn changed_source_during_preparation_leaves_workspace_incomplete() -> Test
         .save(&logo)
         .context(ImageSnafu)?;
     let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
-    let prepared = Prepared::from_paths(
+    let prepared = Prepared::from_paths_with_progress(
         &std::fs::canonicalize(directory.path()).context(IoSnafu)?,
         vec![SchoolLogo {
             organization_id: 1,
             path: "logo.png".into(),
         }],
         &roster.teams().iter().map(|t| t.organization_id).collect(),
+        &crate::progress::Reporter::default(),
     )
     .context(ResourceSnafu)?;
     image::RgbImage::from_pixel(4, 4, image::Rgb([4, 5, 6]))

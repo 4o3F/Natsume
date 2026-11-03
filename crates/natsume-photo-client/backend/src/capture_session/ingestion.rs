@@ -66,6 +66,10 @@ impl Ingestion {
     pub(super) fn photos(&self) -> &[ArchivedPhoto] {
         &self.photos
     }
+    pub(super) fn retire_group(&mut self, group: GroupId) {
+        // Keep source observations/tombstones: unchanged A originals must not reappear for B.
+        self.photos.retain(|photo| photo.group_id != Some(group));
+    }
     pub(super) fn missing_sources(&self) -> &[MissingSource] {
         &self.missing_sources
     }
@@ -86,14 +90,6 @@ impl Ingestion {
         self.missing_sources
             .retain(|missing| missing.source != path);
         ensure!(before != self.missing_sources.len(), NotReviewableSnafu);
-        Ok(())
-    }
-    pub(super) fn assign_reviewed(&mut self, photo: Uuid, group: GroupId) -> Result<()> {
-        self.photos
-            .iter_mut()
-            .find(|p| p.id == photo && p.group_id.is_none())
-            .context(NotReviewableSnafu)?
-            .group_id = Some(group);
         Ok(())
     }
     pub(super) fn reconcile(&mut self, owner: Option<GroupId>) -> Result<()> {
@@ -255,6 +251,21 @@ impl Ingestion {
             return Ok(());
         }
         let version = version.ok_or_else(|| ArchiveSnafu.into_error(ArchiveError::Changed))?;
+        if pending.owner.is_none() {
+            // Baseline only: never archive or later reassign an ambiguous arrival.
+            self.pending.remove(path);
+            self.seen.insert(
+                path.to_owned(),
+                ObservedSource {
+                    version,
+                    owner: None,
+                },
+            );
+            self.checked.insert(path.to_owned(), Instant::now());
+            self.missing_sources
+                .retain(|missing| missing.source != path);
+            return Ok(());
+        }
         let destination = match archive::copy(path, &self.hot_folder, &self.archive, &version) {
             Ok(path) => path,
             Err(ArchiveError::Changed) => {
@@ -280,6 +291,7 @@ impl Ingestion {
             path: destination,
             sha256: version.sha256,
             bytes: version.bytes,
+            modified: version.modified,
             group_id: pending.owner,
         });
         Ok(())
