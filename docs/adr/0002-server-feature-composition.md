@@ -20,10 +20,10 @@ Server 采用手写构造注入，但 `ServerState` 同时承担四项职责：�
 
 | 决策 | 采纳结果 |
 | --- | --- |
-| D1 Feature 组装层 | 新增 `feature/` 模块，位于组合层。每个 `<Name>Feature` 调用组件自己的 concrete constructor，构造该 feature 的 HTTP 窄状态，并调用 `http::handler::<name>` 的路由函数得到已绑定状态的 `Router<()>`。组件层不依赖 `feature/` 或 `http/`，依赖只向下 |
+| D1 Feature 组装层 | 新增 `feature/` 模块，位于组合层。每个 `<Name>Feature` 调用组件自己的 concrete constructor，构造该 feature 的 HTTP 窄状态，并调用 `http::handler::<name>` 的路由函数得到已绑定状态的路由表（`Vec<(&'static str, MethodRouter)>`）。组件层不依赖 `feature/` 或 `http/`，依赖只向下 |
 | D2 基础设施 | `Infra` 只持有 `Database`、`Arc<VaultSession>`、Journal emit 句柄和 `ServerLifecycle`，不持有业务组件或协调器，不是 Components wrapper |
 | D3 Feature 间依赖 | 通过 `load` 的具名参数显式传递已构造的共享句柄（例如 Photo 接收 Contest 的 `Arc`），由编译器检查。不提供依赖查找 trait、注册表、动态集合或模块生命周期 trait |
-| D4 认证挂载 | 顶层按 public、operator、source、client 四个 access class 合并 feature 路由，在分组上挂载认证层；认证中间件只持有窄状态（Operator 或 Print 的 `Arc`）。审计、completion 与 HEAD 拒绝仍包在 `/api/v2` 外层，顺序不变 |
+| D4 认证挂载 | 顶层按 public、operator、source、client 四个 access class 合并 feature 路由，组装时对受保护分组中的每条 `MethodRouter` 调用 `route_layer` 挂载认证，使方法不匹配时先返回 405，不经过认证；认证中间件只持有窄状态（Operator 或 Print 的 `Arc`）。审计、completion 与 HEAD 拒绝仍包在 `/api/v2` 外层，顺序不变 |
 | D5 运行期所有者 | `ServerRuntime` 持有 `ServerLifecycle`、`Arc<DeviceControl>`、Journal writer、HTTP serving task 与 `BackgroundTasks`，负责既有的固定关闭顺序；HTTP 只取得 Journal emit/reader 句柄。`serve` 只做命令适配 |
 | D6 启动错误 | 各 feature 定义自己的 Snafu 启动错误；`StartupError` 每个 feature 一个变体，`CommandFailure` 只以一个变体包装 `StartupError`，不再逐项镜像 |
 | D7 共享实例 | 每个共享组件在进程内只构造一次，跨 feature 只传递同一个 `Arc`，保持 Print、Photo、Contest 的预算、信号量、缓存以及唯一的 `DeviceRegistry` |
@@ -40,6 +40,6 @@ Server 采用手写构造注入，但 `ServerState` 同时承担四项职责：�
 ## 后果与验收
 
 - 组装入口仍需要了解完整依赖图，`DeviceControl` 的多组件依赖是真实业务耦合，会保留为入口中最长的部分；本决策约束的是每个 feature 的修改范围，不追求消除组装代码。
-- 迁移期间 `ServerState` 与已迁移的 feature 路由并存，二者都合并为 `Router<()>`，逐步替换。
+- 迁移期间 `ServerState` 的旧路由与已迁移的 feature 路由并存，二者都绑定状态后并入对应的具名路由表，再由统一挂载入口组装，逐步替换。
 - 对外 HTTP 契约（路径、方法、状态码、错误码、缓存头、请求体限制、HEAD 拒绝）、认证→审计→completion 语义、journal 事件序列及关闭顺序保持不变，由现有路由与关闭测试守护。
 - 纪律约束：feature 不得重新聚合跨 feature 的句柄容器。代码审查须检查 `feature/` 中不出现持有多个无关组件的汇总结构。

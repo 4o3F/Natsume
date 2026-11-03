@@ -38,7 +38,7 @@ pub(crate) struct ServerState {
     operator: Arc<OperatorComponent>,
     /// Read-only journal coordinator with bounded storage, names and narrow lease dependencies.
     journal_query: JournalQuery,
-    print: PrintComponent,
+    print: Arc<PrintComponent>,
     photo: PhotoComponent,
     contest: ContestComponent,
     import: ImportComponent,
@@ -174,7 +174,7 @@ impl ServerState {
         let state = Self {
             operator,
             journal_query,
-            print,
+            print: Arc::new(print),
             photo,
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
             target_submission: TargetSubmissionComponent::new(database.clone(), emitter.clone()),
@@ -201,7 +201,7 @@ impl ServerState {
         &self.device_control
     }
 
-    pub(crate) const fn print(&self) -> &PrintComponent {
+    pub(crate) const fn print(&self) -> &Arc<PrintComponent> {
         &self.print
     }
 
@@ -221,7 +221,7 @@ impl ServerState {
         &self.journal_query
     }
 
-    pub(crate) fn operator(&self) -> &OperatorComponent {
+    pub(crate) fn operator(&self) -> &Arc<OperatorComponent> {
         &self.operator
     }
 

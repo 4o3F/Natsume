@@ -11,6 +11,7 @@ use axum::{
 use diesel::{ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _};
 use tower::ServiceExt as _;
 
+use super::super::{AccessRoutes, legacy_routes, mount};
 use super::{
     Captured, LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, SupportFailure, TestDatabase,
     drive, header_text, login_request, router, seed_operator, server_state, unused_web_root,
@@ -598,26 +599,27 @@ async fn inventory_exactly_matches_every_group_path_and_method() -> TestResult {
     let state = loaded.state;
     let state = std::sync::Arc::new(state);
     let mut actual = BTreeSet::new();
+    let AccessRoutes {
+        public,
+        operator,
+        source,
+        client,
+    } = legacy_routes(&state);
     for (principal, routes) in [
-        Principal::Public,
-        Principal::Operator,
-        Principal::PrintSource,
-        Principal::PrintClient,
-    ]
-    .into_iter()
-    .zip(super::super::route_groups(&state))
-    {
+        (Principal::Public, public),
+        (Principal::Operator, operator),
+        (Principal::PrintSource, source),
+        (Principal::PrintClient, client),
+    ] {
         for (template, methods) in routes {
-            let probe = Router::new()
-                .route(
-                    template,
-                    methods.route_layer(middleware::from_fn(
-                        |_request: axum::extract::Request, _next: axum::middleware::Next| async {
-                            StatusCode::NO_CONTENT
-                        },
-                    )),
-                )
-                .with_state(state.clone());
+            let probe = Router::new().route(
+                template,
+                methods.route_layer(middleware::from_fn(
+                    |_request: axum::extract::Request, _next: axum::middleware::Next| async {
+                        StatusCode::NO_CONTENT
+                    },
+                )),
+            );
             for method in [
                 Method::GET,
                 Method::POST,
@@ -819,21 +821,55 @@ async fn new_methods_inherit_each_groups_authentication_without_an_opt_in_wrappe
     let fixture = TestDatabase::new().await?;
     let loaded = server_state(&fixture)?;
     let state = loaded.state;
-    let state = std::sync::Arc::new(state);
-    for group in [
-        super::super::operator_group,
-        super::super::source_group,
-        super::super::client_group,
+    let routes = AccessRoutes {
+        operator: vec![("/new-operator", post(|| async { StatusCode::NO_CONTENT }))],
+        source: vec![("/new-source", post(|| async { StatusCode::NO_CONTENT }))],
+        client: vec![("/new-client", post(|| async { StatusCode::NO_CONTENT }))],
+        ..AccessRoutes::new()
+    };
+    let application = mount(
+        routes,
+        state.operator().clone(),
+        state.print().clone(),
+        state.journal().clone(),
+        state.lifecycle().clone(),
+        unused_web_root(),
+    );
+    for path in [
+        "/api/v2/new-operator",
+        "/api/v2/new-source",
+        "/api/v2/new-client",
     ] {
-        let application = group(
-            state.clone(),
-            vec![("/new-operation", post(|| async { StatusCode::NO_CONTENT }))],
-        )
-        .with_state(state.clone());
         let response = application
-            .oneshot(Request::post("/new-operation").body(Body::empty())?)
+            .clone()
+            .oneshot(Request::post(path).body(Body::empty())?)
             .await?;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn shared_session_path_keeps_public_methods_and_allow_header() -> TestResult {
+    let fixture = TestDatabase::new().await?;
+    let loaded = server_state(&fixture)?;
+    let application = router(std::sync::Arc::new(loaded.state), unused_web_root());
+    for (method, expected) in [
+        (Method::GET, StatusCode::UNAUTHORIZED),
+        (Method::POST, StatusCode::BAD_REQUEST),
+        (Method::DELETE, StatusCode::NO_CONTENT),
+        (Method::PUT, StatusCode::METHOD_NOT_ALLOWED),
+    ] {
+        let response = drive(
+            &application,
+            super::request(method.clone(), "/api/v2/session", "")?,
+        )
+        .await?;
+        assert_eq!(response.status, expected, "session method: {method}");
+        if method == Method::PUT {
+            assert_eq!(response.headers[header::ALLOW], "POST,DELETE,GET,HEAD");
+            assert!(response.body.is_empty());
+        }
     }
     Ok(())
 }
@@ -847,15 +883,18 @@ async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication
     let inventory = server_state(&fixture)?;
     let state = inventory.state;
     let state = std::sync::Arc::new(state);
+    let AccessRoutes {
+        public,
+        operator,
+        source,
+        client,
+    } = legacy_routes(&state);
     for (principal, routes) in [
-        Principal::Public,
-        Principal::Operator,
-        Principal::PrintSource,
-        Principal::PrintClient,
-    ]
-    .into_iter()
-    .zip(super::super::route_groups(&state))
-    {
+        (Principal::Public, public),
+        (Principal::Operator, operator),
+        (Principal::PrintSource, source),
+        (Principal::PrintClient, client),
+    ] {
         for (template, _) in routes {
             for method in [
                 Method::GET,
