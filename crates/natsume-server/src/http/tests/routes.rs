@@ -596,15 +596,13 @@ pub(super) async fn mounted_route_responses(
 async fn inventory_exactly_matches_every_group_path_and_method() -> TestResult {
     let fixture = TestDatabase::new().await?;
     let loaded = server_state(&fixture)?;
-    let state = loaded.state;
-    let state = std::sync::Arc::new(state);
     let mut actual = BTreeSet::new();
     let AccessRoutes {
         public,
         operator,
         source,
         client,
-    } = legacy_routes(&state).merge(loaded.routes);
+    } = legacy_routes().merge(loaded.routes);
     for (principal, routes) in [
         (Principal::Public, public),
         (Principal::Operator, operator),
@@ -886,14 +884,12 @@ async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication
     let state = loaded.state;
     let application = router(std::sync::Arc::new(state), loaded.routes, unused_web_root());
     let inventory = server_state(&fixture)?;
-    let state = inventory.state;
-    let state = std::sync::Arc::new(state);
     let AccessRoutes {
         public,
         operator,
         source,
         client,
-    } = legacy_routes(&state).merge(inventory.routes);
+    } = legacy_routes().merge(inventory.routes);
     for (principal, routes) in [
         (Principal::Public, public),
         (Principal::Operator, operator),

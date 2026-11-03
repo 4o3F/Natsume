@@ -12,10 +12,19 @@ use axum::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::{super::super::error::ApiError, AppState, middleware};
+use super::{super::super::error::ApiError, middleware};
 use crate::component::contest::{
     ContestComponent, LogoObservation, LogoStatus, OrganizationDetails,
 };
+use crate::component::import::ImportComponent;
+
+#[derive(Clone)]
+pub(crate) struct ImportCandidateState {
+    /// Shared import authority supplying the pending candidate.
+    pub(crate) import: Arc<ImportComponent>,
+    /// Shared Contest instance used to observe and read organization logos.
+    pub(crate) contest: Arc<ContestComponent>,
+}
 
 pub(super) fn operator_routes() -> Routes<Arc<ContestComponent>> {
     vec![
@@ -30,7 +39,7 @@ pub(super) fn operator_routes() -> Routes<Arc<ContestComponent>> {
     ]
 }
 
-pub(in crate::http) fn import_candidate_routes() -> Routes<AppState> {
+pub(crate) fn import_candidate_routes() -> Routes<ImportCandidateState> {
     vec![
         (
             "/imports/{import_id}/organizations",
@@ -97,11 +106,11 @@ pub(crate) async fn list_organizations(State(state): State<Arc<ContestComponent>
 }
 
 pub(crate) async fn list_candidate_organizations(
-    State(state): State<AppState>,
+    State(state): State<ImportCandidateState>,
     Path(id): Path<String>,
 ) -> Response {
-    match candidate_schools(&state, &id).await {
-        Ok(schools) => observations(state.contest(), schools).await,
+    match candidate_schools(&state.import, &id).await {
+        Ok(schools) => observations(&state.contest, schools).await,
         Err(error) => error.into_response(),
     }
 }
@@ -137,23 +146,22 @@ pub(crate) async fn organization_logo(
 }
 
 pub(crate) async fn candidate_logo(
-    State(state): State<AppState>,
+    State(state): State<ImportCandidateState>,
     Path((import_id, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let response = match candidate_schools(&state, &import_id).await {
-        Ok(schools) => logo(state.contest(), schools, &id, &headers, true).await,
+    let response = match candidate_schools(&state.import, &import_id).await {
+        Ok(schools) => logo(&state.contest, schools, &id, &headers, true).await,
         Err(error) => error.into_response(),
     };
     no_store(response)
 }
 
 async fn candidate_schools(
-    state: &AppState,
+    state: &ImportComponent,
     id: &str,
 ) -> Result<Vec<OrganizationDetails>, ApiError> {
     let candidate = state
-        .import()
         .read_pending()
         .await
         .map_err(ApiError::from_import)?

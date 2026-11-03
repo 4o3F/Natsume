@@ -1218,20 +1218,26 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     let fixture = TestDatabase::new().await?;
     let logos = tempfile::TempDir::new()?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let crate::server_state::LoadedServer {
-        state,
-        runtime: _state_runtime,
-        routes,
-    } = server_state::tests::ServerStateFixture::new(
+    let features = server_state::tests::ServerStateFixture::new(
         fixture.database.clone(),
         fixture.documents_path(),
     )
     .logos(logos.path().to_path_buf())
-    .build()?;
+    .build_with_features()?;
+    let crate::server_state::LoadedServer {
+        state,
+        runtime: _state_runtime,
+        routes,
+    } = features.loaded;
     let state = Arc::new(state);
     let application = router(state.clone(), routes, unused_web_root());
     let xlsx = include_bytes!("../component/import/examples/roster.xlsx");
-    let preview = state.import().try_begin()?.create_candidate(xlsx).await?;
+    let preview = features
+        .import
+        .component()
+        .try_begin()?
+        .create_candidate(xlsx)
+        .await?;
     let candidate_list = format!("/api/v2/imports/{}/organizations", preview.candidate_id());
     let candidate_logo = format!("{candidate_list}/INST-001/logo");
     let private_routes = [
@@ -1280,8 +1286,9 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     assert_eq!(schools[0]["status"], "available");
     assert_eq!(schools[0]["files"], serde_json::json!(["示例大学.webp"]));
     assert!(!String::from_utf8_lossy(&observation.body).contains("example-password"));
-    let change = state
-        .import()
+    let change = features
+        .import
+        .component()
         .try_begin()?
         .commit(preview.candidate_id(), preview.preview_token_bytes(), xlsx)
         .await?;

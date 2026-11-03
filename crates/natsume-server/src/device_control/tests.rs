@@ -3449,6 +3449,7 @@ struct Fixture {
     state: Arc<ServerState>,
     runtime: crate::server_runtime::ServerRuntime,
     application: axum::Router,
+    import: crate::feature::import::ImportFeature,
 }
 
 impl Fixture {
@@ -3485,13 +3486,14 @@ impl Fixture {
             Some(journal) => fixture.journal(journal),
             None => fixture,
         };
+        let features = fixture
+            .build_with_features()
+            .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}"));
         let crate::server_state::LoadedServer {
             state,
             runtime,
             routes,
-        } = fixture
-            .build()
-            .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}"));
+        } = features.loaded;
         let state = Arc::new(state);
         let application = crate::http::router(
             Arc::clone(&state),
@@ -3504,6 +3506,7 @@ impl Fixture {
             state,
             runtime,
             application,
+            import: features.import,
         }
     }
 

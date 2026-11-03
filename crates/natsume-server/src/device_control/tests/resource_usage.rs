@@ -324,14 +324,14 @@ async fn exercise_mixed_load(
     let importing = async {
         let started = Instant::now();
         let preview = fixture
-            .state
-            .import()
+            .import
+            .component()
             .try_begin()?
             .create_candidate(&bytes)
             .await?;
         let change = fixture
-            .state
-            .import()
+            .import
+            .component()
             .try_begin()?
             .commit(
                 preview.candidate_id(),

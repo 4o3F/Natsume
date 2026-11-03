@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{component::contest::ContestComponent, http::Routes};
 
-use super::super::{AppState, middleware};
+use super::super::middleware;
 
 pub(crate) mod account;
 pub(crate) mod binding;

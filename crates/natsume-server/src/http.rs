@@ -74,7 +74,7 @@ impl AccessRoutes {
 
 /// Assembles legacy routes during migration; removed in Step 11.
 pub(crate) fn router(state: AppState, routes: AccessRoutes, web_root: &Path) -> Router {
-    let routes = legacy_routes(&state).merge(routes);
+    let routes = legacy_routes().merge(routes);
     let application = mount(
         routes,
         state.operator().clone(),
@@ -148,23 +148,9 @@ async fn private_namespace_no_store(request: Request, next: Next) -> Response {
     response
 }
 
-fn legacy_routes(state: &AppState) -> AccessRoutes {
-    let public = [handler::health::public_routes()]
-        .into_iter()
-        .flatten()
-        .map(|(path, methods)| (path, methods.with_state(state.clone())))
-        .collect();
-    let operator = [
-        handler::contest::organization::import_candidate_routes(),
-        handler::import::operator_routes(),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|(path, methods)| (path, methods.with_state(state.clone())))
-    .collect();
+fn legacy_routes() -> AccessRoutes {
     AccessRoutes {
-        public,
-        operator,
+        public: handler::health::public_routes(),
         ..AccessRoutes::new()
     }
 }

@@ -4,9 +4,7 @@ use snafu::ResultExt as _;
 
 use crate::{
     component::{
-        contest::ContestComponent,
         gateway::{GatewayComponent, GatewayLoadError},
-        import::ImportComponent,
         operator::OperatorComponent,
         print::PrintComponent,
     },
@@ -15,8 +13,9 @@ use crate::{
     device_control::DeviceControl,
     feature::{
         Infra, PhotoStorageSnafu, PrintStorageSnafu, StartupError, contest::ContestFeature,
-        device::DeviceFeature, journal::JournalFeature, operator::OperatorFeature,
-        photo::PhotoFeature, print::PrintFeature, provisioning::ProvisioningFeature,
+        device::DeviceFeature, import::ImportFeature, journal::JournalFeature,
+        operator::OperatorFeature, photo::PhotoFeature, print::PrintFeature,
+        provisioning::ProvisioningFeature,
     },
     http::AccessRoutes,
     journal::{Journal, JournalComponent},
@@ -37,10 +36,8 @@ pub(crate) struct ServerState {
     /// Transitional handle for HTTP authentication and background startup; removed in Step 11.
     /// Business handlers obtain Print directly from their feature state.
     print: Arc<PrintComponent>,
-    /// Transitional handle for the two Import candidate routes; removed in Step 10.
-    contest: Arc<ContestComponent>,
-    import: ImportComponent,
-    /// Transitional handle for Import routes and tests; removed in Steps 10/11.
+    /// Transitional handle used only by tests; removed in Step 11.
+    #[cfg_attr(not(test), allow(dead_code))]
     device_control: Arc<DeviceControl>,
     /// Shared emit handle for request-level journal events.
     journal: Journal,
@@ -114,9 +111,10 @@ impl ServerState {
             journal: journal.emitter(),
             lifecycle,
         };
-        Ok(Self::from_parts(
+        let (loaded, _) = Self::from_parts(
             infra, journal, &print, &contest, &photo, gateway, utc_offset,
-        ))
+        );
+        Ok(loaded)
     }
 
     fn from_parts(
@@ -127,7 +125,7 @@ impl ServerState {
         photo: &PhotoFeature,
         gateway: GatewayComponent,
         utc_offset: time::UtcOffset,
-    ) -> LoadedServer {
+    ) -> (LoadedServer, ImportFeature) {
         let operator_feature = OperatorFeature::load(infra.database.clone(), infra.journal.clone());
         let provisioning_feature = ProvisioningFeature::load();
         let device_feature = DeviceFeature::load(
@@ -141,6 +139,12 @@ impl ServerState {
             journal: emitter,
             lifecycle,
         } = infra;
+        let import_feature = ImportFeature::load(
+            database.clone(),
+            Arc::clone(&vault),
+            Arc::clone(contest.component()),
+            Arc::clone(device_feature.device_control()),
+        );
         let journal_feature = JournalFeature::load(
             journal.reader(),
             Arc::clone(operator_feature.component()),
@@ -154,7 +158,8 @@ impl ServerState {
             .merge(provisioning_feature.routes())
             .merge(contest.routes())
             .merge(photo.routes())
-            .merge(device_feature.routes());
+            .merge(device_feature.routes())
+            .merge(import_feature.routes());
         let print = Arc::clone(print_feature.component());
         let runtime = ServerRuntime::new(
             lifecycle.clone(),
@@ -164,17 +169,18 @@ impl ServerState {
         let state = Self {
             operator: Arc::clone(operator_feature.component()),
             print,
-            contest: Arc::clone(contest.component()),
-            import: ImportComponent::new(database, vault),
             device_control: Arc::clone(device_feature.device_control()),
             journal: emitter,
             lifecycle,
         };
-        LoadedServer {
-            state,
-            runtime,
-            routes,
-        }
+        (
+            LoadedServer {
+                state,
+                runtime,
+                routes,
+            },
+            import_feature,
+        )
     }
 
     pub(crate) const fn journal(&self) -> &Journal {
@@ -183,6 +189,7 @@ impl ServerState {
     pub(crate) const fn lifecycle(&self) -> &ServerLifecycle {
         &self.lifecycle
     }
+    #[cfg(test)]
     pub(crate) const fn device_control(&self) -> &Arc<DeviceControl> {
         &self.device_control
     }
@@ -193,14 +200,6 @@ impl ServerState {
 
     pub(crate) fn operator(&self) -> &Arc<OperatorComponent> {
         &self.operator
-    }
-
-    pub(crate) const fn contest(&self) -> &Arc<ContestComponent> {
-        &self.contest
-    }
-
-    pub(crate) const fn import(&self) -> &ImportComponent {
-        &self.import
     }
 }
 
@@ -224,7 +223,7 @@ pub(crate) mod tests {
         db::Database,
         feature::{
             Infra, PhotoStorageSnafu, PrintStorageSnafu, StartupError, contest::ContestFeature,
-            photo::PhotoFeature, print::PrintFeature,
+            import::ImportFeature, photo::PhotoFeature, print::PrintFeature,
         },
         journal::{CAPACITY, JournalComponent},
         lifecycle::ServerLifecycle,
@@ -245,10 +244,12 @@ pub(crate) mod tests {
     pub(crate) struct ServerWithFeatures {
         /// Complete server with production feature routes.
         pub(crate) loaded: LoadedServer,
-        /// Contest owner shared with Photo and the transitional Import routes.
+        /// Contest owner shared with Photo and Import candidate routes.
         pub(crate) contest: ContestFeature,
         /// Photo owner used by the routes and test setup.
         pub(crate) photo: PhotoFeature,
+        /// Import owner used by the routes and test setup.
+        pub(crate) import: ImportFeature,
     }
 
     impl ServerStateFixture {
@@ -318,7 +319,7 @@ pub(crate) mod tests {
                 Arc::clone(contest.component()),
             )
             .context(PhotoStorageSnafu)?;
-            let loaded = ServerState::from_parts(
+            let (loaded, import) = ServerState::from_parts(
                 infra,
                 journal,
                 &print,
@@ -331,12 +332,10 @@ pub(crate) mod tests {
                 loaded,
                 contest,
                 photo,
+                import,
             };
             assert!(
-                Arc::ptr_eq(
-                    features.contest.component(),
-                    features.loaded.state.contest()
-                ),
+                Arc::ptr_eq(features.contest.component(), features.import.contest()),
                 "Import routes must share the Contest feature instance"
             );
             Ok(features)
