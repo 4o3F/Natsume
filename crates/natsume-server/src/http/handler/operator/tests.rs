@@ -1,10 +1,7 @@
 use super::dto::*;
 use crate::{
     component::operator::tests::{PasswordVerificationTestGuard, occupy_sign_in_capacity},
-    http::{
-        self, AppState,
-        tests::{self as support, Captured, TestDatabase, drive, seed_operator},
-    },
+    http::tests::{self as support, Captured, TestDatabase, drive, seed_operator},
 };
 use axum::{
     Router,
@@ -21,7 +18,7 @@ type TestResult = Result<(), crate::test_error::TestError>;
 struct Fixture {
     _runtime: crate::server_runtime::ServerRuntime,
     database: TestDatabase,
-    state: AppState,
+    operator: std::sync::Arc<crate::component::operator::OperatorComponent>,
     app: Router,
     admin_id: Uuid,
     admin_cookie: String,
@@ -30,18 +27,16 @@ impl Fixture {
     async fn new() -> Result<Self, crate::test_error::TestError> {
         let database = TestDatabase::new().await?;
         let admin_id = seed_operator(&database.database, "admin", PASSWORD).await?;
-        let crate::server_state::LoadedServer {
-            state,
-            runtime,
-            routes,
-        } = support::server_state(&database)?;
-        let state = std::sync::Arc::new(state);
-        let app = http::router(state.clone(), routes, support::unused_web_root());
+        let loaded = support::server(&database)?;
+        let app = loaded.http_router(support::unused_web_root());
+        let crate::feature::LoadedServer {
+            runtime, operator, ..
+        } = loaded;
         let admin_cookie = login(&app, "admin", PASSWORD).await?;
         Ok(Self {
             _runtime: runtime,
             database,
-            state,
+            operator,
             app,
             admin_id,
             admin_cookie,
@@ -158,13 +153,8 @@ fn assert_error(response: &Captured, status: StatusCode, code: &str) -> TestResu
 #[tokio::test]
 async fn namespace_cache_policy_covers_outer_rejections_and_unmounted_paths() -> TestResult {
     let database = TestDatabase::new().await?;
-    let loaded = support::server_state(&database)?;
-    let state = loaded.state;
-    let app = http::router(
-        std::sync::Arc::new(state),
-        loaded.routes,
-        support::unused_web_root(),
-    );
+    let loaded = support::server(&database)?;
+    let app = loaded.http_router(support::unused_web_root());
     for (method, path, status) in [
         (
             Method::POST,
@@ -250,8 +240,7 @@ async fn session_read_rejects_account_deleted_after_authentication() -> TestResu
     let f = Fixture::new().await?;
     f.signup("viewer", "viewer").await?;
     let signed_in = f
-        .state
-        .operator()
+        .operator
         .sign_in(
             "viewer",
             PASSWORD.into(),
@@ -269,7 +258,7 @@ async fn session_read_rejects_account_deleted_after_authentication() -> TestResu
         .await?;
     assert_eq!(deletion.status, StatusCode::NO_CONTENT);
     let response = crate::http::handler::session::read_session(
-        axum::extract::State(std::sync::Arc::clone(f.state.operator())),
+        axum::extract::State(std::sync::Arc::clone(&f.operator)),
         axum::Extension(identity),
     )
     .await;
@@ -1119,8 +1108,7 @@ async fn capacity_rejection_is_bounded_and_keeps_existing_sessions() -> TestResu
         StatusCode::OK
     );
     assert_eq!(
-        f.state
-            .operator()
+        f.operator
             .inspect_invitation(
                 invite["token"]
                     .as_str()
@@ -1332,7 +1320,7 @@ async fn authorized_account_change_finishes_after_caller_demotion_or_deletion() 
             .send(())
             .map_err(crate::test_error::TestError::from)?;
         assert_eq!(pending.await??.status(), StatusCode::NO_CONTENT);
-        let accounts = f.state.operator().list_accounts().await?;
+        let accounts = f.operator.list_accounts().await?;
         assert_eq!(
             accounts
                 .iter()
@@ -1391,7 +1379,7 @@ async fn authorized_invitation_issuance_rechecks_persisted_issuer_not_caller_rol
         let body: Value =
             serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await?)?;
         assert_eq!(body["code"], "OPERATOR_LINK_UNAVAILABLE");
-        assert!(f.state.operator().list_invitations().await?.is_empty());
+        assert!(f.operator.list_invitations().await?.is_empty());
     }
     Ok(())
 }

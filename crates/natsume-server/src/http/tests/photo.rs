@@ -1,5 +1,4 @@
 use natsume_photo_protocol::{PhotoConfirmation, PhotoPairRequest};
-use std::sync::Arc;
 
 use axum::{
     body::Body,
@@ -11,7 +10,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
-use super::{Captured, TestDatabase, drive, router, unused_web_root};
+use super::{Captured, TestDatabase, drive, unused_web_root};
 use crate::{
     component::photo::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState},
     db::PersistenceError,
@@ -19,9 +18,9 @@ use crate::{
         account_mappings, accounts, organizations, photo_initializations, photo_sources, seats,
         teams,
     },
+    feature,
     feature::photo::PhotoFeature,
-    http::AppState,
-    server_state,
+    lifecycle::ServerLifecycle,
     test_error::TestError,
     tls::PeerAddress,
 };
@@ -255,7 +254,7 @@ async fn invalid_persisted_confirmation_is_rejected_before_authentication() -> T
 struct Fixture {
     database: TestDatabase,
     logos: tempfile::TempDir,
-    state: AppState,
+    lifecycle: ServerLifecycle,
     photo: PhotoFeature,
     app: axum::Router,
     source: natsume_photo_protocol::SourceId,
@@ -314,13 +313,12 @@ impl Fixture {
             })
             .await
             .map_err(crate::db::TransactionError::into_error)?;
-        let features = server_state::tests::ServerStateFixture::new(
+        let features = feature::tests::ServerFixture::new(
             database.database.clone(),
             database.documents_path(),
         )
         .logos(logos.path().to_path_buf())
         .build_with_features()?;
-        let state = Arc::new(features.loaded.state);
         let photo = features.photo;
         let source = photo
             .component()
@@ -346,12 +344,12 @@ impl Fixture {
                 client_version: "2.11.0".into(),
             })
             .await?;
-        let app = router(state.clone(), features.loaded.routes, unused_web_root());
+        let app = features.loaded.http_router(unused_web_root());
         Ok(Self {
             runtime: features.loaded.runtime,
             database,
             logos,
-            state,
+            lifecycle: features.loaded.lifecycle,
             photo,
             app,
             source,
@@ -454,25 +452,16 @@ async fn immutable_roster_and_logo_survive_restart() -> TestResult {
         })
         .await
         .map_err(crate::db::TransactionError::into_error)?;
-    let server_state::tests::ServerWithFeatures {
-        loaded:
-            crate::server_state::LoadedServer {
-                state,
-                runtime,
-                routes,
-            },
-        photo,
-        ..
-    } = server_state::tests::ServerStateFixture::new(
+    let features = feature::tests::ServerFixture::new(
         f.database.database.clone(),
         f.database.documents_path(),
     )
     .logos(f.logos.path().to_path_buf())
     .build_with_features()?;
-    f.state = Arc::new(state);
-    f.photo = photo;
-    f.runtime = runtime;
-    f.app = router(f.state.clone(), routes, unused_web_root());
+    f.app = features.loaded.http_router(unused_web_root());
+    f.photo = features.photo;
+    f.runtime = features.loaded.runtime;
+    f.lifecycle = features.loaded.lifecycle;
     assert_eq!(
         f.send(Method::POST, "client/initialization", Value::Null)
             .await?
@@ -792,25 +781,16 @@ async fn failed_storage_does_not_publish_a_snapshot() -> TestResult {
     std::fs::remove_file(root)?;
     // The store pins the validated directory handle. Restore it through the
     // normal startup boundary, never by following a replacement pathname.
-    let server_state::tests::ServerWithFeatures {
-        loaded:
-            crate::server_state::LoadedServer {
-                state,
-                runtime,
-                routes,
-            },
-        photo,
-        ..
-    } = server_state::tests::ServerStateFixture::new(
+    let features = feature::tests::ServerFixture::new(
         f.database.database.clone(),
         f.database.documents_path(),
     )
     .logos(f.logos.path().to_path_buf())
     .build_with_features()?;
-    f.state = Arc::new(state);
-    f.photo = photo;
-    f.runtime = runtime;
-    f.app = router(f.state.clone(), routes, unused_web_root());
+    f.app = features.loaded.http_router(unused_web_root());
+    f.photo = features.photo;
+    f.runtime = features.loaded.runtime;
+    f.lifecycle = features.loaded.lifecycle;
     assert_eq!(
         f.send(Method::POST, "client/initialization", Value::Null)
             .await?
@@ -999,12 +979,12 @@ async fn admin_routes_and_public_pairing_form_a_complete_boundary() -> TestResul
 async fn snapshot_publication_is_rejected_after_shutdown_admission_closes() -> TestResult {
     let f = Fixture::new().await?;
     f.confirm().await?;
-    f.state.lifecycle().begin_shutdown();
+    f.lifecycle.begin_shutdown();
     let response = f
         .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
-    f.state.lifecycle().wait().await;
+    f.lifecycle.wait().await;
     Ok(())
 }
 

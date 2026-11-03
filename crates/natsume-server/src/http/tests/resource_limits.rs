@@ -9,7 +9,7 @@ use tower::ServiceExt as _;
 
 use super::{
     LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, TestDatabase, drive, header_text,
-    login_request, router, seed_operator, unused_web_root,
+    login_request, seed_operator, unused_web_root,
 };
 
 type TestResult = Result<(), crate::test_error::TestError>;
@@ -51,15 +51,13 @@ async fn import_rejects_busy_requests_before_buffering_and_recovers_after_body_d
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let features = crate::server_state::tests::ServerStateFixture::new(
+    let features = crate::feature::tests::ServerFixture::new(
         fixture.database.clone(),
         fixture.documents_path(),
     )
     .build_with_features()?;
     let loaded = features.loaded;
-    let state = loaded.state;
-    let state = std::sync::Arc::new(state);
-    let application = router(state.clone(), loaded.routes, unused_web_root());
+    let application = loaded.http_router(unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')

@@ -449,14 +449,11 @@ impl Fixture {
         let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
         let component =
             BindingComponent::new(database.clone(), Arc::clone(&vault), journal.emitter());
-        let crate::server_state::LoadedServer { state, runtime, .. } =
-            crate::server_state::tests::ServerStateFixture::new(
-                database.clone(),
-                root.join("documents"),
-            )
-            .build()
-            .unwrap_or_else(|error| panic!("state: {error}"));
-        let control = Arc::clone(state.device_control());
+        let crate::feature::LoadedServer { runtime, .. } =
+            crate::feature::tests::ServerFixture::new(database.clone(), root.join("documents"))
+                .build()
+                .unwrap_or_else(|error| panic!("state: {error}"));
+        let control = Arc::clone(runtime.device_control());
         Self {
             _runtime: runtime,
             root,

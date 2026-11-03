@@ -37,7 +37,7 @@ async fn activate_device(
         "2.10.3".to_owned(),
     );
     let EnrollmentStartOutcome::Pending(review, activation) = fixture
-        .state
+        .runtime
         .device_control()
         .device
         .start_enrollment(
@@ -53,7 +53,7 @@ async fn activate_device(
         ));
     };
     let approval = fixture
-        .state
+        .runtime
         .device_control()
         .device
         .approve_enrollment(
@@ -240,7 +240,7 @@ async fn run_mixed_probe() -> ProbeResult {
     }
     assert_eq!(
         fixture
-            .state
+            .runtime
             .device_control()
             .active_device_ids()
             .await
@@ -251,7 +251,7 @@ async fn run_mixed_probe() -> ProbeResult {
     exercise_mixed_load(&fixture, &ids, &heartbeat_samples).await?;
     assert_eq!(
         fixture
-            .state
+            .runtime
             .device_control()
             .active_device_ids()
             .await
@@ -294,7 +294,7 @@ async fn observe_status(
         let started = Instant::now();
         assert!(
             fixture
-                .state
+                .runtime
                 .device_control()
                 .read_device_status(device)
                 .await
@@ -339,12 +339,12 @@ async fn exercise_mixed_load(
                 &bytes,
             )
             .await?;
-        fixture.state.device_control().publish(change).await;
+        fixture.runtime.device_control().publish(change).await;
         tracing::info!("preview + commit: {:?}", started.elapsed());
         Ok::<_, crate::test_error::TestError>(())
     };
     let target_submission =
-        TargetSubmissionComponent::new(fixture.database.clone(), fixture.state.journal().clone());
+        TargetSubmissionComponent::new(fixture.database.clone(), fixture.journal.clone());
     let submitting = async {
         let mut jobs = Vec::new();
         for _ in 0..10 {
@@ -369,7 +369,11 @@ async fn exercise_mixed_load(
                         .iter()
                         .all(|row| row.rejection.is_none())
                 );
-                fixture.state.device_control().publish(outcome.change).await;
+                fixture
+                    .runtime
+                    .device_control()
+                    .publish(outcome.change)
+                    .await;
                 Ok::<_, crate::test_error::TestError>(started.elapsed())
             });
         }

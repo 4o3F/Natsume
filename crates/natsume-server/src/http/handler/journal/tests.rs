@@ -18,13 +18,10 @@ async fn request(f: &Fixture, path: &str, cookie: Option<&str>) -> Result<Respon
     if let Some(cookie) = cookie {
         request = request.header(header::COOKIE, cookie);
     }
-    Ok(crate::http::router(
-        f.state.clone(),
-        f.routes(),
-        std::path::Path::new("/nonexistent/journal-web"),
-    )
-    .oneshot(request.body(Body::empty())?)
-    .await?)
+    Ok(f.application
+        .clone()
+        .oneshot(request.body(Body::empty())?)
+        .await?)
 }
 async fn body(response: Response) -> Result<String, TestError> {
     let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024).await?;

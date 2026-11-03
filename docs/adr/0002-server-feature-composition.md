@@ -1,8 +1,8 @@
 # ADR 0002：Server 按 Feature 组装与运行期所有者
 
-- 状态：Accepted（实施中，完成后同步改写架构文档）
+- 状态：Accepted
 - 日期：2026-11-02
-- 架构依据：[docs/architecture.md §10.4](../architecture.md#104-serverstate)、[§10.6](../architecture.md#106-分层调用路径与事件归属)、[§11.1](../architecture.md#111-composition-root)。本文记录决策背景与取舍，不建立平行架构权威；各迁移步骤完成时同步修订架构文档，全部完成后以架构文档为准。
+- 架构依据：[docs/architecture.md §10.4](../architecture.md#104-feature-组装)、[§10.6](../architecture.md#106-分层调用路径与事件归属)、[§11.1](../architecture.md#111-composition-root)。本文记录决策背景与取舍，不建立平行架构权威；最终结构以架构文档为准。
 
 ## 背景
 
@@ -29,7 +29,7 @@ Server 采用手写构造注入，但 `ServerState` 同时承担四项职责：�
 | D7 共享实例 | 每个共享组件在进程内只构造一次，跨 feature 只传递同一个 `Arc`，保持 Print、Photo、Contest 的预算、信号量、缓存以及唯一的 `DeviceRegistry` |
 | D8 公开入口 | `natsume_server::router` 与 `commands::run_until` 没有 workspace 外部调用者，收窄为 `pub(crate)` |
 
-迁移完成后删除 `ServerState`、`AppState` 与 `for_test*` 构造器链，各测试改用所属 feature 或组件的 fixture。新增 feature 的预期改动范围是：自身模块、组装入口中的一行加载和一行路由合并、`StartupError` 的一个变体，以及架构文档中该 feature 的章节。
+已删除 `ServerState`、`AppState` 与旧构造器链，各测试使用 feature 或组件的 fixture；HTTP 集成测试通过共同的 `assemble` 取得共享实例。新增 feature 的预期改动范围是：自身模块、组装入口中的一行加载和一行路由合并、`StartupError` 的一个变体，以及架构文档中该 feature 的章节。
 
 ## 备选方案
 
@@ -40,6 +40,6 @@ Server 采用手写构造注入，但 `ServerState` 同时承担四项职责：�
 ## 后果与验收
 
 - 组装入口仍需要了解完整依赖图，`DeviceControl` 的多组件依赖是真实业务耦合，会保留为入口中最长的部分；本决策约束的是每个 feature 的修改范围，不追求消除组装代码。
-- 迁移期间 `ServerState` 的旧路由与已迁移的 feature 路由并存，二者都绑定状态后并入对应的具名路由表，再由统一挂载入口组装，逐步替换。
+- 已实施完成：生产入口为 `feature::load`，运行期资源由 `ServerRuntime` 持有，所有业务路由经 feature 绑定窄状态后交给 `http::mount`，health 由 HTTP 骨架固定注册。
 - 对外 HTTP 契约（路径、方法、状态码、错误码、缓存头、请求体限制、HEAD 拒绝）、认证→审计→completion 语义、journal 事件序列及关闭顺序保持不变，由现有路由与关闭测试守护。
 - 纪律约束：feature 不得重新聚合跨 feature 的句柄容器。代码审查须检查 `feature/` 中不出现持有多个无关组件的汇总结构。

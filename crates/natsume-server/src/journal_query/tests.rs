@@ -18,8 +18,10 @@ use uuid::Uuid;
 pub(crate) struct Fixture {
     /// Owns the isolated business and journal files for the full scenario.
     pub(crate) directory: tempfile::TempDir,
-    /// Shared production composition with a real journal writer and read side.
-    pub(crate) state: Arc<crate::server_state::ServerState>,
+    /// Emitter shared with the fixture's journal reader and writer.
+    pub(crate) journal: crate::journal::Journal,
+    /// Mounted production routes over the same feature instances.
+    pub(crate) application: axum::Router,
     /// Production journal feature over the fixture's writer; routes and direct queries share it.
     pub(crate) feature: crate::feature::journal::JournalFeature,
     /// Known admin session for endpoint permission checks.
@@ -60,46 +62,40 @@ impl Fixture {
             },
         );
         ready(&journal).await?;
-        let crate::server_state::LoadedServer { state, runtime, .. } =
-            crate::server_state::tests::ServerStateFixture::new(
-                database,
-                directory.path().join("documents"),
-            )
-            .logos(directory.path().join("logos"))
-            .journal(journal)
-            .build()?;
-        let state = Arc::new(state);
-        let feature = crate::feature::journal::JournalFeature::load(
-            runtime.journal().reader(),
-            Arc::clone(state.operator()),
-            state.device_control().live_lease_view(),
-            time::UtcOffset::UTC,
-        );
-        state
-            .operator()
+        let features =
+            crate::feature::tests::ServerFixture::new(database, directory.path().join("documents"))
+                .logos(directory.path().join("logos"))
+                .journal(journal)
+                .build_with_features()?;
+        let loaded = features.loaded;
+        let feature = features.journal;
+        let application = loaded.http_router(std::path::Path::new("/nonexistent/journal-web"));
+        loaded
+            .operator
             .change_role(viewer_id, OperatorRole::Viewer)
             .await?;
-        let admin = state
-            .operator()
+        let admin = loaded
+            .operator
             .sign_in(
                 "journal-admin",
                 "journal-password-secret-canary1!".into(),
                 JournalContext::default(),
             )
             .await?;
-        let viewer = state
-            .operator()
+        let viewer = loaded
+            .operator
             .sign_in(
                 "journal-viewer",
                 "journal-password-secret-canary1!".into(),
                 JournalContext::default(),
             )
             .await?;
-        ready(runtime.journal()).await?;
+        ready(loaded.runtime.journal()).await?;
         Ok(Self {
-            runtime,
+            runtime: loaded.runtime,
             directory,
-            state,
+            journal: loaded.journal,
+            application,
             feature,
             admin_cookie: format!(
                 "__Secure-natsume_session={}",
@@ -114,12 +110,9 @@ impl Fixture {
                 .ok_or(TestError::missing("device id"))?,
         })
     }
-    pub(crate) fn routes(&self) -> crate::http::AccessRoutes {
-        self.feature.routes()
-    }
     pub(crate) fn row(&self, at: i64, event: Event) -> SeedEvent {
         SeedEvent {
-            boot_id: self.state.journal().boot_id(),
+            boot_id: self.journal.boot_id(),
             context: if event.category() == Category::Device {
                 JournalContext::default().with_device(self.device_id)
             } else {

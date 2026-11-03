@@ -23,7 +23,6 @@ pub(crate) mod lifecycle;
 pub(crate) mod logging;
 pub(crate) mod photo_initialization;
 pub(crate) mod server_runtime;
-pub(crate) mod server_state;
 pub(crate) mod task;
 pub(crate) mod tls;
 pub(crate) mod vault;

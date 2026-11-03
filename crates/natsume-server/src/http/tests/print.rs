@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use super::{
     Captured, LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, TestDatabase, drive,
-    header_text, login_request, router, seed_operator, server_state, unused_web_root,
+    header_text, login_request, seed_operator, server, unused_web_root,
 };
 use crate::{
     component::print::{
@@ -74,12 +74,9 @@ impl Fixture {
             })
             .await
             .map_err(crate::test_error::TestError::from)?;
-        let crate::server_state::LoadedServer {
-            state,
-            runtime,
-            routes,
-        } = server_state(&database)?;
-        let router = router(std::sync::Arc::new(state), routes, unused_web_root());
+        let loaded = server(&database)?;
+        let router = loaded.http_router(unused_web_root());
+        let runtime = loaded.runtime;
         let login = drive(&router, login_request(LOGIN_NAME, PASSWORD)?).await?;
         let cookie = header_text(&login.headers, &header::SET_COOKIE)?
             .split(';')

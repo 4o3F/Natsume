@@ -1,4 +1,4 @@
-use std::{future::Future, path::Path, sync::Arc};
+use std::{future::Future, path::Path};
 
 use snafu::ResultExt as _;
 
@@ -7,8 +7,8 @@ use crate::{
     component::{operator::OperatorComponent, runtime::RuntimeConfigComponent},
     config::ServerConfig,
     db::{Database, DatabaseConfig},
+    feature::{self, LoadedServer},
     http,
-    server_state::{LoadedServer, ServerState},
     tls::TlsListener,
 };
 
@@ -27,7 +27,7 @@ pub(super) async fn execute(
     run_until(config, shutdown, utc_offset).await
 }
 
-async fn load_state(
+async fn load_server(
     config: &ServerConfig,
     utc_offset: time::UtcOffset,
 ) -> Result<LoadedServer, CommandError> {
@@ -36,11 +36,11 @@ async fn load_state(
         .await
         .map_err(|source| CommandError::Database { source })?;
     tracing::info!("database ready");
-    let state = ServerState::load(database.clone(), config, utc_offset)
+    let loaded = feature::load(database.clone(), config, utc_offset)
         .await
         .context(super::error::StartupSnafu)?;
     configure_runtime(&database, config.domjudge_origin()).await?;
-    Ok(state)
+    Ok(loaded)
 }
 
 async fn configure_runtime(database: &Database, origin: &str) -> Result<(), CommandError> {
@@ -78,11 +78,13 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let LoadedServer {
-        state,
         runtime,
         routes,
-    } = load_state(&config, utc_offset).await?;
-    let state = Arc::new(state);
+        operator,
+        print,
+        journal,
+        lifecycle,
+    } = load_server(&config, utc_offset).await?;
     tracing::info!("server state ready");
     let listener = TlsListener::bind(
         config.listen_address(),
@@ -93,11 +95,18 @@ where
     .map_err(|source| CommandError::Tls { source })?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
-    let background = start_background_tasks(state.print())
+    let background = start_background_tasks(&print)
         .await
         .context(crate::server_runtime::BackgroundSnafu)
         .context(super::error::RuntimeSnafu)?;
-    let router = http::router(Arc::clone(&state), routes, Path::new(WEB_ASSETS_PATH));
+    let router = http::mount(
+        routes,
+        operator,
+        print,
+        journal,
+        lifecycle,
+        Path::new(WEB_ASSETS_PATH),
+    );
 
     runtime
         .serve_until(listener, router, background, shutdown)

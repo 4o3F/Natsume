@@ -112,6 +112,11 @@ impl ServerRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) const fn device_control(&self) -> &Arc<DeviceControl> {
+        &self.device_control
+    }
+
+    #[cfg(test)]
     pub(crate) const fn journal(&self) -> &JournalComponent {
         &self.journal
     }

@@ -111,11 +111,12 @@ async fn committed_fence_reason_wins_over_connection_eviction_shutdown_and_repla
             let fixture = &recorded.fixture;
             let device = fixture.activate(&SigningKey::from_bytes(&[0x51; 32])).await;
             let (outbound, mut outgoing) = mpsc::channel(1);
-            let (session, handle) = replace_current_lease(&fixture.state, device, outbound).await;
+            let (session, handle) =
+                replace_current_lease(fixture.runtime.device_control(), device, outbound).await;
             let operator = OperatorId::from_authenticated_operator(Uuid::now_v7());
             let mut fence = handle.authority_fence.lock().await;
             let ending = end_attempt(
-                fixture.state.device_control(),
+                fixture.runtime.device_control(),
                 &handle,
                 device,
                 session,
@@ -154,9 +155,10 @@ async fn first_actor_terminal_transition_wins_and_late_notifications_are_ignored
     let mut recorded = RecordedFixture::new().await;
     let fixture = &recorded.fixture;
     let device = fixture.activate(&SigningKey::from_bytes(&[0x52; 32])).await;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let (outbound, _outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, device, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device, outbound).await;
     handle
         .evict_current_lease(LeaseEnd::local(DisconnectReason::Revoked))
         .await;
@@ -170,7 +172,8 @@ async fn first_actor_terminal_transition_wins_and_late_notifications_are_ignored
         &DisconnectReason::Revoked,
     );
     let (outbound, _outgoing) = mpsc::channel(1);
-    let (session, _) = replace_current_lease(&fixture.state, device, outbound).await;
+    let (session, _) =
+        replace_current_lease(fixture.runtime.device_control(), device, outbound).await;
     handle
         .clear_lease_if_current(session, super::super::ConnectionEnd::ClientClose)
         .await;
@@ -193,7 +196,8 @@ async fn actual_baseline_is_emitted_once_then_only_closed_state_changes_are_reco
     let fixture = &recorded.fixture;
     let device = fixture.activate(&SigningKey::from_bytes(&[0x53; 32])).await;
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, handle) = replace_current_lease(&fixture.state, device, outbound).await;
+    let (session, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device, outbound).await;
     for _ in 0..2 {
         handle
             .enqueue_client_state(session, valid_snapshot())
@@ -201,7 +205,7 @@ async fn actual_baseline_is_emitted_once_then_only_closed_state_changes_are_reco
             .unwrap_or_else(|error| panic!("snapshot: {error}"));
         assert_complete_target(outgoing.recv().await.unwrap_or_else(|| panic!("target")));
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .read_connection_state(device)
@@ -236,7 +240,7 @@ async fn actual_baseline_is_emitted_once_then_only_closed_state_changes_are_reco
         .unwrap_or_else(|error| panic!("snapshot: {error}"));
     outgoing.recv().await.unwrap_or_else(|| panic!("target"));
     fixture
-        .state
+        .runtime
         .device_control()
         .registry
         .read_connection_state(device)
@@ -260,7 +264,7 @@ async fn actual_baseline_is_emitted_once_then_only_closed_state_changes_are_reco
         .unwrap_or_else(|error| panic!("snapshot: {error}"));
     outgoing.recv().await.unwrap_or_else(|| panic!("target"));
     fixture
-        .state
+        .runtime
         .device_control()
         .registry
         .read_connection_state(device)
@@ -270,7 +274,7 @@ async fn actual_baseline_is_emitted_once_then_only_closed_state_changes_are_reco
     assert!(
         matches!(&changed[0].event, Event::ActualChanged(event) if event.resource == ActualResource::Foreground && event.from == Some(JournalActualState::Unknown) && event.to == JournalActualState::Waiting)
     );
-    fixture.state.device_control().shutdown().await;
+    fixture.runtime.device_control().shutdown().await;
 }
 
 #[tokio::test]
@@ -278,7 +282,7 @@ async fn lifecycle_changes_and_review_terminal_claims_emit_only_for_winners() {
     let mut recorded = RecordedFixture::new().await;
     let fixture = &recorded.fixture;
     let device = fixture.activate(&SigningKey::from_bytes(&[0x54; 32])).await;
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let accepted = admission(control);
     assert_eq!(
         control
@@ -372,14 +376,15 @@ async fn panicking_actor_reports_its_real_current_session_without_panic_contents
     let device = fixture.activate(&SigningKey::from_bytes(&[0x58; 32])).await;
     let (trigger, triggered) = tokio::sync::oneshot::channel();
     let (_handle, supervisor) = super::super::actor::spawn_panicking_actor(
-        &fixture.state.device_control().registry,
+        &fixture.runtime.device_control().registry,
         device,
         triggered,
     )
     .await
     .unwrap_or_else(|| panic!("actor"));
     let (outbound, mut outgoing) = mpsc::channel(1);
-    let (session, _handle) = replace_current_lease(&fixture.state, device, outbound).await;
+    let (session, _handle) =
+        replace_current_lease(fixture.runtime.device_control(), device, outbound).await;
     assert!(trigger.send(()).is_ok());
     supervisor.await;
     assert!(outgoing.recv().await.is_none());
@@ -391,7 +396,7 @@ async fn panicking_actor_reports_its_real_current_session_without_panic_contents
     assert!(disconnects(&records, session).is_empty());
     assert!(
         fixture
-            .state
+            .runtime
             .device_control()
             .registry
             .get(device)
@@ -403,7 +408,7 @@ async fn panicking_actor_reports_its_real_current_session_without_panic_contents
 #[tokio::test]
 async fn approval_commit_does_not_record_the_connection_activation_exchange() {
     let mut recorded = RecordedFixture::new().await;
-    let control = recorded.fixture.state.device_control();
+    let control = recorded.fixture.runtime.device_control();
     let evidence = ValidatedEnrollmentEvidence::new(
         MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("machine ID")),
         ControlPublicKey::parse(
@@ -526,11 +531,12 @@ async fn narrow_live_lease_view_tracks_attach_clear_and_registry_shutdown() {
     let fixture = &recorded.fixture;
     let device_id =
         DeviceId::parse(&Uuid::now_v7().to_string()).unwrap_or_else(|| panic!("device fixture id"));
-    let control = fixture.state.device_control();
+    let control = fixture.runtime.device_control();
     let view = control.live_lease_view();
     assert_eq!(view.session(device_id).await, None);
     let (outbound, _outgoing) = mpsc::channel(8);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     assert_eq!(
         view.session(device_id).await,
         Some(SessionId::from_lease(session_id))
@@ -541,7 +547,7 @@ async fn narrow_live_lease_view_tracks_attach_clear_and_registry_shutdown() {
     control.registry.read_connection_state(device_id).await;
     assert_eq!(view.session(device_id).await, None);
     let (outbound, _outgoing) = mpsc::channel(8);
-    replace_current_lease(&fixture.state, device_id, outbound).await;
+    replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     control.shutdown().await;
     assert_eq!(view.session(device_id).await, None);
 }
@@ -551,9 +557,13 @@ async fn pending_session_ready_is_tracked_and_rejected_before_shutdown_disconnec
     let mut recorded = RecordedFixture::new().await;
     let fixture = &recorded.fixture;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x61; 32])).await;
-    let control = fixture.state.device_control();
-    let (session_id, handle) =
-        replace_current_lease(&fixture.state, device_id, mpsc::channel(1).0).await;
+    let control = fixture.runtime.device_control();
+    let (session_id, handle) = replace_current_lease(
+        fixture.runtime.device_control(),
+        device_id,
+        mpsc::channel(1).0,
+    )
+    .await;
     let ready = super::super::finish_ready_exchange(
         control,
         admission(control),
@@ -565,8 +575,8 @@ async fn pending_session_ready_is_tracked_and_rejected_before_shutdown_disconnec
     );
     tokio::pin!(ready);
     assert!(futures_util::poll!(&mut ready).is_pending());
-    fixture.state.lifecycle().begin_shutdown();
-    let waiting = fixture.state.lifecycle().wait();
+    fixture.lifecycle.begin_shutdown();
+    let waiting = fixture.lifecycle.wait();
     tokio::pin!(waiting);
     assert!(
         futures_util::poll!(&mut waiting).is_pending(),
@@ -620,7 +630,8 @@ async fn queued_client_close_wins_over_a_permanent_reconcile_failure()
     let fixture = &recorded.fixture;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x62; 32])).await;
     let (outbound, _outgoing) = mpsc::channel(1);
-    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (session_id, handle) =
+        replace_current_lease(fixture.runtime.device_control(), device_id, outbound).await;
     fixture
         .database
         .write(|transaction| {
@@ -649,7 +660,7 @@ async fn queued_client_close_wins_over_a_permanent_reconcile_failure()
         .await;
     release.wait();
     fixture
-        .state
+        .runtime
         .device_control()
         .registry
         .read_connection_state(device_id)

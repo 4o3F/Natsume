@@ -22,14 +22,11 @@ use crate::{
     component::{operator::OperatorComponent, print::PrintComponent},
     journal::Journal,
     lifecycle::ServerLifecycle,
-    server_state::ServerState,
 };
 
 use self::error::ApiError;
 
-pub(crate) type AppState = Arc<ServerState>;
-
-pub(crate) type Routes<S = AppState> = Vec<(&'static str, MethodRouter<S>)>;
+pub(crate) type Routes<S = ()> = Vec<(&'static str, MethodRouter<S>)>;
 
 /// Binds a feature's narrow state to each of its routes.
 pub(crate) fn bind_routes<S>(routes: Routes<S>, state: &S) -> Routes<()>
@@ -42,6 +39,7 @@ where
         .collect()
 }
 
+#[derive(Clone)]
 pub(crate) struct AccessRoutes {
     /// Mounted without principal authentication.
     pub(crate) public: Routes<()>,
@@ -72,21 +70,6 @@ impl AccessRoutes {
     }
 }
 
-/// Assembles legacy routes during migration; removed in Step 11.
-pub(crate) fn router(state: AppState, routes: AccessRoutes, web_root: &Path) -> Router {
-    let routes = legacy_routes().merge(routes);
-    let application = mount(
-        routes,
-        state.operator().clone(),
-        state.print().clone(),
-        state.journal().clone(),
-        state.lifecycle().clone(),
-        web_root,
-    );
-    drop(state);
-    application
-}
-
 pub(crate) fn mount(
     routes: AccessRoutes,
     operator: Arc<OperatorComponent>,
@@ -95,9 +78,9 @@ pub(crate) fn mount(
     lifecycle: ServerLifecycle,
     web_root: &Path,
 ) -> Router {
-    let api_v2 = routes
-        .public
+    let api_v2 = handler::health::public_routes::<()>()
         .into_iter()
+        .chain(routes.public)
         .fold(Router::new(), |router, (path, methods)| {
             router.route(path, methods)
         })
@@ -146,13 +129,6 @@ async fn private_namespace_no_store(request: Request, next: Next) -> Response {
             .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
     response
-}
-
-fn legacy_routes() -> AccessRoutes {
-    AccessRoutes {
-        public: handler::health::public_routes(),
-        ..AccessRoutes::new()
-    }
 }
 
 fn operator_group(state: Arc<OperatorComponent>, routes: Routes<()>) -> Router {
