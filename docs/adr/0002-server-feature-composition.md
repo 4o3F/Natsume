@@ -25,9 +25,9 @@ Server 采用手写构造注入，但 `ServerState` 同时承担四项职责：�
 | D3 Feature 间依赖 | 通过 `load` 的具名参数显式传递已构造的共享句柄（例如 Photo 接收 Contest 的 `Arc`），由编译器检查。不提供依赖查找 trait、注册表、动态集合或模块生命周期 trait |
 | D4 认证挂载 | 顶层按 public、operator、source、client 四个 access class 合并 feature 路由，组装时对受保护分组中的每条 `MethodRouter` 调用 `route_layer` 挂载认证，使方法不匹配时先返回 405，不经过认证；认证中间件只持有窄状态（Operator 或 Print 的 `Arc`）。审计、completion 与 HEAD 拒绝仍包在 `/api/v2` 外层，顺序不变 |
 | D5 运行期所有者 | `ServerRuntime` 持有 `ServerLifecycle`、`Arc<DeviceControl>`、Journal writer、HTTP serving task 与 `BackgroundTasks`，负责既有的固定关闭顺序；HTTP 只取得 Journal emit/reader 句柄。`serve` 只做命令适配 |
-| D6 启动错误 | 各 feature 定义自己的 Snafu 启动错误；`StartupError` 每个 feature 一个变体，`CommandFailure` 只以一个变体包装 `StartupError`，不再逐项镜像 |
+| D6 启动错误 | 可失败的 feature `load` 返回其组件自身的 Snafu 错误，由组合层 `StartupError` 中归属该 feature 的变体包装（如 `PrintStorage`、`PhotoStorage`），不另设 feature 级错误类型；`CommandFailure` 只以一个变体包装 `StartupError`，不再逐项镜像 |
 | D7 共享实例 | 每个共享组件在进程内只构造一次，跨 feature 只传递同一个 `Arc`，保持 Print、Photo、Contest 的预算、信号量、缓存以及唯一的 `DeviceRegistry` |
-| D8 公开入口 | `natsume_server::router` 与 `commands::run_until` 没有 workspace 外部调用者，收窄为 `pub(crate)` |
+| D8 公开入口 | `natsume_server::router` 与 `commands::run_until` 没有 workspace 外部调用者；收窄为 `pub(crate)` 后在 crate 内也无调用者，因此直接删除 |
 
 已删除 `ServerState`、`AppState` 与旧构造器链，各测试使用 feature 或组件的 fixture；HTTP 集成测试通过共同的 `assemble` 取得共享实例。新增 feature 的预期改动范围是：自身模块、组装入口中的一行加载和一行路由合并、`StartupError` 的一个变体，以及架构文档中该 feature 的章节。
 

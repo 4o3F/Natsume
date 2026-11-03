@@ -562,23 +562,20 @@ async fn network_addresses_ignore_replaced_leases_and_survive_disconnect()
 
 #[tokio::test]
 async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() {
-    struct CoordinatorOwner {
-        control: Arc<DeviceControl>,
-    }
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x77; 32])).await;
     // The fixture keeps database files alive, independently of this composition.
-    let crate::feature::LoadedServer { runtime, .. } = feature::tests::ServerFixture::new(
-        fixture.database.clone(),
-        fixture.path.with_extension("print-documents"),
-    )
-    .build()
-    .unwrap_or_else(|error| panic!("independent composition failed: {error}"));
-    let composition = Arc::new(CoordinatorOwner {
-        control: Arc::clone(runtime.device_control()),
-    });
+    // The whole assembly, including routes and the runtime owner, is released.
+    let composition = Arc::new(
+        feature::tests::ServerFixture::new(
+            fixture.database.clone(),
+            fixture.path.with_extension("print-documents"),
+        )
+        .build()
+        .unwrap_or_else(|error| panic!("independent composition failed: {error}")),
+    );
     let composition_lifetime = Arc::downgrade(&composition);
-    let control = Arc::clone(&composition.control);
+    let control = Arc::clone(composition.runtime.device_control());
     drop(composition);
     assert!(composition_lifetime.upgrade().is_none());
 
@@ -617,7 +614,6 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
         DeviceConnectionState::Active { .. }
     ));
 
-    drop(runtime);
     let coordinator_lifetime = Arc::downgrade(&control);
     drop(control);
     assert!(coordinator_lifetime.upgrade().is_none());
