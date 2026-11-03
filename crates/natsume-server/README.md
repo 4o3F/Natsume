@@ -93,6 +93,12 @@ After durably saving all local data, Client completes with the initialization ID
 
 The additive migration creates `photo_server_metadata`, `photo_sources` and `photo_initializations`; it changes no existing team, account, seat or printing tables. Binary cache files live under optional absolute `[storage].photo_initializations`, defaulting to the database path with its extension replaced by `.photo`. The service user needs write access there. Back up the database and cache together. Existing deployments need no new mandatory configuration field.
 
+### Photo result storage foundation
+
+Optional absolute `[storage].photo_results` selects a separate result-storage root. By default, the database extension is replaced by `.photo-results` (for example, `/var/lib/natsume-server/natsume.photo-results`). It must not overlap the initialization directory. Startup creates and validates private, service-owned `0700` directories: `uploads/`, `staging/`, `objects/`, and `exports/`. Symlink roots/subdirectories and directories accessible to other users are rejected; startup does not change existing permissions or delete existing files.
+
+The additive result migration creates `photo_import_jobs`, `photo_objects`, `photo_submissions`, and `team_photos`. Pictures belong on disk; these tables hold task facts, verified image metadata, stable submissions, and each team's current photo reference. There is no foreign key into existing accounts or teams, so removed identities can remain pending without blocking roster changes. Existing roster tables are unchanged. ZIP upload, verification, commit/decision, and export APIs are not implemented by this foundation.
+
 ## DOMjudge print admission
 
 The Print component registers source-scoped requests and validates final PDFs. It syncs immutable `<sha256>.pdf` files into `[storage].print_documents` before committing their metadata, FIFO sequence and first admission snapshot in SQLite. No PDF bytes are written in the admission transaction. The `00000000000007_print` migration creates metadata-only document records, and startup verifies every referenced file before serving. The [Print notes](docs/print-admission.md) describe structural PDF validation, failure recovery and coordinated database/document backups; the [architecture contract](../../docs/architecture.md#2321-i1-受理协议与独立交付) defines fields, transitions and failure semantics.

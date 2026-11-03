@@ -2426,6 +2426,8 @@ Client 在创建初始化目录之前取得目标同级排他锁；只有没有�
 
 ### 23.6 成果包、接收与外部图片交付
 
+Server 成果持久化基础采用独立可选配置 `[storage].photo_results`，默认由数据库路径替换扩展名为 `.photo-results`，不能与初始化缓存目录相同或互相包含。启动校验并创建服务账号拥有的 `0700` 根目录及 uploads、staging、objects、exports 子目录，使用目录句柄拒绝根目录或子目录符号链接，不修改已有权限或删除现存文件。新增 photo_import_jobs、photo_objects、photo_submissions、team_photos 四张 Photo 自有表；图片在磁盘，任务、对象元数据、稳定成果及当前关联在数据库。与现有账号不建外键或级联，避免阻碍名单删除并保留失效身份待处理。当前只落地配置、目录及 schema，下面的成果上传／接收／导出流程仍待实现，不以建表完成宣称闭环。
+
 只有确认成品交付。Photo Client 仅首次初始化联网，之后全程离线；Manifest、签名与成品图片组成一个 ZIP，经 Web Panel 一次上传。Server 使用有界流式解压和验证，限制压缩包、条目、解压总量与图像解码资源，不整包加载到内存。成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希，由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
 
 首期成果契约位于 `natsume-photo-protocol::results`。`manifest.json` 是封闭字段的 `{ "manifest": { ... }, "signature": "..." }` 信封；manifest 包含数值 `format_version: 1`、仅允许 `team_results` 的 kind、manifest_id、context、signing_public_key 和 results。context 使用现有 source_id、dataset_id、initialization_id 及初始化原始 JSON 的 initialization_sha256，不另造同义身份。results 每项包含持久化 result_id、submission_id、account_id、外部 account、image_sha256、image_bytes、image_format（jpeg/png）、width、height；不包含本地路径、座位、原片、凭据或默认图片用途。

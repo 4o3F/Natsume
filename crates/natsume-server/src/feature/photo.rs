@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use crate::{
     component::{
         contest::ContestComponent,
-        photo::{InitializationError, PhotoComponent},
+        photo::{PhotoComponent, PhotoStorageError},
     },
     db::Database,
     http::{AccessRoutes, bind_routes, handler::photo},
@@ -19,11 +19,14 @@ impl PhotoFeature {
     pub(crate) async fn load(
         database: Database,
         directory: PathBuf,
+        results_directory: PathBuf,
         contest: Arc<ContestComponent>,
-    ) -> Result<Self, InitializationError> {
-        let photo = tokio::task::spawn_blocking(move || PhotoComponent::new(database, &directory))
-            .await
-            .map_err(|source| InitializationError::Worker { source })??;
+    ) -> Result<Self, PhotoStorageError> {
+        let photo = tokio::task::spawn_blocking(move || {
+            PhotoComponent::load(database, &directory, &results_directory)
+        })
+        .await
+        .map_err(|source| PhotoStorageError::Worker { source })??;
         Ok(Self {
             initialization: PreparePhotoInitialization::new(Arc::new(photo), contest),
         })
@@ -33,11 +36,16 @@ impl PhotoFeature {
     pub(crate) fn for_test(
         database: Database,
         directory: &std::path::Path,
+        results_directory: &std::path::Path,
         contest: Arc<ContestComponent>,
-    ) -> Result<Self, InitializationError> {
+    ) -> Result<Self, PhotoStorageError> {
         Ok(Self {
             initialization: PreparePhotoInitialization::new(
-                Arc::new(PhotoComponent::new(database, directory)?),
+                Arc::new(PhotoComponent::load(
+                    database,
+                    directory,
+                    results_directory,
+                )?),
                 contest,
             ),
         })

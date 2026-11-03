@@ -2,6 +2,7 @@
 mod db;
 mod enrollment;
 mod initialization;
+mod results_storage;
 mod storage;
 
 pub(crate) use enrollment::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState};
@@ -14,6 +15,19 @@ use std::{
 use tokio::sync::Semaphore;
 
 use crate::db::Database;
+use snafu::{ResultExt as _, Snafu};
+
+#[derive(Debug, Snafu)]
+pub(crate) enum PhotoStorageError {
+    #[snafu(display("Photo initialization storage startup failed"))]
+    Initialization { source: InitializationError },
+    #[snafu(display("Photo results storage startup failed"))]
+    Results {
+        source: results_storage::ResultsStorageError,
+    },
+    #[snafu(display("Photo storage startup task failed"))]
+    Worker { source: tokio::task::JoinError },
+}
 
 pub(crate) struct PhotoComponent {
     database: Database,
@@ -24,6 +38,15 @@ pub(crate) struct PhotoComponent {
 }
 
 impl PhotoComponent {
+    pub(crate) fn load(
+        database: Database,
+        initializations: &Path,
+        results: &Path,
+    ) -> Result<Self, PhotoStorageError> {
+        results_storage::prepare(results).context(ResultsSnafu)?;
+        Self::new(database, initializations).context(InitializationSnafu)
+    }
+
     pub(crate) fn new(database: Database, directory: &Path) -> Result<Self, InitializationError> {
         Ok(Self {
             database,

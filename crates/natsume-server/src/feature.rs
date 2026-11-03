@@ -50,7 +50,7 @@ pub(crate) enum StartupError {
     /// Storage startup failure owned by `PhotoFeature`.
     #[snafu(visibility(pub(crate)), display("Photo storage startup failed"))]
     PhotoStorage {
-        source: crate::component::photo::InitializationError,
+        source: crate::component::photo::PhotoStorageError,
     },
     #[snafu(display("server configuration failed"))]
     Configuration { source: crate::config::ConfigError },
@@ -139,6 +139,7 @@ pub(crate) async fn load(
     let photo = PhotoFeature::load(
         database.clone(),
         config.photo_initializations_path().to_path_buf(),
+        config.photo_results_path().to_path_buf(),
         Arc::clone(contest.component()),
     )
     .await

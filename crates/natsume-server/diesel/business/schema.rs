@@ -152,6 +152,23 @@ diesel::table! {
 }
 
 diesel::table! {
+    photo_import_jobs (import_id) {
+        import_id -> Text,
+        state -> Text,
+        uploaded_bytes -> BigInt,
+        verified_images -> BigInt,
+        source_id -> Nullable<Text>,
+        initialization_id -> Nullable<Text>,
+        manifest_id -> Nullable<Text>,
+        manifest_sha256 -> Nullable<Text>,
+        manifest_json -> Nullable<Text>,
+        failure_code -> Nullable<Text>,
+        created_at_unix_ms -> BigInt,
+        updated_at_unix_ms -> BigInt,
+    }
+}
+
+diesel::table! {
     photo_initializations (initialization_id) {
         initialization_id -> Text,
         source_id -> Text,
@@ -159,6 +176,16 @@ diesel::table! {
         manifest_sha256 -> Text,
         completion_request_id -> Nullable<Text>,
         completed_at_unix_ms -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
+    photo_objects (image_sha256) {
+        image_sha256 -> Text,
+        image_format -> Text,
+        image_bytes -> BigInt,
+        width -> BigInt,
+        height -> BigInt,
     }
 }
 
@@ -182,6 +209,20 @@ diesel::table! {
         token_hash -> Nullable<Binary>,
         token_expires_at_unix_ms -> Nullable<BigInt>,
         created_at_unix_ms -> BigInt,
+    }
+}
+
+diesel::table! {
+    photo_submissions (source_id, submission_id) {
+        source_id -> Text,
+        submission_id -> Text,
+        result_id -> Text,
+        import_id -> Text,
+        account_id -> Text,
+        account -> Text,
+        image_sha256 -> Text,
+        state -> Text,
+        revision -> BigInt,
     }
 }
 
@@ -314,6 +355,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    team_photos (account_id) {
+        account_id -> Text,
+        source_id -> Text,
+        submission_id -> Text,
+        revision -> BigInt,
+    }
+}
+
+diesel::table! {
     teams (account_id) {
         account_id -> Text,
         organization_id -> BigInt,
@@ -335,7 +385,12 @@ diesel::joinable!(device_session_targets -> devices (device_id));
 diesel::joinable!(gateway_credentials -> devices (device_id));
 diesel::joinable!(operator_invitations -> operator_accounts (issuer_operator_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
+diesel::joinable!(photo_import_jobs -> photo_initializations (initialization_id));
+diesel::joinable!(photo_import_jobs -> photo_sources (source_id));
 diesel::joinable!(photo_initializations -> photo_sources (source_id));
+diesel::joinable!(photo_submissions -> photo_import_jobs (import_id));
+diesel::joinable!(photo_submissions -> photo_objects (image_sha256));
+diesel::joinable!(photo_submissions -> photo_sources (source_id));
 diesel::joinable!(print_attempts -> print_jobs (ready_sequence));
 diesel::joinable!(print_attempts -> print_printers (printer_id));
 diesel::joinable!(print_claims -> print_attempts (attempt_id));
@@ -362,9 +417,12 @@ diesel::allow_tables_to_appear_in_same_query!(
     operator_sessions,
     organizations,
     pending_import_candidate,
+    photo_import_jobs,
     photo_initializations,
+    photo_objects,
     photo_server_metadata,
     photo_sources,
+    photo_submissions,
     print_attempts,
     print_claims,
     print_documents,
@@ -377,5 +435,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     server_vault_records,
     site_identity,
     target_submission_receipts,
+    team_photos,
     teams,
 );

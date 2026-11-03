@@ -307,6 +307,8 @@ impl Drop for TestDatabase {
             self.documents_path()
                 .with_extension("photo-initializations"),
         );
+        let _photo_results =
+            fs::remove_dir_all(self.documents_path().with_extension("photo-results"));
         let _database_result = fs::remove_file(&self.path);
         let _wal_result = fs::remove_file(format!("{}-wal", self.path.display()));
         let _shm_result = fs::remove_file(format!("{}-shm", self.path.display()));

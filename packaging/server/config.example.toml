@@ -12,6 +12,9 @@ journal = "/var/lib/natsume-server/natsume-journal.db"
 root_key = "/var/lib/natsume-server/keys/server-root.key"
 organization_logos = "/var/lib/natsume-server/organization-logos"
 print_documents = "/var/lib/natsume-server/print-documents"
+# Optional; defaults to the database path with extension .photo-results.
+# Must be separate from photo_initializations; startup creates private subdirectories.
+# photo_results = "/var/lib/natsume-server/photo-results"
 
 [journal]
 max_age_days = 30

@@ -96,6 +96,7 @@ impl ServerFixture {
         let gateway =
             GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
         let photo_directory = documents.with_extension("photo-initializations");
+        let photo_results_directory = documents.with_extension("photo-results");
         let print =
             PrintFeature::for_test(database.clone(), documents).context(PrintStorageSnafu)?;
         let infra = Infra {
@@ -108,6 +109,7 @@ impl ServerFixture {
         let photo = PhotoFeature::for_test(
             infra.database.clone(),
             &photo_directory,
+            &photo_results_directory,
             Arc::clone(contest.component()),
         )
         .context(PhotoStorageSnafu)?;

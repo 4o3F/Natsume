@@ -22,6 +22,7 @@ pub struct ServerConfig {
     organization_logos_path: PathBuf,
     print_documents_path: PathBuf,
     photo_initializations_path: PathBuf,
+    photo_results_path: PathBuf,
     vault_master_key_path: PathBuf,
     tls_certificate_path: PathBuf,
     tls_private_key_path: PathBuf,
@@ -31,6 +32,10 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
+    pub(crate) fn photo_results_path(&self) -> &Path {
+        &self.photo_results_path
+    }
+
     pub(crate) fn photo_initializations_path(&self) -> &Path {
         &self.photo_initializations_path
     }
@@ -75,12 +80,17 @@ impl ServerConfig {
             .storage
             .photo_initializations
             .unwrap_or_else(|| raw.storage.database.with_extension("photo"));
+        let photo_results_path = raw
+            .storage
+            .photo_results
+            .unwrap_or_else(|| raw.storage.database.with_extension("photo-results"));
         let journal_path = raw
             .storage
             .journal
             .unwrap_or_else(|| raw.storage.database.with_file_name("natsume-journal.db"));
         raw.journal.validate()?;
         let config = Self {
+            photo_results_path,
             photo_initializations_path,
             listen_address,
             log_level: raw.log.level,
@@ -102,6 +112,18 @@ impl ServerConfig {
 
     fn validate_paths(&self, control_root: &Path) -> Result<(), ConfigError> {
         require_absolute(&self.database_path, ConfigError::RelativeDatabasePath)?;
+        require_absolute(
+            &self.photo_results_path,
+            ConfigError::RelativePhotoResultsPath,
+        )?;
+        let results = normalized_storage_path(&self.photo_results_path)?;
+        let initializations = normalized_storage_path(&self.photo_initializations_path)?;
+        if results.starts_with(&initializations)
+            || initializations.starts_with(&results)
+            || same_storage_file(&self.photo_results_path, &self.photo_initializations_path)?
+        {
+            return Err(ConfigError::SharedPhotoStoragePath);
+        }
         require_absolute(&self.journal_path, ConfigError::RelativeJournalPath)?;
         if normalized_storage_path(&self.database_path)?
             == normalized_storage_path(&self.journal_path)?
@@ -290,6 +312,7 @@ struct RawListenConfig {
 
 #[derive(Deserialize)]
 struct RawStorageConfig {
+    photo_results: Option<PathBuf>,
     #[serde(default)]
     photo_initializations: Option<PathBuf>,
     database: PathBuf,
@@ -350,7 +373,7 @@ fn same_storage_file(first: &Path, second: &Path) -> Result<bool, ConfigError> {
         {
             Ok(None)
         }
-        Err(source) => Err(ConfigError::JournalPath { source }),
+        Err(source) => Err(ConfigError::StoragePath { source }),
     };
     Ok(match (metadata(first)?, metadata(second)?) {
         (Some(first), Some(second)) => first.dev() == second.dev() && first.ino() == second.ino(),
@@ -383,12 +406,12 @@ fn normalized_storage_path(path: &Path) -> Result<PathBuf, ConfigError> {
                             error.kind(),
                             std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
                         ) => {}
-                    Err(source) => return Err(ConfigError::JournalPath { source }),
+                    Err(source) => return Err(ConfigError::StoragePath { source }),
                 }
             }
             Ok(normalized)
         }
-        Err(source) => Err(ConfigError::JournalPath { source }),
+        Err(source) => Err(ConfigError::StoragePath { source }),
     }
 }
 
@@ -527,6 +550,10 @@ impl GatewayNotAfter {
 /// Redacted Server configuration failure.
 #[derive(Debug, Snafu)]
 pub enum ConfigError {
+    #[snafu(display("storage.photo_results must be an absolute path"))]
+    RelativePhotoResultsPath,
+    #[snafu(display("Photo results and initialization storage must use different directories"))]
+    SharedPhotoStoragePath,
     #[snafu(display("storage.photo_initializations must be an absolute path"))]
     RelativePhotoInitializationsPath,
     #[snafu(display(
@@ -554,8 +581,8 @@ pub enum ConfigError {
     SharedJournalPath,
     #[snafu(display("journal retention, disk limits and flush timeout must be positive"))]
     InvalidJournalBudget,
-    #[snafu(display("cannot resolve journal storage paths"))]
-    JournalPath { source: std::io::Error },
+    #[snafu(display("cannot resolve storage paths"))]
+    StoragePath { source: std::io::Error },
     #[snafu(display("storage.organization_logos must be an absolute path"))]
     RelativeOrganizationLogosPath,
     #[snafu(display("storage.print_documents must be an absolute path"))]
@@ -653,6 +680,10 @@ domjudge_origin = "https://judge.contest.example"
             config.photo_initializations_path(),
             Path::new("/var/lib/natsume-server/natsume.photo")
         );
+        assert_eq!(
+            config.photo_results_path(),
+            Path::new("/var/lib/natsume-server/natsume.photo-results")
+        );
         Ok(())
     }
 
@@ -677,6 +708,36 @@ domjudge_origin = "https://judge.contest.example"
                 assert!(matches!(
                     result,
                     Err(ConfigError::RelativePhotoInitializationsPath)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn photo_results_storage_requires_absolute_separate_directory() -> Result<(), TestFailure> {
+        for (path, valid) in [
+            ("/var/lib/natsume-server/photo-results", true),
+            ("relative/results", false),
+            ("/var/lib/natsume-server/natsume.photo", false),
+            ("/var/lib/natsume-server/natsume.photo/objects", false),
+            ("/var/lib/natsume-server", false),
+        ] {
+            let contents = VALID_CONFIG.replace(
+                "[storage]",
+                &format!("[storage]\nphoto_results = \"{path}\""),
+            );
+            let fixture = ConfigFixture::new(&contents)?;
+            let result = ServerConfig::load_from(fixture.path());
+            if valid {
+                let config = result.map_err(|source| {
+                    TestFailure::from(crate::test_error::TestError::from(source))
+                })?;
+                assert_eq!(config.photo_results_path(), Path::new(path));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ConfigError::RelativePhotoResultsPath | ConfigError::SharedPhotoStoragePath)
                 ));
             }
         }

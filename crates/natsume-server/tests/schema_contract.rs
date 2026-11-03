@@ -29,7 +29,7 @@ fn migrations() -> Result<FileBasedMigrations, TestError> {
 fn database() -> Result<SqliteConnection, TestError> {
     let mut connection = SqliteConnection::establish(":memory:")?;
     connection.batch_execute("PRAGMA foreign_keys = ON;")?;
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 9);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 10);
     Ok(connection)
 }
 
@@ -47,17 +47,17 @@ fn migrations_round_trip() -> Result<(), TestError> {
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations'";
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        32
+        36
     );
-    assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 9);
+    assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 10);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
         0
     );
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 9);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 10);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        32
+        36
     );
     Ok(())
 }
@@ -88,9 +88,9 @@ fn photo_migration_preserves_existing_schema_accounts_and_print_sources() -> Res
         ))
         .execute(&mut connection)?;
     // SQLite system metadata is inspected here; ordinary fixture writes use Diesel.
-    let shape = "SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'photo_%' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'sqlite_%' ORDER BY name)";
+    let shape = "SELECT group_concat(sql, char(10)) FROM (SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'photo_%' AND name != 'team_photos' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'sqlite_%' ORDER BY name)";
     let baseline = sql::<diesel::sql_types::Text>(shape).get_result::<String>(&mut connection)?;
-    for upgrade in [true, false] {
+    for upgrade in [true, true, false, false] {
         if upgrade {
             connection.run_next_migration(migrations()?)?;
         } else {
@@ -237,7 +237,7 @@ fn operator_links_and_print_migrations_preserve_existing_deployment_data() -> Re
     connection.batch_execute("INSERT INTO operator_invitations VALUES ('i1', 'viewer', 'o1', x'11', 1, 2); INSERT INTO operator_password_resets VALUES ('o2', 'reset1', 'o1', x'12', 1, 2);")?;
     let baseline = snapshot_existing_tables(&mut connection)?;
     connection.run_next_migration(migrations()?)?;
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 2);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 3);
     assert_eq!(snapshot_existing_tables(&mut connection)?, baseline);
     for table in [
         "print_sources",
@@ -254,8 +254,13 @@ fn operator_links_and_print_migrations_preserve_existing_deployment_data() -> Re
             0
         );
     }
-    connection.revert_last_migration(migrations()?)?;
-    connection.revert_last_migration(migrations()?)?;
+    while connection
+        .applied_migrations()?
+        .iter()
+        .any(|version| version.to_string().as_str() > "00000000000007")
+    {
+        connection.revert_last_migration(migrations()?)?;
+    }
     assert_eq!(snapshot_existing_tables(&mut connection)?, baseline);
     connection.revert_last_migration(migrations()?)?;
     connection.revert_last_migration(migrations()?)?;
@@ -392,7 +397,7 @@ fn strict_tables_enforce_storage_types_and_nullability() -> Result<(), TestError
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND strict = 1"
         )
         .get_result::<i64>(&mut connection)?,
-        32
+        36
     );
     connection.batch_execute("INSERT INTO accounts VALUES ('a1', 'team-1', 1);")?;
     rejects(
@@ -630,7 +635,7 @@ fn roster_migration_preserves_deployment_data_and_invalidates_only_old_previews(
         "SELECT count(*) FROM device_home_targets WHERE device_id = 'd1' AND reset_epoch = 10",
         "SELECT count(*) FROM runtime_config WHERE singleton = 1 AND domjudge_origin = 'https://judge.example'",
     ];
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 8);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 9);
     for statement in checks {
         assert_eq!(
             sql::<BigInt>(statement).get_result::<i64>(&mut connection)?,
@@ -715,7 +720,7 @@ fn snapshot_existing_tables(
         #[diesel(sql_type = Nullable<Text>)]
         rows: Option<String>,
     }
-    let tables = sql_query("SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'print_%' AND name NOT LIKE 'photo_%' ORDER BY name").load::<Table>(connection)?;
+    let tables = sql_query("SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'print_%' AND name NOT LIKE 'photo_%' AND name != 'team_photos' ORDER BY name").load::<Table>(connection)?;
     let mut snapshot = Vec::new();
     for table in tables {
         let columns =
