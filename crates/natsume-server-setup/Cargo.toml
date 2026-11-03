@@ -41,7 +41,7 @@ inquire.workspace = true
 chrono.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "termios"] }
 tempfile.workspace = true
-signal-hook = "0.3.18"
+signal-hook = "0.4.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tokio-rustls.workspace = true
