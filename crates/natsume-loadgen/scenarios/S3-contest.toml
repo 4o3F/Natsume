@@ -1,0 +1,13 @@
+devices = 100
+ramp = "10s"
+duration = "2m"
+operators = 2
+[[events]]
+at = "45s"
+action = "contest"
+[[events]]
+at = "70s"
+action = "terminate"
+[[events]]
+at = "95s"
+action = "reset_home"

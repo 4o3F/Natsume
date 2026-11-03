@@ -1,0 +1,11 @@
+devices = 600
+ramp = "60s"
+duration = "10m"
+operators = 2
+# Pass --operator-roster to the XLSX to preview and commit.
+[[events]]
+at = "300s"
+action = "import"
+[[events]]
+at = "360s"
+action = "export"

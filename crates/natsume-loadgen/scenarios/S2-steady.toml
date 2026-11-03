@@ -1,0 +1,4 @@
+devices = 600
+ramp = "60s"
+duration = "30m"
+logo_interval = "60s"
