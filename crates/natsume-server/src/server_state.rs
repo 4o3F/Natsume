@@ -22,9 +22,10 @@ use crate::{
     config::ServerConfig,
     db::Database,
     device_control::DeviceControl,
-    journal::JournalComponent,
+    journal::{Journal, JournalComponent},
     journal_query::JournalQuery,
     lifecycle::ServerLifecycle,
+    server_runtime::ServerRuntime,
     vault::{self, VaultSession},
 };
 
@@ -50,10 +51,17 @@ pub(crate) struct ServerState {
     home: Arc<HomeComponent>,
     target_submission: TargetSubmissionComponent,
     device_control: Arc<DeviceControl>,
-    /// Process-owned journal writer and producer handle; joined after producers stop.
-    journal: JournalComponent,
+    /// Shared emit handle for request-level journal events.
+    journal: Journal,
     /// Shared admission and producer ownership, closed once by the composition root.
     lifecycle: ServerLifecycle,
+}
+
+pub(crate) struct LoadedServer {
+    /// Shared components and handles passed to transports.
+    pub(crate) state: ServerState,
+    /// Owns runtime resources and coordinates shutdown.
+    pub(crate) runtime: ServerRuntime,
 }
 
 impl ServerState {
@@ -66,7 +74,7 @@ impl ServerState {
         database: Database,
         config: &ServerConfig,
         utc_offset: time::UtcOffset,
-    ) -> Result<Self, ServerStateError> {
+    ) -> Result<LoadedServer, ServerStateError> {
         let vault = vault::load(config.vault_master_key_path())
             .map_err(|source| ServerStateError::Vault { source })?;
         let ca_certificate_path = config
@@ -120,7 +128,7 @@ impl ServerState {
         (logos, photo): (std::path::PathBuf, PhotoComponent),
         journal: JournalComponent,
         utc_offset: time::UtcOffset,
-    ) -> Self {
+    ) -> LoadedServer {
         let lifecycle = ServerLifecycle::new();
         let vault = Arc::new(vault);
         let provisioning = Arc::new(ProvisioningComponent::new());
@@ -152,13 +160,15 @@ impl ServerState {
             device_control.live_lease_view(),
             utc_offset,
         );
-        Self {
+        let emitter = journal.emitter();
+        let runtime = ServerRuntime::new(lifecycle.clone(), Arc::clone(&device_control), journal);
+        let state = Self {
             operator,
             journal_query,
             print,
             photo,
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
-            target_submission: TargetSubmissionComponent::new(database.clone(), journal.emitter()),
+            target_submission: TargetSubmissionComponent::new(database.clone(), emitter.clone()),
             import: ImportComponent::new(database, vault),
             provisioning,
             device,
@@ -166,12 +176,13 @@ impl ServerState {
             session,
             home,
             device_control,
-            journal,
+            journal: emitter,
             lifecycle,
-        }
+        };
+        LoadedServer { state, runtime }
     }
 
-    pub(crate) const fn journal(&self) -> &JournalComponent {
+    pub(crate) const fn journal(&self) -> &Journal {
         &self.journal
     }
     pub(crate) const fn lifecycle(&self) -> &ServerLifecycle {
@@ -271,13 +282,13 @@ pub(crate) mod tests {
 
     use uuid::Uuid;
 
-    use super::{ServerState, ServerStateError, map_gateway_load_error};
+    use super::{LoadedServer, ServerState, ServerStateError, map_gateway_load_error};
     use crate::{component::gateway::GatewayComponent, db::Database, vault};
 
     pub(crate) fn for_test(
         database: Database,
         documents: std::path::PathBuf,
-    ) -> Result<ServerState, ServerStateError> {
+    ) -> Result<LoadedServer, ServerStateError> {
         for_test_with_logos(
             database,
             documents,
@@ -289,7 +300,7 @@ pub(crate) mod tests {
         database: Database,
         documents: std::path::PathBuf,
         logos: std::path::PathBuf,
-    ) -> Result<ServerState, ServerStateError> {
+    ) -> Result<LoadedServer, ServerStateError> {
         for_test_with_journal(
             database,
             documents,
@@ -303,7 +314,7 @@ pub(crate) mod tests {
         documents: std::path::PathBuf,
         logos: std::path::PathBuf,
         journal: crate::journal::JournalComponent,
-    ) -> Result<ServerState, ServerStateError> {
+    ) -> Result<LoadedServer, ServerStateError> {
         let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
         fs::create_dir(&root).map_err(|source| ServerStateError::Vault {
             source: vault::VaultError::Read { source },

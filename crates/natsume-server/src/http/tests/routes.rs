@@ -594,7 +594,9 @@ pub(super) async fn mounted_route_responses(
 #[tokio::test]
 async fn inventory_exactly_matches_every_group_path_and_method() -> TestResult {
     let fixture = TestDatabase::new().await?;
-    let state = server_state(&fixture)?;
+    let loaded = server_state(&fixture)?;
+    let state = loaded.state;
+    let state = std::sync::Arc::new(state);
     let mut actual = BTreeSet::new();
     for (principal, routes) in [
         Principal::Public,
@@ -664,7 +666,9 @@ async fn every_principal_and_admin_boundary_is_enforced() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     let viewer = seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let state = server_state(&fixture)?;
+    let loaded = server_state(&fixture)?;
+    let state = loaded.state;
+    let state = std::sync::Arc::new(state);
     let application = router(state.clone(), unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     assert_eq!(login.status, StatusCode::OK);
@@ -813,7 +817,9 @@ async fn assert_principal_boundary(
 #[tokio::test]
 async fn new_methods_inherit_each_groups_authentication_without_an_opt_in_wrapper() -> TestResult {
     let fixture = TestDatabase::new().await?;
-    let state = server_state(&fixture)?;
+    let loaded = server_state(&fixture)?;
+    let state = loaded.state;
+    let state = std::sync::Arc::new(state);
     for group in [
         super::super::operator_group,
         super::super::source_group,
@@ -835,7 +841,12 @@ async fn new_methods_inherit_each_groups_authentication_without_an_opt_in_wrappe
 #[tokio::test]
 async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication() -> TestResult {
     let fixture = TestDatabase::new().await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server_state(&fixture)?;
+    let state = loaded.state;
+    let application = router(std::sync::Arc::new(state), unused_web_root());
+    let inventory = server_state(&fixture)?;
+    let state = inventory.state;
+    let state = std::sync::Arc::new(state);
     for (principal, routes) in [
         Principal::Public,
         Principal::Operator,
@@ -843,7 +854,7 @@ async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication
         Principal::PrintClient,
     ]
     .into_iter()
-    .zip(super::super::route_groups(&server_state(&fixture)?))
+    .zip(super::super::route_groups(&state))
     {
         for (template, _) in routes {
             for method in [

@@ -28,6 +28,7 @@ pub(crate) struct Fixture {
     pub(crate) admin_id: Uuid,
     /// Device identity used by fixture journal facts.
     pub(crate) device_id: DeviceId,
+    pub(crate) runtime: crate::server_runtime::ServerRuntime,
 }
 impl Fixture {
     pub(crate) async fn new() -> Result<Self, TestError> {
@@ -57,12 +58,14 @@ impl Fixture {
             },
         );
         ready(&journal).await?;
-        let state = Arc::new(crate::server_state::tests::for_test_with_journal(
-            database,
-            directory.path().join("documents"),
-            directory.path().join("logos"),
-            journal,
-        )?);
+        let crate::server_state::LoadedServer { state, runtime } =
+            crate::server_state::tests::for_test_with_journal(
+                database,
+                directory.path().join("documents"),
+                directory.path().join("logos"),
+                journal,
+            )?;
+        let state = Arc::new(state);
         state
             .operator()
             .change_role(viewer_id, OperatorRole::Viewer)
@@ -83,8 +86,9 @@ impl Fixture {
                 JournalContext::default(),
             )
             .await?;
-        ready(state.journal()).await?;
+        ready(runtime.journal()).await?;
         Ok(Self {
+            runtime,
             directory,
             state,
             admin_cookie: format!(
@@ -113,7 +117,7 @@ impl Fixture {
         }
     }
     pub(crate) async fn seed(&self, rows: Vec<SeedEvent>) -> Result<(), TestError> {
-        seed_events(self.state.journal(), rows).await
+        seed_events(self.runtime.journal(), rows).await
     }
     fn filter(&self) -> Filter {
         Filter {
@@ -259,7 +263,7 @@ async fn cursors_filters_page_caps_names_and_restricted_queries() -> Result<(), 
             Err(QueryError::Forbidden)
         ));
     }
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -307,7 +311,7 @@ async fn export_fixes_high_water_and_describes_rows_pruned_between_pages() -> Re
         }),
     )])
     .await?;
-    prune_through(f.state.journal(), high - 1000).await?;
+    prune_through(f.runtime.journal(), high - 1000).await?;
     let mut rows = 0;
     let mut metadata = None;
     while let Some(line) = export.next_line().await? {
@@ -327,7 +331,7 @@ async fn export_fixes_high_water_and_describes_rows_pruned_between_pages() -> Re
     let metadata = metadata.ok_or(TestError::missing("export trailer"))?;
     assert_eq!(metadata["pruned_rows"], 500);
     assert_eq!(metadata["high_water_id"], high);
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -342,7 +346,7 @@ async fn unreadable_details_and_unknown_kind_never_return_raw_canaries() -> Resu
         }),
     )])
     .await?;
-    corrupt_latest(f.state.journal(), "password_token_login_secret_canary").await?;
+    corrupt_latest(f.runtime.journal(), "password_token_login_secret_canary").await?;
     let page = f
         .state
         .journal_query()
@@ -358,7 +362,7 @@ async fn unreadable_details_and_unknown_kind_never_return_raw_canaries() -> Resu
     let json = serde_json::to_string(&page)?;
     assert!(!json.contains("password_token_login_secret_canary"));
     assert!(matches!(&page.events[0], JournalRecord::Unreadable { kind, .. } if kind == "unknown"));
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -407,7 +411,7 @@ async fn timeline_looks_back_without_reviving_pre_restart_sessions_and_handles_c
     assert_eq!(result.sessions.len(), 1);
     assert!(result.sessions[0].imprecise);
     assert_eq!(result.sessions[0].duration_ms, Some(0));
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -480,7 +484,7 @@ async fn summaries_count_terminals_inside_the_window_and_names_fail_without_losi
         .await?;
     assert_eq!(page.operators[0].operator_id, f.admin_id);
     assert!(page.operators[0].display_name.is_none());
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -526,7 +530,7 @@ async fn timeline_restores_binding_and_pause_snapshots_before_the_window_anchor(
                 && g.from == 15
                 && g.to == Some(20))
     );
-    f.state.journal().shutdown().await;
+    f.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -555,7 +559,7 @@ async fn injected_startup_offset_is_used_inside_the_multithreaded_runtime() -> R
         .await?;
     assert_eq!(page.journal.server_utc_offset_minutes, 345);
     assert_eq!(query.status().await?.journal.server_utc_offset_minutes, 345);
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -618,7 +622,7 @@ async fn maximum_pages_distinguish_an_exact_boundary_from_one_more_row() -> Resu
         .await?;
     assert_eq!(last.events.len(), 1);
     assert!(!last.has_more);
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -645,7 +649,7 @@ async fn indexed_timeline_streams_merge_both_orders_without_duplicates_or_new_ro
     overlapping.context = JournalContext::default().with_device(fixture.device_id);
     rows.push(overlapping);
     fixture.seed(rows).await?;
-    let reader = fixture.state.journal().reader();
+    let reader = fixture.runtime.journal().reader();
     let high_water = reader.bounds().await.map_err(QueryError::from)?.high_water;
     fixture
         .seed(vec![
@@ -683,7 +687,7 @@ async fn indexed_timeline_streams_merge_both_orders_without_duplicates_or_new_ro
         }));
         assert!(ids.iter().all(|id| Some(*id) <= high_water));
     }
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -728,7 +732,7 @@ async fn timeline_regression_keeps_a_session_covering_the_window_before_a_clock_
     assert_eq!(timeline.sessions.len(), 1);
     assert_eq!(timeline.sessions[0].session_id, first.value());
     assert_eq!(timeline.sessions[0].duration_ms, Some(10));
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -761,7 +765,7 @@ async fn summaries_bound_payload_reads_to_connection_kinds_and_the_count_window(
         )
     }));
     fixture.seed(rows).await?;
-    let queries = crate::journal::tests::capture_queries(fixture.state.journal())?;
+    let queries = crate::journal::tests::capture_queries(fixture.runtime.journal())?;
     let summaries = fixture.state.journal_query().summaries(1000).await?;
     assert_eq!(summaries.devices.len(), 1);
     assert_eq!(summaries.devices[0].last_connected_at, Some(now - 10000));
@@ -790,6 +794,6 @@ async fn summaries_bound_payload_reads_to_connection_kinds_and_the_count_window(
             "window counts must be time-bounded"
         );
     }
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     Ok(())
 }

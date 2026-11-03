@@ -399,6 +399,15 @@ impl Journal {
         )
     }
 
+    pub(crate) const fn boot_id(&self) -> Uuid {
+        self.boot_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stats(&self) -> JournalStatsSnapshot {
+        snapshot(&self.stats)
+    }
+
     pub(crate) fn emit(&self, event: Event, context: JournalContext) {
         let occurred_at_ms = now_ms();
         let category = event.category();
@@ -540,7 +549,7 @@ impl JournalComponent {
     }
 
     pub(crate) const fn boot_id(&self) -> Uuid {
-        self.emitter.boot_id
+        self.emitter.boot_id()
     }
 
     #[cfg(test)]

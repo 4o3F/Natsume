@@ -19,6 +19,7 @@ struct Fixture {
     ids: Vec<DeviceId>,
     owner: Uuid,
     _root: TempDir,
+    _runtime: crate::server_runtime::ServerRuntime,
 }
 
 impl Fixture {
@@ -57,11 +58,12 @@ impl Fixture {
             })
             .await
             .unwrap_or_else(|error| panic!("fixtures: {error:?}"));
-        let state =
+        let crate::server_state::LoadedServer { state, runtime } =
             crate::server_state::tests::for_test(database.clone(), root.path().join("documents"))
                 .unwrap_or_else(|error| panic!("state: {error}"));
         let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
         Self {
+            _runtime: runtime,
             state,
             component: TargetSubmissionComponent::new(database.clone(), journal.emitter()),
             events,

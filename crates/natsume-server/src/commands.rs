@@ -8,43 +8,8 @@ mod reset_operator_password;
 mod serve;
 
 pub use crate::logging::Logging;
-pub use error::CommandError;
-/// Builds the mounted Server HTTP surface over an already-bootstrapped database.
-/// The caller supplies the UTC offset captured before process threads start.
-///
-/// # Errors
-///
-/// Returns a redacted [`CommandError`] when startup infrastructure cannot be loaded.
-pub async fn router(
-    config: ServerConfig,
-    web_root: &std::path::Path,
-    utc_offset: time::UtcOffset,
-) -> Result<axum::Router, CommandError> {
-    serve::router(config, web_root, utc_offset)
-        .await
-        .map_err(CommandError::from)
-}
-
-/// Runs the production Server stack until the supplied shutdown future resolves.
-/// The caller supplies the UTC offset captured before process threads start.
-///
-/// # Errors
-///
-/// Returns a redacted [`CommandError`] when a startup or serving stage fails.
-pub async fn run_until<F>(
-    config: ServerConfig,
-    shutdown: F,
-    utc_offset: time::UtcOffset,
-) -> Result<(), CommandError>
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    serve::run_until(config, shutdown, utc_offset)
-        .await
-        .map_err(CommandError::from)
-}
-
 use crate::{config::ServerConfig, logging};
+pub use error::CommandError;
 
 /// Server operating mode selected by the command line interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]

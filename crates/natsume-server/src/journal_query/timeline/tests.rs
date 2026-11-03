@@ -290,7 +290,7 @@ async fn timeline_regression_anchor_never_reads_past_the_captured_high_water()
         )])
         .await?;
     let ceiling = fixture
-        .state
+        .runtime
         .journal()
         .reader()
         .bounds()
@@ -312,7 +312,7 @@ async fn timeline_regression_anchor_never_reads_past_the_captured_high_water()
         .timeline_baseline(fixture.device_id, 25, Some(ceiling))
         .await?;
     assert!(baseline.first_id.is_none_or(|id| id <= ceiling));
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     Ok(())
 }
 

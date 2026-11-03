@@ -596,7 +596,10 @@ async fn rebuilding_the_scheduler_does_not_issue_another_recovery_grace() {
 async fn background_initialization_reports_snapshot_failure_instead_of_becoming_ready() {
     use diesel::connection::SimpleConnection as _;
     let f = Fixture::new().await;
-    let state = must(crate::server_state::tests::for_test(
+    let crate::server_state::LoadedServer {
+        state,
+        runtime: _runtime,
+    } = must(crate::server_state::tests::for_test(
         f.database.clone(),
         f.documents_path(),
     ));
@@ -663,10 +666,14 @@ async fn an_early_check_rearms_and_later_reads_renewal_without_any_notification(
 #[tokio::test]
 async fn cancelling_background_initialization_releases_the_owned_task() {
     let f = Fixture::new().await;
-    let state = Arc::new(must(crate::server_state::tests::for_test(
+    let crate::server_state::LoadedServer {
+        state,
+        runtime: _runtime,
+    } = must(crate::server_state::tests::for_test(
         f.database.clone(),
         f.documents_path(),
-    )));
+    ));
+    let state = Arc::new(state);
     let weak_state = Arc::downgrade(&state);
     let weak_inbox = Arc::downgrade(&state.print().expiry);
     let held_connections = f.database.test_exhaust_pool();

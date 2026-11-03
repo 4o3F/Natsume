@@ -174,16 +174,24 @@ async fn unavailable_journal_does_not_change_http_statuses_or_business_writes()
             .await?;
     let component = JournalComponent::start(root.path().join("absent/journal.db"), config());
     let journal = component.emitter();
-    let degraded = Arc::new(crate::server_state::tests::for_test_with_journal(
+    let crate::server_state::LoadedServer {
+        state: degraded,
+        runtime: degraded_runtime,
+    } = crate::server_state::tests::for_test_with_journal(
         database.clone(),
         root.path().join("documents"),
         root.path().join("logos"),
         component,
-    )?);
-    let normal = Arc::new(crate::server_state::tests::for_test(
+    )?;
+    let degraded = Arc::new(degraded);
+    let crate::server_state::LoadedServer {
+        state: normal,
+        runtime: _normal_runtime,
+    } = crate::server_state::tests::for_test(
         database.clone(),
         root.path().join("normal-documents"),
-    )?);
+    )?;
+    let normal = Arc::new(normal);
     let first = crate::http::router(Arc::clone(&degraded), root.path());
     let second = crate::http::router(normal, root.path());
     for path in [
@@ -234,7 +242,7 @@ async fn unavailable_journal_does_not_change_http_statuses_or_business_writes()
                 .map_err(crate::db::PersistenceError::from)
         })
         .await?;
-    degraded.journal().shutdown().await;
+    degraded_runtime.shutdown_journal().await;
     Ok(())
 }
 

@@ -91,7 +91,9 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
     fixture.database.write(|tx| {
         tx.connection().batch_execute("INSERT INTO devices (device_id, machine_hardware_id, evidence_quality, state, created_at_unix_ms) VALUES ('01900000-0000-7000-8000-000000000001','m1','strong','enabled',1), ('01900000-0000-7000-8000-000000000002','m2','strong','disabled',1);").map_err(PersistenceError::from)
     }).await.map_err(crate::test_error::TestError::from)?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server_state(&fixture)?;
+    let state = loaded.state;
+    let application = router(std::sync::Arc::new(state), unused_web_root());
     let path = "/api/v2/target-submissions";
     assert_eq!(
         drive(&application, request(Method::POST, path, "")?)
@@ -168,7 +170,9 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
 #[tokio::test]
 async fn old_target_write_routes_are_removed() -> TestResult {
     let fixture = TestDatabase::new().await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server_state(&fixture)?;
+    let state = loaded.state;
+    let application = router(std::sync::Arc::new(state), unused_web_root());
     for (method, old_path, status) in [
         (
             Method::PUT,
@@ -208,7 +212,9 @@ async fn submission_infrastructure_failure_reports_its_chain_with_the_same_respo
     let _guard = SubscriberTestGuard::acquire();
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, "report-admin", "report-password1!").await?;
-    let application = router(server_state(&fixture)?, unused_web_root());
+    let loaded = server_state(&fixture)?;
+    let state = loaded.state;
+    let application = router(std::sync::Arc::new(state), unused_web_root());
     let login = drive(
         &application,
         login_request("report-admin", "report-password1!")?,

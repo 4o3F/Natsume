@@ -21,12 +21,12 @@ pub(crate) mod journal_schema;
 pub(crate) mod lifecycle;
 pub(crate) mod logging;
 pub(crate) mod photo_initialization;
+pub(crate) mod server_runtime;
 pub(crate) mod server_state;
 pub(crate) mod task;
 pub(crate) mod tls;
 pub(crate) mod vault;
 
-pub use commands::router;
 pub use deployment::{
     BootstrapStatus, CertificateRejection, DeploymentError, DeploymentMaterials, MaterialRole,
     inspect_bootstrap, validate_deployment, validate_setup_materials,

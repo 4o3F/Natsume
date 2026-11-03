@@ -30,6 +30,7 @@ use crate::{
 type TestResult = Result<(), crate::test_error::TestError>;
 
 struct Fixture {
+    _runtime: crate::server_runtime::ServerRuntime,
     database: TestDatabase,
     router: axum::Router,
     cookie: String,
@@ -73,7 +74,8 @@ impl Fixture {
             })
             .await
             .map_err(crate::test_error::TestError::from)?;
-        let router = router(server_state(&database)?, unused_web_root());
+        let crate::server_state::LoadedServer { state, runtime } = server_state(&database)?;
+        let router = router(std::sync::Arc::new(state), unused_web_root());
         let login = drive(&router, login_request(LOGIN_NAME, PASSWORD)?).await?;
         let cookie = header_text(&login.headers, &header::SET_COOKIE)?
             .split(';')
@@ -93,6 +95,7 @@ impl Fixture {
         assert_eq!(source.status, StatusCode::OK);
         let value: Value = serde_json::from_slice(&source.body)?;
         Ok(Self {
+            _runtime: runtime,
             database,
             router,
             cookie,

@@ -143,11 +143,11 @@ fn api_v2(state: &AppState) -> Router<AppState> {
         .fallback(not_found)
         .layer(axum_middleware::from_fn(middleware::reject_head))
         .layer(axum_middleware::from_fn_with_state(
-            state.journal().emitter(),
+            state.journal().clone(),
             middleware::audit::audit_request,
         ))
         .layer(axum_middleware::from_fn_with_state(
-            middleware::CompletionState::new(state.lifecycle().clone(), state.journal().emitter()),
+            middleware::CompletionState::new(state.lifecycle().clone(), state.journal().clone()),
             middleware::complete_mutation,
         ))
 }

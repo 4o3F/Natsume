@@ -45,6 +45,7 @@ struct Fixture {
     admin_cookie: String,
     /// Viewer session cookie supplied only to HTTP.
     viewer_cookie: String,
+    _runtime: crate::server_runtime::ServerRuntime,
 }
 
 impl Fixture {
@@ -53,12 +54,14 @@ impl Fixture {
         let admin_id = seed_operator(&database.database, ADMIN, PASSWORD).await?;
         let viewer_id = seed_operator(&database.database, VIEWER, PASSWORD).await?;
         let (journal, mut events) = JournalComponent::channel(crate::journal::CAPACITY);
-        let state = Arc::new(crate::server_state::tests::for_test_with_journal(
-            database.database.clone(),
-            database.documents_path(),
-            database.path.with_extension("logos"),
-            journal,
-        )?);
+        let crate::server_state::LoadedServer { state, runtime } =
+            crate::server_state::tests::for_test_with_journal(
+                database.database.clone(),
+                database.documents_path(),
+                database.path.with_extension("logos"),
+                journal,
+            )?;
+        let state = Arc::new(state);
         state
             .operator()
             .change_role(viewer_id, OperatorRole::Viewer)
@@ -82,6 +85,7 @@ impl Fixture {
         let app = http::router(state.clone(), unused_web_root());
         drain_events(&mut events);
         Ok(Self {
+            _runtime: runtime,
             database,
             state,
             app,
@@ -299,13 +303,13 @@ async fn panic_records_one_redacted_internal_error_without_changing_completion()
     let app = Router::new()
         .route("/session", post(panics))
         .layer(middleware::from_fn_with_state(
-            f.state.journal().emitter(),
+            f.state.journal().clone(),
             audit_request,
         ))
         .layer(middleware::from_fn_with_state(
             super::super::CompletionState::new(
                 f.state.lifecycle().clone(),
-                f.state.journal().emitter(),
+                f.state.journal().clone(),
             ),
             super::super::complete_mutation,
         ));
@@ -351,13 +355,13 @@ async fn cancelled_caller_still_records_exactly_one_completed_request() -> TestR
         .route("/session", post(blocked))
         .with_state(blocking.clone())
         .layer(middleware::from_fn_with_state(
-            f.state.journal().emitter(),
+            f.state.journal().clone(),
             audit_request,
         ))
         .layer(middleware::from_fn_with_state(
             super::super::CompletionState::new(
                 f.state.lifecycle().clone(),
-                f.state.journal().emitter(),
+                f.state.journal().clone(),
             ),
             super::super::complete_mutation,
         ));
@@ -608,13 +612,13 @@ async fn panic_and_shutdown_refusal_keep_the_captured_request_trace() -> TestRes
     let app = Router::new()
         .route("/session", post(panics))
         .layer(middleware::from_fn_with_state(
-            f.state.journal().emitter(),
+            f.state.journal().clone(),
             audit_request,
         ))
         .layer(middleware::from_fn_with_state(
             super::super::CompletionState::new(
                 f.state.lifecycle().clone(),
-                f.state.journal().emitter(),
+                f.state.journal().clone(),
             ),
             super::super::complete_mutation,
         ))

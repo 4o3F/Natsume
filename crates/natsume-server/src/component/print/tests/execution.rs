@@ -603,10 +603,14 @@ async fn background_tasks_expire_attempts_and_shutdown_stops_maintenance() {
         })
         .await,
     );
-    let state = std::sync::Arc::new(must(crate::server_state::tests::for_test(
+    let crate::server_state::LoadedServer {
+        state,
+        runtime: _runtime,
+    } = must(crate::server_state::tests::for_test(
         f.database.clone(),
         f.documents_path(),
-    )));
+    ));
+    let state = std::sync::Arc::new(state);
     let weak_state = std::sync::Arc::downgrade(&state);
     let background = must(crate::background::start_background_tasks(&state).await);
     drop(state);
@@ -661,7 +665,10 @@ async fn background_shutdown_does_not_end_active_print_attempts() {
     let attempt = claim(&f, &client, &Uuid::now_v7().to_string(), now)
         .await
         .unwrap_or_else(|| panic!("claim"));
-    let state = must(crate::server_state::tests::for_test(
+    let crate::server_state::LoadedServer {
+        state,
+        runtime: _runtime,
+    } = must(crate::server_state::tests::for_test(
         f.database.clone(),
         f.documents_path(),
     ));

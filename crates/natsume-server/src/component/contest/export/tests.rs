@@ -152,7 +152,10 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
         Database::connect_and_migrate(&DatabaseConfig::new(root.path().join("db"), true)).await,
     );
     let import = ImportComponent::new(database.clone(), vault.clone());
-    let state = checked(crate::server_state::tests::for_test(
+    let crate::server_state::LoadedServer {
+        state,
+        runtime: _runtime,
+    } = checked(crate::server_state::tests::for_test(
         database.clone(),
         root.path().join("documents"),
     ));

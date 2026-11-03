@@ -19,6 +19,7 @@ const NEW_PASSWORD: &str = "http-replacement-password2@";
 type TestResult = Result<(), crate::test_error::TestError>;
 
 struct Fixture {
+    _runtime: crate::server_runtime::ServerRuntime,
     database: TestDatabase,
     state: AppState,
     app: Router,
@@ -29,10 +30,13 @@ impl Fixture {
     async fn new() -> Result<Self, crate::test_error::TestError> {
         let database = TestDatabase::new().await?;
         let admin_id = seed_operator(&database.database, "admin", PASSWORD).await?;
-        let state = support::server_state(&database)?;
+        let crate::server_state::LoadedServer { state, runtime } =
+            support::server_state(&database)?;
+        let state = std::sync::Arc::new(state);
         let app = http::router(state.clone(), support::unused_web_root());
         let admin_cookie = login(&app, "admin", PASSWORD).await?;
         Ok(Self {
+            _runtime: runtime,
             database,
             state,
             app,
@@ -151,10 +155,9 @@ fn assert_error(response: &Captured, status: StatusCode, code: &str) -> TestResu
 #[tokio::test]
 async fn namespace_cache_policy_covers_outer_rejections_and_unmounted_paths() -> TestResult {
     let database = TestDatabase::new().await?;
-    let app = http::router(
-        support::server_state(&database)?,
-        support::unused_web_root(),
-    );
+    let loaded = support::server_state(&database)?;
+    let state = loaded.state;
+    let app = http::router(std::sync::Arc::new(state), support::unused_web_root());
     for (method, path, status) in [
         (
             Method::POST,

@@ -26,7 +26,7 @@ pub(super) enum CommandFailure {
         source: crate::component::operator::OperatorError,
     },
     #[snafu(display("server configuration failed"))]
-    Runtime {
+    RuntimeConfig {
         source: crate::component::runtime::RuntimeConfigError,
     },
     #[snafu(display("vault startup failed"))]
@@ -43,16 +43,9 @@ pub(super) enum CommandFailure {
     OriginCa { source: ServerStateError },
     #[snafu(display("Origin CA issuing certificate and packaged trust root differ"))]
     OriginCaTrustRootMismatch,
-    #[snafu(display("HTTP serving failed"))]
-    Http { source: std::io::Error },
-    #[snafu(display("HTTP serving task failed"))]
-    ServingTask {
-        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
-        source: crate::task::TaskFailure,
-    },
-    #[snafu(display("server background task shutdown failed"))]
-    Background {
-        source: crate::background::BackgroundError,
+    #[snafu(visibility(pub(super)), display("{source}"))]
+    Runtime {
+        source: crate::server_runtime::RuntimeError,
     },
     #[snafu(display("shutdown signal setup failed"))]
     Signal { source: std::io::Error },

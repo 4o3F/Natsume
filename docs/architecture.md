@@ -738,7 +738,7 @@ WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过 `
 
 ### 10.4 `ServerState`
 
-`ServerState::load/from_parts`是进程依赖的组装入口，`ServerState`是组装后的共享组件句柄集合，不执行设备应用用例、不驱动 HTTP 服务，也不持有后台任务句柄。`background` 与 `server_state` 是平级模块，分别负责后台任务的生命周期和共享组件的构造。组合层通过 `background::start_background_tasks(&state)` 显式启动当前需要的后台工作，并返回由 `serve::run_until` 单独持有的 `BackgroundTasks` 所有者；目前只有 Print 到期检查任务。该对象持有取消信号和统一任务集合，只负责后台任务的取消、等待及异常回收；具体任务的启动、初始化条件和业务错误映射仍在组合层显式编写，不接受外部服务 future，不提供动态注册接口。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名；WSS 连接处理和 Actor 只取得设备协调器，不依赖整个组合对象。
+`ServerState::load/from_parts`是进程依赖的组装入口，返回 `LoadedServer { state: ServerState, runtime: ServerRuntime }`。`ServerState`是组装后的共享组件句柄集合，不执行设备应用用例、不驱动 HTTP 服务，也不持有后台任务句柄。`background` 与 `server_state` 是平级模块，分别负责后台任务的生命周期和共享组件的构造。组合层通过 `background::start_background_tasks(&state)` 显式启动当前需要的后台工作，并将返回的 `BackgroundTasks` 交给 `ServerRuntime::serve_until` 持有；目前只有 Print 到期检查任务。该对象持有取消信号和统一任务集合，只负责后台任务的取消、等待及异常回收；具体任务的启动、初始化条件和业务错误映射仍在组合层显式编写，不接受外部服务 future，不提供动态注册接口。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名；WSS 连接处理和 Actor 只取得设备协调器，不依赖整个组合对象。
 
 当前已实现的组成是：
 
@@ -747,6 +747,7 @@ pub(crate) struct ServerState {
     operator: Arc<OperatorComponent>,
     journal_query: JournalQuery,
     print: PrintComponent,
+    photo: PhotoComponent,
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: Arc<ProvisioningComponent>,
@@ -756,14 +757,27 @@ pub(crate) struct ServerState {
     home: Arc<HomeComponent>,
     target_submission: TargetSubmissionComponent,
     device_control: Arc<DeviceControl>,
-    journal: JournalComponent,
+    journal: Journal,
     lifecycle: ServerLifecycle,
+}
+
+pub(crate) struct LoadedServer {
+    pub(crate) state: ServerState,
+    pub(crate) runtime: ServerRuntime,
+}
+
+pub(crate) struct ServerRuntime {
+    lifecycle: ServerLifecycle,
+    device_control: Arc<DeviceControl>,
+    journal: JournalComponent,
 }
 ```
 
+`ServerRuntime` 持有同一 `ServerLifecycle` 的克隆、同一 `Arc<DeviceControl>` 和唯一的 `JournalComponent` writer 所有者，统一执行关闭顺序。HTTP 状态只持有 `Journal` emit 句柄，并通过 `JournalQuery` 使用 reader。
+
 `DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件，以及`Journal` emit句柄和`ServerLifecycle`，并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。它只负责跨组件编排或需要Registry、fence、actor等运行时状态的用例，不为单组件mutation增加一对一转发。HTTP也使用的Provisioning、Device、Binding、Session、Home共享同一`Arc`实例；Gateway、Runtime Config和Power目前只有协调器消费，构造时将Power句柄交给它，`ServerState`不保留无消费者的副本或accessor。分层、调用路径和事件归属统一遵循§10.6。
 
-生产构造入口统一为`ServerState::load(database, &config, utc_offset)`：加载一次`VaultSession`， 调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。 完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
+生产构造入口统一为`ServerState::load(database, &config, utc_offset)`，返回 `LoadedServer`：加载一次`VaultSession`， 调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。 完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
 
 设备应用用例集中在`device_control/application.rs`的`impl DeviceControl`分片，准入和关闭原语位于`device_control.rs`。当前共有十二个有实际消费者的用例／运行时入口，不计构造函数和私有实现方法：
 
@@ -853,31 +867,34 @@ Database + ServerConfig + startup UtcOffset
           → concrete business components { Database / Vault / Journal }
           → Arc<DeviceControl> { concrete dependencies, DeviceRegistry, Journal, lifecycle }
           → JournalQuery { journal reader, Arc<OperatorComponent>, LiveLeaseView, startup UtcOffset }
-  → Arc<ServerState> { shared handles + journal + lifecycle }
+  → LoadedServer
+      → Arc<ServerState> { shared handles + Journal emit/reader + lifecycle }
+      → ServerRuntime { shared lifecycle + Arc<DeviceControl> + JournalComponent writer }
   → TLS listener
   → background::start_background_tasks { Print attempt expiry }
       → BackgroundTasks { cancellation + JoinSet }
-  → HTTP
-      → Device WSS { Arc<DeviceControl> }
+  → ServerRuntime::serve_until { TLS listener + HTTP router + BackgroundTasks + shutdown signal }
+      → HTTP serving task { AbortOnDropHandle }
+          → Device WSS { Arc<DeviceControl> }
 ```
 
-HTTP持有组合对象，按用例取得DeviceControl或JournalQuery；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载共享状态、绑定TLS listener、启动后台工作和运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
+HTTP持有组合对象，按用例取得DeviceControl或JournalQuery；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
 
-`serve::run_until`在收到关闭信号或HTTP服务结束后，按以下顺序关闭：
+`ServerRuntime::serve_until`在收到关闭信号或HTTP服务结束后，按以下顺序关闭：
 
 ```text
-state.lifecycle().begin_shutdown()
-  → 通知axum进入graceful shutdown，停止新HTTP
+runtime.lifecycle.begin_shutdown()
+  → http_stop.cancel()，通知axum进入graceful shutdown，停止新HTTP
   → lifecycle.wait()，最多10秒，超时记journal计数和tracing
   → DeviceControl::shutdown()，结束全部registry lease并等待actor确认
   → BackgroundTasks::shutdown()
-  → state.journal().shutdown()，ServerStopping → closed → drain/flush → join writer
+  → runtime.journal.shutdown()，ServerStopping → closed → drain/flush → join writer
   → 等待HTTP serving task结束并汇总结果
 ```
 
 `begin_shutdown`一次性关闭准入并取消在途WSS握手，待人工审批的Enrollment也释放`Admission`；新mutation返回503 `server_stopping`。已获准的HTTP mutation及其派生任务由同一`ServerLifecycle`跟踪，等待完成业务提交和publish后才关闭actor与journal。准入凭证覆盖attach后的SessionReady最终发送及AdmissionCompleted／AdmissionRejected收尾，并响应关闭信号；进入run_active前释放，不覆盖长连接，其lease由下一步Registry关闭终止；不能先等待全部WSS自然结束再关闭Registry。Registry在自身锁内关闭并取出handle，锁外发送actor关闭事件、等待确认并join全部supervisor（包括已退休actor），确保其终止事件先于journal关闭，继续保持fence→registry锁序及identity re-check协议。
 
-HTTP优雅关闭期间后台检查继续运行，直到显式关闭`BackgroundTasks`。不论HTTP成功还是返回错误，均完成生产者、actor、后台任务和journal的关闭；HTTP与后台关闭同时失败时保留HTTP原错误，后台错误另有结构化日志。Journal flush使用`[journal].flush_timeout_seconds`（默认10秒），超时计数、日志及best effort终止标记由`JournalComponent`负责。
+HTTP serving task 由 `AbortOnDropHandle` 持有，运行或关闭 future 被释放时请求中止；正常路径在关闭 Journal 后等待并汇总其结果。HTTP优雅关闭期间后台检查继续运行，直到显式关闭`BackgroundTasks`。不论HTTP成功还是返回错误，均完成生产者、actor、后台任务和journal的关闭；HTTP与后台关闭同时失败时保留HTTP原错误，后台错误另有结构化日志。运行期错误由 Snafu 类型 `RuntimeError` 的 `Http`、`ServingTask`、`Background` 变体保留 source，`CommandFailure::Runtime` 包装该错误并沿用原有顶层文案。Journal flush使用`[journal].flush_timeout_seconds`（默认10秒），超时计数、日志及best effort终止标记由 `ServerRuntime` 持有的 `JournalComponent` 负责。
 
 命令不直接调用Print维护方法，也不为组件增加各自的定时器或`select!`分支。后续实际需要的后台工作在组合入口增加明确的启动调用、必要的初始化等待和具名业务错误映射，任务交给同一个集合持有，不增加专用句柄字段或重复关闭流程，也不引入通用任务注册表、任务trait或后台任务管理框架。
 

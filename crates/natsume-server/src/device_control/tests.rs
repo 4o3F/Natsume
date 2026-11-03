@@ -564,13 +564,15 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x77; 32])).await;
     // The fixture keeps database files alive, independently of this composition.
-    let composition = Arc::new(
-        server_state::tests::for_test(
-            fixture.database.clone(),
-            fixture.path.with_extension("print-documents"),
-        )
-        .unwrap_or_else(|error| panic!("independent composition failed: {error}")),
-    );
+    let crate::server_state::LoadedServer {
+        state: composition,
+        runtime,
+    } = server_state::tests::for_test(
+        fixture.database.clone(),
+        fixture.path.with_extension("print-documents"),
+    )
+    .unwrap_or_else(|error| panic!("independent composition failed: {error}"));
+    let composition = Arc::new(composition);
     let composition_lifetime = Arc::downgrade(&composition);
     let control = Arc::clone(composition.device_control());
     drop(composition);
@@ -611,6 +613,7 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
         DeviceConnectionState::Active { .. }
     ));
 
+    drop(runtime);
     let coordinator_lifetime = Arc::downgrade(&control);
     drop(control);
     assert!(coordinator_lifetime.upgrade().is_none());
@@ -3392,7 +3395,7 @@ async fn exclusively_locked_journal_does_not_block_device_disconnect_and_reconne
     .await?;
     drop(lock);
     fixture.state.device_control().shutdown().await;
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     Ok(())
 }
 
@@ -3400,6 +3403,7 @@ struct Fixture {
     path: PathBuf,
     database: Database,
     state: Arc<ServerState>,
+    runtime: crate::server_runtime::ServerRuntime,
 }
 
 impl Fixture {
@@ -3428,25 +3432,25 @@ impl Fixture {
             })
             .await
             .unwrap_or_else(|error| panic!("Runtime Config fixture failed: {error:?}"));
-        let state = Arc::new(
-            match journal {
-                None => server_state::tests::for_test(
-                    database.clone(),
-                    path.with_extension("print-documents"),
-                ),
-                Some(journal) => server_state::tests::for_test_with_journal(
-                    database.clone(),
-                    path.with_extension("print-documents"),
-                    PathBuf::from("/nonexistent/natsume-test-logos"),
-                    journal,
-                ),
-            }
-            .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}")),
-        );
+        let crate::server_state::LoadedServer { state, runtime } = match journal {
+            None => server_state::tests::for_test(
+                database.clone(),
+                path.with_extension("print-documents"),
+            ),
+            Some(journal) => server_state::tests::for_test_with_journal(
+                database.clone(),
+                path.with_extension("print-documents"),
+                PathBuf::from("/nonexistent/natsume-test-logos"),
+                journal,
+            ),
+        }
+        .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}"));
+        let state = Arc::new(state);
         Self {
             path,
             database,
             state,
+            runtime,
         }
     }
 

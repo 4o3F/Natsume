@@ -581,7 +581,7 @@ async fn pending_session_ready_is_tracked_and_rejected_before_shutdown_disconnec
         .await
         .unwrap_or_else(|error| panic!("producer wait: {error}"));
     control.shutdown().await;
-    fixture.state.journal().shutdown().await;
+    fixture.runtime.shutdown_journal().await;
     let records = drain_events(&mut recorded.receiver);
     let rejected = records.iter().position(|record| matches!(&record.event, Event::AdmissionRejected(event) if event.stage == crate::journal::event::types::AdmissionStage::ServerStopping)).unwrap_or_else(|| panic!("rejection"));
     let disconnected = records.iter().position(|record| matches!(&record.event, Event::Disconnected(event) if event.session_id.value() == session_id)).unwrap_or_else(|| panic!("disconnect"));

@@ -260,6 +260,7 @@ struct Fixture {
     token: String,
     enrollment: String,
     key: natsume_photo_protocol::SigningPublicKey,
+    runtime: crate::server_runtime::ServerRuntime,
 }
 
 impl Fixture {
@@ -311,11 +312,13 @@ impl Fixture {
             })
             .await
             .map_err(crate::db::TransactionError::into_error)?;
-        let state = Arc::new(server_state::tests::for_test_with_logos(
-            database.database.clone(),
-            database.documents_path(),
-            logos.path().to_path_buf(),
-        )?);
+        let crate::server_state::LoadedServer { state, runtime } =
+            server_state::tests::for_test_with_logos(
+                database.database.clone(),
+                database.documents_path(),
+                logos.path().to_path_buf(),
+            )?;
+        let state = Arc::new(state);
         let source = state
             .photo()
             .create_source("Photo desk".into())
@@ -342,6 +345,7 @@ impl Fixture {
             .await?;
         let app = router(state.clone(), unused_web_root());
         Ok(Self {
+            runtime,
             database,
             logos,
             state,
@@ -446,11 +450,14 @@ async fn immutable_roster_and_logo_survive_restart() -> TestResult {
         })
         .await
         .map_err(crate::db::TransactionError::into_error)?;
-    f.state = Arc::new(server_state::tests::for_test_with_logos(
-        f.database.database.clone(),
-        f.database.documents_path(),
-        f.logos.path().to_path_buf(),
-    )?);
+    let crate::server_state::LoadedServer { state, runtime } =
+        server_state::tests::for_test_with_logos(
+            f.database.database.clone(),
+            f.database.documents_path(),
+            f.logos.path().to_path_buf(),
+        )?;
+    f.state = Arc::new(state);
+    f.runtime = runtime;
     f.app = router(f.state.clone(), unused_web_root());
     assert_eq!(
         f.send(Method::POST, "client/initialization", Value::Null)
@@ -771,11 +778,14 @@ async fn failed_storage_does_not_publish_a_snapshot() -> TestResult {
     std::fs::remove_file(root)?;
     // The store pins the validated directory handle. Restore it through the
     // normal startup boundary, never by following a replacement pathname.
-    f.state = Arc::new(server_state::tests::for_test_with_logos(
-        f.database.database.clone(),
-        f.database.documents_path(),
-        f.logos.path().to_path_buf(),
-    )?);
+    let crate::server_state::LoadedServer { state, runtime } =
+        server_state::tests::for_test_with_logos(
+            f.database.database.clone(),
+            f.database.documents_path(),
+            f.logos.path().to_path_buf(),
+        )?;
+    f.state = Arc::new(state);
+    f.runtime = runtime;
     f.app = router(f.state.clone(), unused_web_root());
     assert_eq!(
         f.send(Method::POST, "client/initialization", Value::Null)
