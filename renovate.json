@@ -12,5 +12,18 @@
   "automergeType": "pr",
   "platformAutomerge": true,
   "rebaseWhen": "conflicted",
-  "automergeStrategy": "squash"
+  "automergeStrategy": "squash",
+  "packageRules": [
+    {
+      "description": "Update the coupled Specta crates together",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "specta",
+        "specta-serde",
+        "specta-typescript"
+      ],
+      "groupName": "specta",
+      "separateMajorMinor": false
+    }
+  ]
 }
