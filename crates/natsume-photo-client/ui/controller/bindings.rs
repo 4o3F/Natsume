@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "../../backend/tests/unit/ui_pairing.rs"]
+mod tests;
+
 pub(super) fn bind(ui: &PhotoWindow, app: &Rc<Controller>) {
     let weak = Rc::downgrade(app);
     ui.window().on_close_requested(move || {
@@ -61,6 +65,7 @@ fn bind_window_controls(ui: &PhotoWindow, app: &Rc<Controller>) {
 }
 
 fn bind_workspace(ui: &PhotoWindow, app: &Rc<Controller>) {
+    bind_pairing(ui);
     let app_copy = app.clone();
     ui.on_choose_path(move |kind| {
         choose_path(&app_copy, &kind);
@@ -98,6 +103,87 @@ fn bind_workspace(ui: &PhotoWindow, app: &Rc<Controller>) {
             app_copy.send(Command::Session(ui.get_hot_folder().as_str().into()), true);
         }
     });
+}
+
+fn bind_pairing(ui: &PhotoWindow) {
+    ui.on_pairing_character(|code, index| {
+        code.chars()
+            .filter(|c| *c != '-')
+            .nth(usize::try_from(index).unwrap_or_default())
+            .filter(|c| !c.is_whitespace())
+            .map(|c| c.to_string())
+            .unwrap_or_default()
+            .into()
+    });
+    let weak = ui.as_weak();
+    ui.on_pairing_edit(move |index, raw| {
+        if let Some(ui) = weak.upgrade() {
+            let index = usize::try_from(index.clamp(0, 7)).unwrap_or_default();
+            let (code, focus) = edit_pairing(&ui.get_pairing_code(), index, &raw);
+            ui.set_pairing_code(code.into());
+            ui.set_pairing_focus(i32::try_from(focus).unwrap_or_default());
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_pairing_navigate(move |index, key| {
+        if let Some(ui) = weak.upgrade() {
+            let mut slot = usize::try_from(index.clamp(0, 7)).unwrap_or_default();
+            if key == slint::SharedString::from(slint::platform::Key::Backspace) {
+                let mut chars = pairing_slots(&ui.get_pairing_code());
+                if chars[slot] == ' ' {
+                    slot = slot.saturating_sub(1);
+                }
+                chars[slot] = ' ';
+                ui.set_pairing_code(format_pairing(chars).into());
+            } else if key == slint::SharedString::from(slint::platform::Key::LeftArrow) {
+                slot = slot.saturating_sub(1);
+            } else {
+                slot = (slot + 1).min(7);
+            }
+            ui.set_pairing_focus(i32::try_from(slot).unwrap_or_default());
+        }
+    });
+}
+
+fn pairing_slots(code: &str) -> [char; 8] {
+    let mut slots = [' '; 8];
+    for (slot, character) in slots.iter_mut().zip(code.chars().filter(|c| *c != '-')) {
+        *slot = character;
+    }
+    slots
+}
+
+fn format_pairing(slots: [char; 8]) -> String {
+    if slots.iter().all(char::is_ascii_alphanumeric) {
+        format!(
+            "{}-{}",
+            slots[..4].iter().collect::<String>(),
+            slots[4..].iter().collect::<String>()
+        )
+    } else {
+        slots.iter().collect::<String>().trim_end().to_owned()
+    }
+}
+
+fn edit_pairing(code: &str, index: usize, raw: &str) -> (String, usize) {
+    let mut slots = pairing_slots(code);
+    let index = index.min(7);
+    let mut input: Vec<char> = raw
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if input.len() > 1 && input[0] == slots[index] && input.len() != 8 {
+        input.remove(0);
+    }
+    let start = if input.len() >= 8 { 0 } else { index };
+    if input.is_empty() {
+        slots[index] = ' ';
+        return (format_pairing(slots), index);
+    }
+    let count = input.len().min(8 - start);
+    slots[start..start + count].copy_from_slice(&input[..count]);
+    (format_pairing(slots), (start + count).min(7))
 }
 
 fn bind_capture(ui: &PhotoWindow, app: &Rc<Controller>) {

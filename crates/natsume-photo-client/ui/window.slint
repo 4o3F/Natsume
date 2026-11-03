@@ -1,5 +1,5 @@
 import { ScrollView, ListView, CheckBox, ComboBox } from "std-widgets.slint";
-import { Palette, Label, Eyebrow, Title, Rule, Action, Field, FormRow, TeamRow, PhotoRow, ProgressPanel } from "style.slint";
+import { Palette, Label, Eyebrow, Title, Rule, Action, Field, FormRow, TeamRow, PhotoRow, ProgressPanel, PairDigit } from "style.slint";
 
 export component PhotoWindow inherits Window {
     title: "Natsume Photo 摄影工作台";
@@ -69,6 +69,10 @@ export component PhotoWindow inherits Window {
     callback choose-path(string);
     callback open-workspace;
     callback initialize;
+    pure callback pairing-character(string, int) -> string;
+    callback pairing-edit(int, string);
+    callback pairing-navigate(int, string);
+    in-out property <int> pairing-focus: -1;
     callback start-session;
     callback select-team(string);
     callback start-group;
@@ -203,7 +207,7 @@ export component PhotoWindow inherits Window {
                     FormRow { label: "工作区目录"; hint: root.create-workspace ? "输入尚不存在的新目录；选择按钮用于选择其父目录。" : "选择已经初始化的工作区，无需服务器或证书。"; HorizontalLayout { spacing: 8px; Field { text <=> root.workspace-path; enabled: !root.busy; placeholder: "选择本机工作区"; } Action { text: "选择…"; outline: true; width: 78px; clicked => { root.choose-path(root.create-workspace ? "new-workspace" : "workspace"); } } } }
                     HorizontalLayout {
                         padding-top: 24px; spacing: 12px;
-                        Rectangle { width: 32%; }
+
                         if !root.create-workspace: Action { text: "打开已有工作区"; outline: true; reason: root.busy || root.workspace-path == "" ? "请选择工作区" : ""; clicked => { root.open-workspace(); } }
                         if root.create-workspace: Action { text: "下一步：登记拍照站"; reason: root.busy || root.workspace-path == "" || root.server-url == "" || (root.custom-ca && root.ca-path == "") ? "请先填写连接信息" : ""; clicked => { root.setup-step = 1; } }
                         Rectangle { horizontal-stretch: 1; }
@@ -212,7 +216,23 @@ export component PhotoWindow inherits Window {
                 if root.setup-step == 1: VerticalLayout {
                     spacing: 16px; padding-top: 24px;
                     Eyebrow { text: "一次性配对码"; }
-                    Field { text <=> root.pairing-code; secret: true; enabled: !root.busy; placeholder: "输入管理员提供的配对码"; }
+                    FormRow {
+                        label: "配对码"; hint: "字母与数字，不区分大小写。可直接粘贴 ABCD-1234。"; height: 112px;
+                        HorizontalLayout {
+                            spacing: 8px; alignment: start;
+                            for slot[i] in 9: Rectangle {
+                                width: i == 4 ? 24px : 48px; height: 56px;
+                                if i == 4: Label { width: parent.width; height: parent.height; text: "–"; horizontal-alignment: center; font-size: 28px; color: Palette.muted; }
+                                if i != 4: PairDigit {
+                                    character: root.pairing-character(root.pairing-code, i < 4 ? i : i - 1);
+                                    active: root.pairing-focus == (i < 4 ? i : i - 1); enabled: !root.busy;
+                                    activated => { root.pairing-focus = i < 4 ? i : i - 1; }
+                                    edited(value) => { root.pairing-edit(i < 4 ? i : i - 1, value); }
+                                    navigate(key) => { root.pairing-navigate(i < 4 ? i : i - 1, key); }
+                                }
+                            }
+                        }
+                    }
                     Label { text: "继续同一工作区的初始化时，可留空并使用原凭据恢复。"; font-size: 12px; color: Palette.muted; height: 24px; }
                     HorizontalLayout {
                         spacing: 12px;
@@ -536,22 +556,22 @@ export component ContestantWindow inherits Window {
       VerticalLayout {
         spacing: 0px;
         Rectangle {
-            height: 280px * root.stage-scale;
+            height: 200px * root.stage-scale;
             HorizontalLayout {
-                padding-left: 64px * root.stage-scale; padding-right: 64px * root.stage-scale; padding-top: 48px * root.stage-scale; padding-bottom: 40px * root.stage-scale; spacing: 48px * root.stage-scale;
+                padding-left: 64px * root.stage-scale; padding-right: 64px * root.stage-scale; padding-top: 24px * root.stage-scale; padding-bottom: 24px * root.stage-scale; spacing: 48px * root.stage-scale;
                 HorizontalLayout {
                     width: root.header-column-width; spacing: 24px * root.stage-scale;
-                    Image { source: root.logo; width: 160px * root.stage-scale; height: 160px * root.stage-scale; image-fit: contain; }
+                    Image { source: root.logo; width: 120px * root.stage-scale; height: 120px * root.stage-scale; y: (parent.height - self.height) / 2; image-fit: contain; }
                     VerticalLayout {
                         alignment: center; spacing: 12px * root.stage-scale;
-                        Label { text: root.school; color: Palette.paper; font-size: 48px * root.stage-scale; font-weight: 700; height: 96px * root.stage-scale; wrap: word-wrap; }
-                        Label { text: root.school-en; color: #999999; font-size: 28px * root.stage-scale; height: 72px * root.stage-scale; wrap: word-wrap; }
+                        Label { text: root.school; color: Palette.paper; font-size: 48px * root.stage-scale; font-weight: 700; height: 64px * root.stage-scale; horizontal-alignment: left; wrap: word-wrap; }
+                        Label { text: root.school-en; color: #999999; font-size: 24px * root.stage-scale; height: 72px * root.stage-scale; horizontal-alignment: left; wrap: word-wrap; }
                     }
                 }
                 VerticalLayout {
                     width: root.header-column-width; alignment: center; spacing: 12px * root.stage-scale;
-                    Label { text: root.team; color: Palette.paper; font-size: 44px * root.stage-scale; font-weight: 700; height: 96px * root.stage-scale; horizontal-alignment: center; wrap: word-wrap; }
-                    Label { text: root.team-en; color: #999999; font-size: 28px * root.stage-scale; height: 72px * root.stage-scale; horizontal-alignment: center; wrap: word-wrap; }
+                    Label { text: root.team; color: Palette.paper; font-size: 44px * root.stage-scale; font-weight: 700; height: 64px * root.stage-scale; horizontal-alignment: left; wrap: word-wrap; }
+                    Label { text: root.team-en; color: #999999; font-size: 24px * root.stage-scale; height: 72px * root.stage-scale; horizontal-alignment: left; wrap: word-wrap; }
                 }
                 VerticalLayout {
                     width: max(root.header-column-width, team-number.preferred-width);

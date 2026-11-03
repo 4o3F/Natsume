@@ -73,7 +73,7 @@ export component ProgressPanel inherits Rectangle {
                     height: 8px; background: i < root.step ? Palette.ok : i == root.step ? #e2231a33 : transparent;
                     border-width: i > root.step ? 1px : 0px; border-color: Palette.rule;
                     Rectangle {
-                        clip: true; height: parent.height;
+                        x: 0px; y: 0px; clip: true; height: parent.height;
                         width: i < root.step ? parent.width : i == root.step ? parent.width * (root.known ? root.value : 1.0) : 0px;
                         background: i < root.step ? Palette.ok : Palette.signal;
                         for stripe in 80: Path { x: stripe * 12px; width: 12px; height: 8px; commands: "M 0 0 L 4 0 L 12 8 L 8 8 Z"; fill: #ffffff44; }
@@ -82,6 +82,38 @@ export component ProgressPanel inherits Rectangle {
                 }
                 Label { text: "0" + (i + 1) + "  " + title; height: 24px; font-size: 12px; font-weight: i == root.step ? 700 : 400; color: i == root.step ? Palette.ink : Palette.muted; }
             }
+        }
+    }
+}
+
+export component PairDigit inherits Rectangle {
+    in property <string> character;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback edited(string);
+    callback navigate(string);
+    callback activated;
+    width: 48px; height: 56px;
+    border-width: 2px;
+    border-color: !root.enabled ? Palette.rule : input.has-focus ? Palette.signal : Palette.ink;
+    background: root.enabled ? white : #d6d4ce66;
+    changed active => { if root.active { input.focus(); input.select-all(); } }
+    changed character => { input.text = root.character; }
+    input := TextInput {
+        width: parent.width; height: parent.height;
+        text: root.character;
+        enabled: root.enabled;
+        font-family: "Cascadia Mono"; font-size: 28px; font-weight: 700;
+        color: Palette.ink;
+        horizontal-alignment: center; vertical-alignment: center;
+        changed has-focus => { if self.has-focus { root.activated(); self.select-all(); } }
+        edited => { root.edited(self.text); self.text = root.character; }
+        key-pressed(event) => {
+            if event.text == Key.Backspace || event.text == Key.LeftArrow || event.text == Key.RightArrow {
+                root.navigate(event.text);
+                return accept;
+            }
+            return reject;
         }
     }
 }
