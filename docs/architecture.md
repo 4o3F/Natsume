@@ -915,7 +915,7 @@ Production WSS handler只把socket交给`device_control::serve_connection`。该
 
 匿名入口采用固定容量与快速拒绝：
 
-- TLS listener最多保留1024条已接受连接，TCP连接许可随底层IO存活，覆盖TLS、HTTP keep-alive与WebSocket upgrade，直到socket关闭；打包Server的`LimitNOFILE=4096`为数据库、日志等FD留出空间；
+- TLS listener最多保留2048条已接受连接，TCP连接许可随底层IO存活，覆盖TLS、HTTP keep-alive与WebSocket upgrade，直到socket关闭；打包Server的`LimitNOFILE=4096`保持不变，其余FD供数据库、校徽文件和日志等使用；
 - TLS在途握手最多64个，保持5秒deadline；容量不足时关闭新连接，不创建等待任务。已完成握手优先交付，失败与超时释放连接容量；
 - DeviceControl在HTTP upgrade前预留最多64个短期认证名额，满额返回503与`Retry-After: 1`；失败、断线或SessionReady后释放，active lease不占用短期名额；
 - Enrollment review registry在创建时原子检查640条上限；新review成功登记后释放短期认证名额，长期人工审核由registry条目约束，删除或认领即释放名额。exact committed replay和Resume不占用待审核容量；
@@ -1440,7 +1440,7 @@ Contest 提供已提交学校及导出读取边界；OrganizationDetails 是其�
 
 管理员 `GET /api/v2/exports/domjudge` 返回 groups.json、organizations.json、teams.json、accounts.yaml 和当前名单中全部可用的 `logos/INST-xxx.png`。重复导出使用固定排序和持久 ID；只改密时只影响 accounts.yaml。密码只进入这份管理员下载，响应 no-store，不落 Server 临时文件或浏览器持久存储。缺图／歧义不写入导出且不阻塞；匹配到的损坏／不可读／超限图片中止整包，并给出学校、源文件和原因。所有可用 Logo（PNG／JPEG／WebP／SVG）统一输出为 64×64 PNG：SVG 先以自然画布／96 DPI 渲染，再与栅格图一样使用 Lanczos3 和预乘 alpha 等比重采样，完整居中显示，空余区域补透明边，不拉伸、不裁切；源文件及 HTTP 图片交付不改动。
 
-管理员通过 `/organizations` 或 `/imports/{import_id}/organizations` 读取学校图像状态，候选图片接口也要求管理员权限。公开的只读 `/organizations/{organization_id}/logo` 每次按学校主键查询当前名单，并确认存在关联队伍，随后提供实际 MIME 的栅格源图或 SVG 渲染后的 PNG。成功响应以 SHA-256 ETag 和 no-cache 重新验证，404 不缓存；后补和替换图片无需重启、重导名单或 revision/Dirty 变更。Web 显示学校 ID／源图／缩略图及状态，支持校名搜索、问题过滤和手动刷新。
+管理员通过 `/organizations` 或 `/imports/{import_id}/organizations` 读取学校图像状态，候选图片接口也要求管理员权限。公开的只读 `/organizations/{organization_id}/logo` 每次按学校主键查询当前名单，并确认存在关联队伍，随后提供实际 MIME 的栅格源图或 SVG 渲染后的 PNG。公开 Logo 路由的全部响应（含200、304及错误）携带 `Connection: close`，响应发送完成后关闭HTTP连接；候选图片及其他路由保留原有连接行为。成功响应以 SHA-256 ETag 和 no-cache 重新验证，404 不缓存；后补和替换图片无需重启、重导名单或 revision/Dirty 变更。Web 显示学校 ID／源图／缩略图及状态，支持校名搜索、问题过滤和手动刷新。
 
 HTTP Logo 的名称解析和 ETag 由 Contest 私有的 `LogoHttpCache` 保存。名称解析以当前学校的完整中／英文名为键，最多保留 1024 个唯一文件匹配；异步锁串行执行目录元数据检查和扫描，同一时刻最多生成一份目录快照；目录路径或目录的 dev/ino/size/mtime/ctime 改变时重新扫描，新增、删除、重命名和替换目录会使解析失效。Missing/Ambiguous 不缓存。公开请求每次重新查询当前学校资料，名单改名或移除后下一次请求即按新资料处理；候选路由仍读取当前待提交名单并要求管理员权限。
 

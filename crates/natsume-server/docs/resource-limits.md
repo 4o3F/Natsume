@@ -60,4 +60,4 @@ NATSUME_RESOURCE_WORKBOOK="$fixtures/maximum-unique.xlsx" \
 
 当前 Operator API 没有统一请求处理期限，也不对请求体读取独立计时；慢速上传可长期占用 Import 名额，直到请求终止。JSON 和 Bytes 提取器使用默认的 2 MiB 原始正文上限，解析对象和并发请求总内存须另行测量。
 
-HTTP/1 等待首个或后续完整请求头的期限为30秒，部分请求头不重置期限；上一请求正文读取和响应发送完成后才开始后续期限。该期限同时限制空闲 keep-alive 和慢请求头，不限制请求正文、handler、响应传输或已升级的 WebSocket。TLS 连接总量1024、在途握手64和握手5秒期限保持不变。
+HTTP/1 等待首个或后续完整请求头的期限为30秒，部分请求头不重置期限；上一请求正文读取和响应发送完成后才开始后续期限。该期限同时限制空闲 keep-alive 和慢请求头，不限制请求正文、handler、响应传输或已升级的 WebSocket。TLS 连接总量为2048，打包Server的 `LimitNOFILE=4096` 保持不变，为数据库、校徽文件和日志等保留其余FD；在途握手64和握手5秒期限保持不变。公开学校Logo路由的全部响应携带 `Connection: close`，发送完响应即关闭连接。
