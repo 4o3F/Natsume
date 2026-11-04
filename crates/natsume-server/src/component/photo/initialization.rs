@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
 use tokio::sync::OwnedSemaphorePermit;
@@ -14,6 +14,14 @@ use natsume_photo_protocol::{IMAGE_LIMIT, MANIFEST_LIMIT as SNAPSHOT_LIMIT, RESO
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
 pub(crate) enum InitializationError {
+    #[snafu(display("Photo roster could not be read"))]
+    Roster {
+        source: crate::component::contest::ContestError,
+    },
+    #[snafu(display("Photo logo could not be prepared"))]
+    Logo {
+        source: crate::component::contest::PhotoLogoError,
+    },
     #[snafu(display("Photo storage task failed"))]
     Worker { source: tokio::task::JoinError },
     #[snafu(context(false), display("Photo initialization authentication failed"))]
@@ -83,11 +91,11 @@ fn snapshot(record: db::InitializationRecord) -> Result<SnapshotDownload, Initia
     })
 }
 
-pub(crate) enum Preparation {
+enum Preparation {
     Existing(SnapshotDownload),
     Build(Box<InitializationDraft>),
 }
-pub(crate) struct InitializationDraft {
+struct InitializationDraft {
     credential: Credential,
     permit: OwnedSemaphorePermit,
     files: super::storage::SnapshotFiles,
@@ -96,7 +104,7 @@ pub(crate) struct InitializationDraft {
     manifest: PhotoInitialization,
 }
 impl InitializationDraft {
-    pub(crate) fn set_teams(&mut self, teams: Vec<PhotoTeam>) -> Result<(), InitializationError> {
+    fn set_teams(&mut self, teams: Vec<PhotoTeam>) -> Result<(), InitializationError> {
         ensure!(
             self.manifest.teams.is_empty() && self.manifest.school_logos.is_empty(),
             ConflictSnafu
@@ -107,7 +115,7 @@ impl InitializationDraft {
         Ok(())
     }
 
-    pub(crate) async fn add_logo(
+    async fn add_logo(
         &mut self,
         organization_id: i64,
         bytes: Vec<u8>,
@@ -151,17 +159,14 @@ impl InitializationDraft {
 impl PhotoComponent {
     /// Immutable once published. Files are fully synced before the database
     /// references them. Interrupted unpublished directories are retained, not reused.
-    pub(crate) async fn begin_initialization(
-        &self,
-        token: &str,
-    ) -> Result<Preparation, InitializationError> {
+    async fn begin_initialization(&self, token: &str) -> Result<Preparation, InitializationError> {
         let credential = enrollment::credential(token)?;
         let current = self.read_snapshot(&credential).await?;
         if let Some(record) = current {
             return snapshot(record).map(Preparation::Existing);
         }
         let permit = self
-            .snapshot_work
+            .snapshot_build_slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| BusySnafu.build())?;
@@ -198,7 +203,7 @@ impl PhotoComponent {
         })))
     }
 
-    pub(crate) async fn publish_initialization(
+    async fn publish_initialization(
         &self,
         draft: InitializationDraft,
     ) -> Result<SnapshotDownload, InitializationError> {
@@ -268,7 +273,7 @@ impl PhotoComponent {
             .find(|logo| logo.sha256.as_str() == hash)
             .context(NotFoundSnafu)?;
         let permit = self
-            .download_work
+            .snapshot_download_slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| BusySnafu.build())?;
@@ -313,5 +318,34 @@ impl PhotoComponent {
             })
             .await
             .map_err(TransactionError::into_error)
+    }
+}
+
+impl PhotoComponent {
+    pub(crate) async fn initialize(
+        &self,
+        token: &str,
+    ) -> Result<SnapshotDownload, InitializationError> {
+        let mut draft = match self.begin_initialization(token).await? {
+            Preparation::Existing(snapshot) => return Ok(snapshot),
+            Preparation::Build(draft) => draft,
+        };
+        let teams = self.contest.photo_roster().await.context(RosterSnafu)?;
+        let schools: BTreeMap<_, _> = teams
+            .iter()
+            .map(|team| {
+                (
+                    team.organization_id,
+                    (team.school_name_zh.clone(), team.school_name_en.clone()),
+                )
+            })
+            .collect();
+        draft.set_teams(teams)?;
+        for (organization_id, (zh, en)) in schools {
+            if let Some(bytes) = self.contest.photo_logo(&zh, &en).await.context(LogoSnafu)? {
+                draft.add_logo(organization_id, bytes).await?;
+            }
+        }
+        self.publish_initialization(*draft).await
     }
 }

@@ -27,8 +27,50 @@ use crate::{
 
 type TestResult = Result<(), TestError>;
 
+mod acceptance;
 mod client_interop;
+mod delivery;
+
+mod imports;
 mod recovery;
+mod validation;
+
+#[tokio::test]
+async fn real_feature_load_checks_result_directories_and_error_sources() -> TestResult {
+    use crate::component::photo::PhotoStorageError;
+    use std::{
+        fs,
+        os::unix::fs::{MetadataExt as _, PermissionsExt as _},
+        sync::Arc,
+    };
+    let database = TestDatabase::new().await?;
+    let server =
+        feature::tests::ServerFixture::new(database.database.clone(), database.documents_path())
+            .build_with_features()?;
+    let root = tempfile::tempdir()?;
+    let initializations = root.path().join("initializations");
+    let results = root.path().join("results");
+    let load = || {
+        PhotoFeature::load(
+            database.database.clone(),
+            initializations.clone(),
+            results.clone(),
+            Arc::clone(server.contest.component()),
+            server.loaded.lifecycle.clone(),
+        )
+    };
+    let loaded = load().await;
+    assert!(loaded.is_ok());
+    for name in ["", "uploads", "staging", "objects", "exports"] {
+        assert_eq!(fs::metadata(results.join(name))?.mode() & 0o777, 0o700);
+    }
+    fs::set_permissions(results.join("objects"), fs::Permissions::from_mode(0o500))?;
+    let rejected = load().await;
+    fs::set_permissions(results.join("objects"), fs::Permissions::from_mode(0o700))?;
+    assert!(matches!(rejected, Err(PhotoStorageError::Results { .. })));
+    assert!(load().await.is_ok());
+    Ok(())
+}
 
 #[tokio::test]
 async fn source_path_rejections_use_json_errors_without_changing_authority() -> TestResult {

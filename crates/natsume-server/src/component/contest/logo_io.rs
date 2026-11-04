@@ -225,6 +225,11 @@ pub(crate) struct LogoImage {
 impl DecodedLogo {
     pub(super) fn encode_photo_png(self) -> Result<Vec<u8>, LogoError> {
         match self.0 {
+            LogoContent::Raster {
+                source,
+                format: ImageFormat::Png,
+                ..
+            } => Ok(source),
             LogoContent::Raster { image, .. } => {
                 let mut output = Cursor::new(Vec::new());
                 image

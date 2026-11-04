@@ -22,6 +22,8 @@ filter.only_tables = [
   "^photo_server_metadata$",
   "^photo_sources$",
   "^photo_initializations$",
+  "^photo_import_jobs$",
+  "^photo_submissions$",
   "^print_sources$",
   "^print_requests$",
   "^print_documents$",

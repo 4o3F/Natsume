@@ -156,6 +156,15 @@ export type AuditRoute =
   | "print_sources"
   | "print_source"
   | "photo_sources"
+  | "photo_imports"
+  | "photo_import"
+  | "photo_import_preview"
+  | "photo_import_commit"
+  | "photo_import_decision"
+  | "photo_submissions"
+  | "photo_photos"
+  | "photo_image"
+  | "photo_exports"
   | "photo_pairing_code"
   | "photo_enrollment_reset"
   | "photo_source_state"
@@ -170,6 +179,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -184,6 +194,7 @@ export type AuditTarget =
       import?: never;
       invitation?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -198,6 +209,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -213,6 +225,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -226,6 +239,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -240,6 +254,7 @@ export type AuditTarget =
       import?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -255,6 +270,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -268,6 +284,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -283,6 +300,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       printer?: never;
@@ -297,6 +315,22 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ photo_import: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      photo_source?: never;
       print_execution?: never;
       print_source?: never;
       printer?: never;
@@ -311,6 +345,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -325,6 +360,7 @@ export type AuditTarget =
       invitation?: never;
       operator?: never;
       password_reset?: never;
+      photo_import?: never;
       photo_source?: never;
       print_source?: never;
       printer?: never;
@@ -338,6 +374,7 @@ export type AuditTarget =
       import?: never;
       invitation?: never;
       operator?: never;
+      photo_import?: never;
       photo_source?: never;
       print_execution?: never;
       print_source?: never;
@@ -523,6 +560,13 @@ export type ConnectionStateResponse =
 /**  Typed comparison of one current target with one fresh Actual. */
 export type ConvergenceStatusResponse =
   "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
+
+export type CurrentPhoto = {
+  source_id: string;
+  submission_id: string;
+  revision: number;
+  image_sha256: Sha256Digest;
+};
 
 /**  Current durable targets and latest validated Actual for one Device. */
 export type DeviceConvergenceResponse =
@@ -973,6 +1017,11 @@ export type EvidenceQualityResponse = "medium" | "strong";
 
 export type ExecutionState =
   "queued" | "active" | "waiting" | "completed" | "exhausted";
+
+export type ExpectedPhoto = {
+  source_id: string;
+  submission_id: string;
+};
 
 export type ExportFailure = "journal_read_failed";
 
@@ -1663,10 +1712,101 @@ export type PasswordResetIssued = Record<string, never>;
 
 export type PauseReason = "disk_budget";
 
+export type PendingPhoto = PendingPhoto_Serialize | PendingPhoto_Deserialize;
+
+export type PendingPhotoCursor = {
+  after_source_id: string;
+  after_submission_id: string;
+};
+
+export type PendingPhotoPage =
+  PendingPhotoPage_Serialize | PendingPhotoPage_Deserialize;
+
+export type PendingPhotoPage_Deserialize = {
+  entries: PendingPhoto_Deserialize[];
+  next?: PendingPhotoCursor | null;
+};
+
+export type PendingPhotoPage_Serialize = {
+  entries: PendingPhoto_Serialize[];
+  next: PendingPhotoCursor | null;
+};
+
+export type PendingPhotoQuery =
+  PendingPhotoQuery_Serialize | PendingPhotoQuery_Deserialize;
+
+export type PendingPhotoQuery_Deserialize = {
+  after_source_id?: string | null;
+  after_submission_id?: string | null;
+  limit?: number | null;
+};
+
+export type PendingPhotoQuery_Serialize = {
+  after_source_id: string | null;
+  after_submission_id: string | null;
+  limit: number | null;
+};
+
+export type PendingPhoto_Deserialize = {
+  source_id: string;
+  submission_id: string;
+  import_id: string;
+  account_id: string;
+  account: string;
+  assigned_account_id?: string | null;
+  image_sha256: Sha256Digest;
+  state: SubmissionState;
+  revision: number;
+};
+
+export type PendingPhoto_Serialize = {
+  source_id: string;
+  submission_id: string;
+  import_id: string;
+  account_id: string;
+  account: string;
+  assigned_account_id: string | null;
+  image_sha256: Sha256Digest;
+  state: SubmissionState;
+  revision: number;
+};
+
+export type PhotoAction = PhotoAction_Serialize | PhotoAction_Deserialize;
+
+export type PhotoAction_Deserialize =
+  | { action: "reject" }
+  | {
+      action: "activate";
+      account_id: string;
+      expected_current?: ExpectedPhoto | null;
+    };
+
+export type PhotoAction_Serialize =
+  | { action: "reject" }
+  | {
+      action: "activate";
+      account_id: string;
+      expected_current: ExpectedPhoto | null;
+    };
+
 /**  Confirms that the issued enrollment is bound to the original signing key. */
 export type PhotoConfirmation = {
   enrollment_id: string;
   signing_public_key: SigningPublicKey;
+};
+
+export type PhotoDecision = PhotoDecision_Serialize | PhotoDecision_Deserialize;
+
+export type PhotoDecision_Deserialize = {
+  submission_id: string;
+  expected_submission_revision: number;
+  action: PhotoAction_Deserialize;
+};
+
+export type PhotoDecision_Serialize = {
+  submission_id: string;
+  expected_submission_revision: number;
+  action: PhotoAction_Serialize;
 };
 
 /**  Contains a secret: intentionally has no Debug implementation. */
@@ -1726,6 +1866,44 @@ export type PhotoPairingCode = {
 };
 
 export type PhotoPairingCodeRequest = Record<string, never>;
+
+export type PhotoPreviewEntry =
+  PhotoPreviewEntry_Serialize | PhotoPreviewEntry_Deserialize;
+
+export type PhotoPreviewEntry_Deserialize = {
+  submission_id: string;
+  result_id: string;
+  account_id: string;
+  account: string;
+  image_sha256: Sha256Digest;
+  state: SubmissionState;
+  submission_revision: number;
+  current?: CurrentPhoto | null;
+  active_account_id?: string | null;
+};
+
+export type PhotoPreviewEntry_Serialize = {
+  submission_id: string;
+  result_id: string;
+  account_id: string;
+  account: string;
+  image_sha256: Sha256Digest;
+  state: SubmissionState;
+  submission_revision: number;
+  current: CurrentPhoto | null;
+  active_account_id: string | null;
+};
+
+export type PhotoRecord = {
+  account_id: string;
+  account: string;
+  source_id: string;
+  submission_id: string;
+  revision: number;
+  image_sha256: Sha256Digest;
+  image_format: string;
+  image_bytes: number;
+};
 
 /**  Public source projection used by Operators and the enrollment confirmation. */
 export type PhotoSource = {
@@ -2074,6 +2252,54 @@ export type RequestId =
   /**  Request correlation UUID supplied explicitly by the producer. */
   string;
 
+export type ResultImportFailure =
+  | "limit"
+  | "input"
+  | "storage"
+  | "archive"
+  | "signature"
+  | "authorization"
+  | "image"
+  | "conflict"
+  | "interrupted";
+
+export type ResultImportJob =
+  ResultImportJob_Serialize | ResultImportJob_Deserialize;
+
+export type ResultImportJob_Deserialize = {
+  import_id: string;
+  state: ResultImportState;
+  uploaded_bytes: number;
+  verified_images: number;
+  failure_code?: ResultImportFailure | null;
+};
+
+export type ResultImportJob_Serialize = {
+  import_id: string;
+  state: ResultImportState;
+  uploaded_bytes: number;
+  verified_images: number;
+  failure_code: ResultImportFailure | null;
+};
+
+export type ResultImportPreview =
+  ResultImportPreview_Serialize | ResultImportPreview_Deserialize;
+
+export type ResultImportPreview_Deserialize = {
+  import_id: string;
+  committed: boolean;
+  entries: PhotoPreviewEntry_Deserialize[];
+};
+
+export type ResultImportPreview_Serialize = {
+  import_id: string;
+  committed: boolean;
+  entries: PhotoPreviewEntry_Serialize[];
+};
+
+export type ResultImportState =
+  "uploading" | "processing" | "ready" | "committed" | "failed";
+
 export type ReviewCancelCause =
   | "client_close"
   | "timeout"
@@ -2300,6 +2526,9 @@ export type SigningPublicKey = string;
 
 /**  Source lifecycle; authority remains entirely on Server. */
 export type SourceState = "enabled" | "disabled" | "revoked";
+
+export type SubmissionState =
+  "active" | "pending_review" | "needs_association" | "rejected" | "superseded";
 
 export type TargetAction =
   "set_foreground" | "terminate_session" | "reset_home" | "power_off";

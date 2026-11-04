@@ -152,6 +152,21 @@ diesel::table! {
 }
 
 diesel::table! {
+    photo_import_jobs (import_id) {
+        import_id -> Text,
+        state -> Text,
+        uploaded_bytes -> BigInt,
+        verified_images -> BigInt,
+        manifest_id -> Nullable<Text>,
+        manifest_sha256 -> Nullable<Text>,
+        manifest_json -> Nullable<Text>,
+        failure_code -> Nullable<Text>,
+        created_at_unix_ms -> BigInt,
+        updated_at_unix_ms -> BigInt,
+    }
+}
+
+diesel::table! {
     photo_initializations (initialization_id) {
         initialization_id -> Text,
         source_id -> Text,
@@ -182,6 +197,23 @@ diesel::table! {
         token_hash -> Nullable<Binary>,
         token_expires_at_unix_ms -> Nullable<BigInt>,
         created_at_unix_ms -> BigInt,
+    }
+}
+
+diesel::table! {
+    photo_submissions (source_id, submission_id) {
+        source_id -> Text,
+        submission_id -> Text,
+        result_id -> Text,
+        import_id -> Text,
+        account_id -> Text,
+        account -> Text,
+        assigned_account_id -> Nullable<Text>,
+        image_sha256 -> Text,
+        image_format -> Text,
+        image_bytes -> BigInt,
+        state -> Text,
+        revision -> BigInt,
     }
 }
 
@@ -336,6 +368,8 @@ diesel::joinable!(gateway_credentials -> devices (device_id));
 diesel::joinable!(operator_invitations -> operator_accounts (issuer_operator_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
 diesel::joinable!(photo_initializations -> photo_sources (source_id));
+diesel::joinable!(photo_submissions -> photo_import_jobs (import_id));
+diesel::joinable!(photo_submissions -> photo_sources (source_id));
 diesel::joinable!(print_attempts -> print_jobs (ready_sequence));
 diesel::joinable!(print_attempts -> print_printers (printer_id));
 diesel::joinable!(print_claims -> print_attempts (attempt_id));
@@ -362,9 +396,11 @@ diesel::allow_tables_to_appear_in_same_query!(
     operator_sessions,
     organizations,
     pending_import_candidate,
+    photo_import_jobs,
     photo_initializations,
     photo_server_metadata,
     photo_sources,
+    photo_submissions,
     print_attempts,
     print_claims,
     print_documents,

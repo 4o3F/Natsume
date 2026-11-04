@@ -295,10 +295,14 @@ async fn print_migration_rollback_preserves_roster_and_document_files() {
     };
     // Rolling back the Print migrations removes their database records,
     // not roster facts or files owned by the document directory.
-    // Photo initialization is later in the sequence and must be reverted first.
-    must(connection.revert_last_migration(migrations()));
-    must(connection.revert_last_migration(migrations()));
-    must(connection.revert_last_migration(migrations()));
+    let mut reverted = 0;
+    while must(connection.applied_migrations())
+        .iter()
+        .any(|version| version.to_string().as_str() > "00000000000006")
+    {
+        must(connection.revert_last_migration(migrations()));
+        reverted += 1;
+    }
     assert_eq!(
         must(accounts::table.count().get_result::<i64>(&mut connection)),
         1
@@ -310,7 +314,7 @@ async fn print_migration_rollback_preserves_roster_and_document_files() {
     must(f.print.documents.verify(&document.sha256, document.bytes));
     assert_eq!(
         must(connection.run_pending_migrations(migrations())).len(),
-        3
+        reverted
     );
     assert!(must(f.database.read(db::printers::list).await).is_empty());
     assert!(must(f.print.list_sources().await).is_empty());

@@ -25,10 +25,12 @@ fn print_migrations_create_and_remove_all_print_tables_together() {
         must(sql::<BigInt>(print_tables).get_result::<i64>(&mut connection)),
         0
     );
-    assert_eq!(
-        must(connection.run_pending_migrations(must(migrations()))).len(),
-        3
-    );
+    let applied = must(connection.run_pending_migrations(must(migrations())))
+        .into_iter()
+        .map(|version| version.to_string())
+        .collect::<Vec<_>>();
+    assert!(applied.iter().any(|version| version == "00000000000007"));
+    assert!(applied.iter().any(|version| version == "00000000000008"));
     assert_eq!(
         must(sql::<BigInt>(print_tables).get_result::<i64>(&mut connection)),
         7
@@ -37,10 +39,13 @@ fn print_migrations_create_and_remove_all_print_tables_together() {
         must(connection.run_pending_migrations(must(migrations()))),
         [] as [diesel::migration::MigrationVersion<'_>; 0]
     );
-    // Remove the later Photo migration before both Print migrations.
-    must(connection.revert_last_migration(must(migrations())));
-    must(connection.revert_last_migration(must(migrations())));
-    must(connection.revert_last_migration(must(migrations())));
+    // Remove later migrations before the two Print migrations.
+    while must(connection.applied_migrations())
+        .iter()
+        .any(|version| version.to_string().as_str() > "00000000000006")
+    {
+        must(connection.revert_last_migration(must(migrations())));
+    }
     assert_eq!(
         must(sql::<BigInt>(print_tables).get_result::<i64>(&mut connection)),
         0
@@ -56,7 +61,7 @@ fn print_migrations_create_and_remove_all_print_tables_together() {
     );
     assert_eq!(
         must(connection.run_pending_migrations(must(migrations()))).len(),
-        3
+        applied.len()
     );
     assert_eq!(
         must(sql::<BigInt>(print_tables).get_result::<i64>(&mut connection)),

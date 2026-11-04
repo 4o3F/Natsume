@@ -50,7 +50,7 @@ pub(crate) enum StartupError {
     /// Storage startup failure owned by `PhotoFeature`.
     #[snafu(visibility(pub(crate)), display("Photo storage startup failed"))]
     PhotoStorage {
-        source: crate::component::photo::InitializationError,
+        source: crate::component::photo::PhotoStorageError,
     },
     #[snafu(display("server configuration failed"))]
     Configuration { source: crate::config::ConfigError },
@@ -81,6 +81,8 @@ pub(crate) struct LoadedServer {
     pub(crate) operator: Arc<OperatorComponent>,
     /// Shared Print instance used by authentication and background tasks.
     pub(crate) print: Arc<PrintComponent>,
+    /// Same Photo owner shared by HTTP upload routes and background validation.
+    pub(crate) photo: Arc<crate::component::photo::PhotoComponent>,
     /// Emit handle for HTTP audit and completion events.
     pub(crate) journal: Journal,
     /// Shared HTTP mutation admission and producer tracking.
@@ -136,14 +138,16 @@ pub(crate) async fn load(
         Arc::clone(&vault),
         config.organization_logos_path().to_path_buf(),
     );
+    let lifecycle = ServerLifecycle::new();
     let photo = PhotoFeature::load(
         database.clone(),
         config.photo_initializations_path().to_path_buf(),
+        config.photo_results_path().to_path_buf(),
         Arc::clone(contest.component()),
+        lifecycle.clone(),
     )
     .await
     .context(PhotoStorageSnafu)?;
-    let lifecycle = ServerLifecycle::new();
     let journal =
         JournalComponent::start(config.journal_path().to_owned(), config.journal().clone());
     let infra = Infra {
@@ -226,6 +230,7 @@ fn assemble<R>(
             routes,
             operator: Arc::clone(operator_feature.component()),
             print,
+            photo: Arc::clone(photo.component()),
             journal: emitter,
             lifecycle,
         },

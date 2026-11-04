@@ -50,21 +50,37 @@
 @@ -145 +145 @@ diesel::table! {
 -        expires_at_unix_ms -> Integer,
 +        expires_at_unix_ms -> BigInt,
-@@ -161 +161 @@ diesel::table! {
+@@ -158,2 +158,2 @@ diesel::table! {
+-        uploaded_bytes -> Integer,
+-        verified_images -> Integer,
++        uploaded_bytes -> BigInt,
++        verified_images -> BigInt,
+@@ -164,2 +164,2 @@ diesel::table! {
+-        created_at_unix_ms -> Integer,
+-        updated_at_unix_ms -> Integer,
++        created_at_unix_ms -> BigInt,
++        updated_at_unix_ms -> BigInt,
+@@ -176 +176 @@ diesel::table! {
 -        completed_at_unix_ms -> Nullable<Integer>,
 +        completed_at_unix_ms -> Nullable<BigInt>,
-@@ -181 +181 @@ diesel::table! {
+@@ -196 +196 @@ diesel::table! {
 -        pairing_expires_at_unix_ms -> Nullable<Integer>,
 +        pairing_expires_at_unix_ms -> Nullable<BigInt>,
-@@ -183,2 +183,2 @@ diesel::table! {
+@@ -198,2 +198,2 @@ diesel::table! {
 -        token_expires_at_unix_ms -> Nullable<Integer>,
 -        created_at_unix_ms -> Integer,
 +        token_expires_at_unix_ms -> Nullable<BigInt>,
 +        created_at_unix_ms -> BigInt,
-@@ -191 +191 @@ diesel::table! {
+@@ -214 +214 @@ diesel::table! {
+-        image_bytes -> Integer,
++        image_bytes -> BigInt,
+@@ -216 +216 @@ diesel::table! {
+-        revision -> Integer,
++        revision -> BigInt,
+@@ -223 +223 @@ diesel::table! {
 -        ready_sequence -> Integer,
 +        ready_sequence -> BigInt,
-@@ -196,7 +196,7 @@ diesel::table! {
+@@ -228,7 +228,7 @@ diesel::table! {
 -        claimed_at_unix_ms -> Integer,
 -        prepare_expires_at_unix_ms -> Integer,
 -        lease_expires_at_unix_ms -> Integer,
@@ -79,10 +95,10 @@
 +        last_observed_at_unix_ms -> Nullable<BigInt>,
 +        job_id -> Nullable<BigInt>,
 +        finished_at_unix_ms -> Nullable<BigInt>,
-@@ -219 +219 @@ diesel::table! {
+@@ -251 +251 @@ diesel::table! {
 -        ready_sequence -> Integer,
 +        ready_sequence -> BigInt,
-@@ -223,5 +223,5 @@ diesel::table! {
+@@ -255,5 +255,5 @@ diesel::table! {
 -        bytes -> Integer,
 -        pages -> Integer,
 -        ahead_tasks -> Integer,
@@ -93,17 +109,17 @@
 +        ahead_tasks -> BigInt,
 +        ahead_pages -> BigInt,
 +        in_progress_tasks -> BigInt,
-@@ -233 +233 @@ diesel::table! {
+@@ -265 +265 @@ diesel::table! {
 -        ready_sequence -> Integer,
 +        ready_sequence -> BigInt,
-@@ -236,2 +236,2 @@ diesel::table! {
+@@ -268,2 +268,2 @@ diesel::table! {
 -        available_at_unix_ms -> Integer,
 -        queue_order -> Integer,
 +        available_at_unix_ms -> BigInt,
 +        queue_order -> BigInt,
-@@ -248 +248 @@ diesel::table! {
+@@ -280 +280 @@ diesel::table! {
 -        pairing_expires_at_unix_ms -> Nullable<Integer>,
 +        pairing_expires_at_unix_ms -> Nullable<BigInt>,
-@@ -319 +319 @@ diesel::table! {
+@@ -351 +351 @@ diesel::table! {
 -        organization_id -> Integer,
 +        organization_id -> BigInt,

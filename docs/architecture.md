@@ -768,7 +768,7 @@ pub(crate) struct ServerRuntime {
 | Operator | 构造唯一 `Arc<OperatorComponent>`，绑定账号管理和登录 session 路由，并供认证及 JournalQuery 使用 |
 | Provisioning | 构造唯一 `Arc<ProvisioningComponent>`，绑定 operator 路由，并将同一 Arc 传给 DeviceControl |
 | Contest | 构造唯一 `Arc<ContestComponent>`，绑定 public、operator 路由，并将同一 Arc 传给 Photo 和 Import |
-| Photo | 加载初始化存储，将唯一 Photo 实例与共享 Contest 交给 `PreparePhotoInitialization`，绑定 operator 和 enrollment 路由 |
+| Photo | 加载初始化与成果存储，构造持有共享 Contest 和 ServerLifecycle 的唯一 Arc<PhotoComponent>，所有 Photo 路由绑定该实例 |
 | Device | 构造 Device、Binding、SessionControl、Home、Power、RuntimeConfig、DeviceControl 和 TargetSubmission，接收已加载的 Gateway 与共享 Provisioning |
 | Import | 构造唯一 `Arc<ImportComponent>`，接收共享 Contest 和 DeviceControl；上传与提交路由绑定 `ImportState { import, device_control }`，候选组织及 logo 路由绑定 `ImportCandidateState { import, contest }` |
 
@@ -841,9 +841,9 @@ Server按调用职责分成四层，依赖只向下：
 
 协调层按具体用例划分：`DeviceControl`负责设备mutation与运行时编排，`JournalQuery`负责只读日志查询、时间线重建、概要、导出和状态。`JournalQuery`只持有`JournalComponent::reader()`、共享`Arc<OperatorComponent>`和构造时注入的`LiveLeaseView`；该view只弱引用Registry目录、读取actor维护的当前session cell，不持有整个DeviceControl、不发送actor消息、不延长协调器或actor生命周期。另一协调器所需的运行时事实必须通过这种窄只读视图注入，不能互持协调器句柄。Operator通过自己的只读DB方法批量解析当前显示名；失败时保留ID，显示名未知。handler只解析／校验输入、检查权限、调用注入的`JournalQuery`并序列化，不实现重建或跨组件业务规则。
 
-Photo 初始化使用由 `PhotoFeature` 构造的 `PreparePhotoInitialization`，显式持有 Contest 和 Photo 的共享 Arc；它只组织事实读取与发布，草稿校验、资源预算和存储仍由 Photo 独占。
+PhotoFeature 只构造和绑定唯一 Arc<PhotoComponent>。PhotoComponent 持有共享 Arc<ContestComponent>，在自身数据库事务中读取 Contest 公开名单事实，独占初始化、成果接收、查询和导出的业务规则、事务与存储。图片读取、解码和 ZIP 生成在事务外执行，不另建 Photo 根目录协调器。
 
-1. **依赖只向下。** 组件只持有自身需要的基础设施，不持有协调器、Registry或其他组件实例；不为日志发出互调组件。TargetSubmission既有的同步事务业务入口继续遵循§10.5，不扩展成组件实例间的隐式调用。协调器依赖具体组件和基础设施，不能依赖入口或父容器；协调器之间也不互相依赖。
+1. **依赖只向下。** 组件不持有协调器或Registry；除明确的业务只读依赖外不持有其他组件实例，不为日志发出互调组件。Photo 对共享 Contest 的单向只读依赖用于名单、校徽和同事务名单校验，Contest 不反向依赖 Photo。TargetSubmission既有的同步事务业务入口继续遵循§10.5，不扩展成组件实例间的隐式调用。协调器依赖具体组件和基础设施，不能依赖入口或父容器；协调器之间也不互相依赖。
 2. **调用路径由实际用例决定。** 单组件操作由入口直调组件；设备mutation只有跨组件编排或需要Registry、fence、actor等运行时状态时才走`DeviceControl`；日志查询由`JournalQuery`协调只读依赖。协调器不增加一对一转发方法；组件返回的`TargetChange`仍由调用方交给`publish`，组件不反向通知Registry。
 3. **谁提交，谁在提交后发事件。** Binding拥有`BindingBound`／`BindingRejected`／`BindingUnbound`，Device拥有`LifecycleChanged`、`ReviewCreated`／`ReviewCancelled`／`EnrollmentDenied`／`EnrollmentApproved`，TargetSubmission拥有逐设备`TargetSubmitted`（包括receipt replay）；Operator拥有`AuthSucceeded`／`AuthFailed`、`LoggedOut`、`PasswordChanged`、`PasswordResetIssued`／`PasswordResetCompleted`和`InvitationRegistered`。事件只在事务提交、进程内review转换成功或认证决策完成后发出；Changed-only、winning-only、no-op静默和提交快照规则由owning component维护。协调器及其actor、连接处理拥有lease、`Disconnected`、`ActorStopped`、`ReconcileRetry`、`ActualChanged`、`AdmissionRejected`、`ActivationCommitted`和`AdmissionCompleted`等运行时事实。入口层只负责请求级事实，`OperatorRequest`由审计入口发出，不重复发出领域事件。
 4. **发起者上下文显式传参。** HTTP审计入口创建共享typed `RequestAudit`，认证层写入已验证的`OperatorIdentity`，handler补充operation/result ID；入口在request span内一次捕获有效OpenTelemetry trace ID，并从这些事实构造包含request ID、trace ID和已知actor的`JournalContext`，显式传给组件或协调器；WSS显式传peer IP和当前已知事实。不在组件或协调器内部从request extensions隐式读取身份。actor只携带device/session上下文；操作人身份只通过显式的`FenceReason`／Evict上下文传入。
@@ -865,7 +865,7 @@ Database + ServerConfig + startup UtcOffset
       → GatewayComponent { Origin CA }
       → PrintFeature { Arc<PrintComponent> { document storage } }
       → ContestFeature { Arc<ContestComponent> }
-      → PhotoFeature { PreparePhotoInitialization { Arc<PhotoComponent> { initialization storage }, shared Arc<ContestComponent> } }
+      → PhotoFeature { Arc<PhotoComponent> { initialization/results storage, shared Arc<ContestComponent>, lifecycle } }
       → ServerLifecycle { admission + TaskTracker + shutdown signal }
       → JournalComponent::start { writer + ServerStarted }
       → Infra { Database + Arc<VaultSession> + Journal emit + lifecycle }
@@ -878,7 +878,7 @@ Database + ServerConfig + startup UtcOffset
       → operator / print { shared authentication handles }
       → journal { emitter } + lifecycle { shared admission }
       → ServerRuntime { shared lifecycle + Arc<DeviceControl> + JournalComponent writer }
-      → AccessRoutes { Journal routes bound to JournalQuery + Print / Operator / Provisioning / Contest routes bound to their shared Arc + Photo routes bound to PreparePhotoInitialization + Device / Import routes bound to per-handler narrow states }
+      → AccessRoutes { Journal routes bound to JournalQuery + Print / Operator / Provisioning / Contest routes bound to their shared Arc + Photo routes bound to shared Arc<PhotoComponent> + Device / Import routes bound to per-handler narrow states }
   → bootstrap 确认与部署 RuntimeConfig 应用
   → TLS listener
   → background::start_background_tasks(&PrintComponent) { Print attempt expiry }
@@ -889,7 +889,7 @@ Database + ServerConfig + startup UtcOffset
           → Device WSS { Arc<DeviceControl> }
 ```
 
-Journal HTTP handler直接持有JournalQuery，Print、Operator（含登录 session）、Provisioning 和 Contest HTTP handler直接持有各自组件的共享Arc，Photo HTTP handler直接持有共享句柄协调器 `PreparePhotoInitialization`，Device HTTP handler直接提取各自的窄状态，Import HTTP handler 提取 `ImportState`，两个候选组织接口提取 `ImportCandidateState`；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，各 feature 通过具体参数取得配置值。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
+Journal HTTP handler直接持有JournalQuery，Print、Operator（含登录 session）、Provisioning 和 Contest HTTP handler直接持有各自组件的共享Arc，Photo HTTP handler直接持有同一共享 Arc<PhotoComponent>，Device HTTP handler直接提取各自的窄状态，Import HTTP handler 提取 `ImportState`，两个候选组织接口提取 `ImportCandidateState`；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载 `LoadedServer`、绑定TLS listener、启动后台工作、组装HTTP路由并提供关闭信号，再调用 `ServerRuntime::serve_until` 运行HTTP；组件不自行重复加载共享依赖，各 feature 通过具体参数取得配置值。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
 
 `ServerRuntime::serve_until`在收到关闭信号或HTTP服务结束后，按以下顺序关闭：
 
@@ -2402,7 +2402,7 @@ Photo Client 首次联网登记来源、信任和非秘密名单快照，之后�
 
 初始化快照获取使用 `POST /photo/client/initialization`，因为首次请求会写缓存与数据库；复用 ServerLifecycle mutation 准入、在途跟踪与停止等待。资源 GET 保持只读。普通 `POST /photo/sources/{source_id}/pairing-code` 不重置授权；显式重置使用独立的 `POST /photo/sources/{source_id}/reset-enrollment`，生成新码与失效旧绑定在同一事务内完成，并形成可区分的 OperatorRequest 路由分类。
 
-Photo 与 Contest 的初始化编排由具体 `PreparePhotoInitialization` 协调入口负责，PhotoComponent 不持有或接收 ContestComponent 实例。Contest 提供非秘密名单和按学校名称解析的 PNG；Photo 拥有来源验证、快照发布与存储。`natsume-photo-protocol` 统一配对、确认、完成的请求和响应、初始化快照、不同用途的规范 UUIDv7 类型、摘要、格式版本、资源限额和发布／安装校验；Bearer token 对 Client 不透明，其内部编码只由 Server 解析；不承载数据库、HTTP 或 Windows 凭据逻辑。私有缓存启动时校验 owner／权限，运行时以固定目录句柄进行相对打开，拒绝符号链接；容量拒绝给出 Retry-After，Client 只对快照获取与资源下载做有界重试，不自动重试配对和完成操作。Print／Photo 共用配对原语与一分钟阻断机制，各自保留独立领域预算。
+PhotoComponent 通过构造参数持有共享 Arc<ContestComponent>，初始化编排由 Photo 自身完成，不设置外部转发协调器。Contest 提供非秘密名单和按学校名称解析的 PNG；Photo 拥有来源验证、快照发布与存储。`natsume-photo-protocol` 统一配对、确认、完成的请求和响应、初始化快照、不同用途的规范 UUIDv7 类型、摘要、格式版本、资源限额和发布／安装校验；Bearer token 对 Client 不透明，其内部编码只由 Server 解析；不承载数据库、HTTP 或 Windows 凭据逻辑。私有缓存启动时校验 owner／权限，运行时以固定目录句柄进行相对打开，拒绝符号链接；容量拒绝给出 Retry-After，Client 只对快照获取与资源下载做有界重试，不自动重试配对和完成操作。Print／Photo 共用配对原语与一分钟阻断机制，各自保留独立领域预算。
 
 首次下载发布来源专属、不可变的初始化 JSON 快照，包含独立 dataset ID、initialization ID、七字段队伍名单与按 organization ID 关联的 PNG 校徽目录。名单保持 Contest 原有队伍／账号／学校／座位关联语义，但只选择 account_id、account、organization_id、学校及队伍的中英文名，不读取密码或输出座位、credential revision。校徽归 Contest 解析并转换为保持原尺寸的 PNG；同校共用，缺失或名称匹配不唯一时省略，已匹配但损坏时整体失败。Client 不配置默认展示图；没有照片时展示留空。
 
@@ -2440,6 +2440,20 @@ Client 在创建初始化目录之前取得目标同级排他锁；只有没有�
 
 ### 23.6 成果包、接收与外部图片交付
 
+Server 成果使用独立配置 `[storage].photo_results`（默认从数据库路径派生 `.photo-results`），不能与初始化目录重叠。启动校验服务账号拥有的 0700 根目录及 uploads、staging、objects、exports 子目录，持有目录句柄拒绝符号链接，不更改现有权限或清扫未知文件。migration 10 仅新增 photo_import_jobs 与 photo_submissions，不修改账号、队伍或座位表。图片在磁盘，以摘要和格式命名的不可变文件可自然共享；格式及长度存于 submission，不另建对象表。
+
+admin `POST /photo/imports` 流式写入 application/zip，64 KiB 缓冲，实际输入最多 8 GiB，空闲读取三十秒、整体十五分钟。读取请求体之前在共享写事务中检查 uploading/processing 并登记新任务，作为唯一上传队列准入；Busy 返回 503/Retry-After。仅记录开始及最终字节数，不逐 MiB 写进度。文件与目录同步后记录 processing 并返回 202；`GET /photo/imports/{import_id}` 查询任务。任务状态为 uploading、processing、ready、committed、failed；processing 同时涵盖待验证与运行中，图片数量只在验证完成时记录。启动将残留 uploading 终结为 failed/interrupted，完整 processing 输入可重新验证。后台处理由 BackgroundTasks 管理；目录 flock 阻止不同进程同时处理同一目录，并非额外上传配额。
+
+验证先有界预检 ZIP/ZIP64 的目录及文件集合，再从可信来源的完成初始化校验签名和原始队伍身份，逐图核对实际字节、SHA-256、真实格式、尺寸及完整解码。一次解码一图，单图 8000 万像素、320 MiB 分配，包级限额沿用协议。发布文件后在短事务中再次授权并检查 Manifest ID/规范化内容摘要，写 ready；此时没有提交或当前照片业务事实。任务不重复保存 source_id/initialization_id，授权上下文来自已验证 Manifest；每个来源至多一个完成初始化。基础设施失败由后台生命周期报告；中断 staging/无引用对象留待维护，不盲目删除。
+
+`PhotoComponent` 自己开启 read/write 事务，在同一事务内通过 ContestComponent::photo_roster_in 取得当前名单并一次建立按 account_id 索引的 PhotoRoster，执行预览、commit 与 decisions；同步事务辅助函数只在组件内部可见。所有 Photo HTTP 路由直接使用同一个 Arc<PhotoComponent>，错误经统一 from_photo 入口映射；HTTP 只解析和映射。新增 photo_submissions 保存原始 source/submission/result/import 身份、不可变原 account_id/account、assigned_account_id、图片摘要/格式/长度、state 及唯一一份 submission revision。当前照片只由 state=active 和 assigned_account_id 表达，部分唯一索引保证每个目标至多一条 active。没有 team_photos、关联版本号或 NULL 墓碑。
+
+admin `GET /photo/imports/{id}/preview` 查看投影，`POST /photo/imports/{id}/commit` 明确接收。首照 active，不同补拍 pending_review，同图新成果 superseded，原队伍不在当前名单时 needs_association。同 source 的 submission/result 身份不得改变原始内容；重复 commit/换包不重复接收或推进版本。`POST /photo/imports/{id}/decisions` 使用 submission_id、expected_submission_revision 与 action 对象（对象内仍以 action 标签区分 reject/activate）；reject 拒绝待处理项，activate 只传目标 account_id，由 Server 当前名单取得 account。空目标 expected_current=null，替换携带预期 source_id/submission_id，检测普通的过时目标；没有独立目标 revision 或原关联版本的 ABA 保证。替换在同一事务中先 supersede 旧提交，再激活新提交并递增该提交 revision。原始队伍仍存在时只能分配给它；原队伍失效时才允许明确改配其他目标。首次验证对照可信初始化校验签名，发布、接收和决定在写事务中重查来源授权；只读预览在来源禁用或撤销后仍可查看，不重复验签。预览批量读取提交与当前关联，不按条目查询。已接收照片不因来源撤销被删除。已保存签名 manifest 是不可变来源凭据，submission 列是用于查询和状态转换的持久化投影；仅新提交输入需要与现有身份交叉核对。
+
+目标身份采用稳定 account_id：同 ID 修改用户名仍有效，导出使用当前用户名；删除后同名重建的新 ID 不继承照片。名单校验在一个共享事务内批量完成。待处理读取和预览通过同一规则把失效 active/pending_review 投影为 needs_association，读取不写状态。`GET /photo/submissions` 使用完整的 source/submission 游标，默认 50、最多 100；`GET /photo/photos` 不分页，按 account_id 排序一次返回全部有效照片记录的 JSON 数组，不提供分页参数，也不返回 next。Photo 私有 SQL 在 LIMIT 前筛选需处理项或当前有效分配，没有逐行 association 回查，也不要求调用者穿过空 entries 页。
+
+admin `GET /photo/photos/{account_id}/image` 返回已验证照片，`POST /photo/exports` 固定当前有效 active 快照（最多 2000 张），事务外打开文件并生成 ZIP。文件名为当前外部 account 加 .jpg/.png；拒绝路径字符、Windows 保留名、尾部空格/点、超长和保守大小写冲突，缺失或损坏整包失败。STORE、64 KiB 缓冲和实际摘要校验保持协议 8 GiB 预算；无照片输出空 ZIP。导出使用私有 exports 下 O_TMPFILE，文件系统须支持，服务描述符限额须容纳 2000 个对象句柄。一个导出名额、两个单图名额由准备 IO 和 ReaderStream 文件读取持有；取消时受 ServerLifecycle 跟踪的清理任务等待实际文件读取结束后释放，生成/下载各十五分钟，断开或停服释放匿名文件。所有新增写路由具有独立审计分类，不记录请求体、凭据或图像内容；Web 接收界面尚未实现。
+
 只有确认成品交付。Photo Client 仅首次初始化联网，之后全程离线；Manifest、签名与成品图片组成一个 ZIP，经 Web Panel 一次上传。Server 使用有界流式解压和验证，限制压缩包、条目、解压总量与图像解码资源，不整包加载到内存。成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希，由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
 
 首期成果契约位于 `natsume-photo-protocol::results`。`manifest.json` 是封闭字段的 `{ "manifest": { ... }, "signature": "..." }` 信封；manifest 包含数值 `format_version: 1`、仅允许 `team_results` 的 kind、manifest_id、context、signing_public_key 和 results。context 使用现有 source_id、dataset_id、initialization_id 及初始化原始 JSON 的 initialization_sha256，不另造同义身份。results 每项包含持久化 result_id、submission_id、account_id、外部 account、image_sha256、image_bytes、image_format（jpeg/png）、width、height；不包含本地路径、座位、原片、凭据或默认图片用途。
@@ -2453,6 +2467,10 @@ Client 在创建初始化目录之前取得目标同级排他锁；只有没有�
 先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值， 显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理， 其他有效项继续接收，不按队名、校名或复用账号猜测 identity。 人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。
 
 Server 管理当前成品和待处理候选，不做原片云盘、全量历史、历史回滚或协作编辑。 签名成果包与按 `TeamID.jpg/png` 的外部图片交付不同：Client 导出自身成果，Server 汇总当前成品。 现有导出以 `account` 为外部 Team ID，内部队伍身份沿用 `account_id`，不是座位号或新 UUID。 实际 DOMjudge／Pyrite 的 ID、扩展名与路径仍需核对；检测 Windows 保留名、大小写冲突等， 不能静默改名、覆盖或漏图后声称成功。成品方向、尺寸、格式与元数据策略在确认前确定。
+
+admin `POST /photo/exports/pyrite` 导出 Pyrite CDP 素材 ZIP，复用当前名单与有效 active 成品的同一读事务快照，不新增数据库表。包内包含 `teams/<account>.jpg`、`affiliations/INST-xxx.png`、最小 `config.toml` 和 `roster.json`；即使无图也创建两个图片目录。照片统一 JPEG：已有 JPEG 原样复制并核验摘要，PNG 在原尺寸按质量 95 转 JPEG、透明区域填白，不改变存储原图。校徽由 Contest 持有一个共享图像处理名额，批次目录只扫描一次并按学校去重；PNG 校验后保留原字节，其他格式转换 PNG，缺失或匹配不明确时省略；损坏、读取失败、非法文件名或保守大小写冲突使整包失败。名单包含全部当前 Photo 队伍及中英文学校／队名、外部 id、`INST-xxx` organization_id、可空照片／校徽包内路径，不含密码、密钥或本地路径。沿用磁盘匿名文件、8 GiB 实际写入上限、共享 Photo 导出名额与下载生命周期，审计归入 PhotoExports。生成在单个阻塞任务中完成，tracing 记录总生成耗时、图片数量及输出字节数。
+
+Pyrite 当前从 DOMjudge `event-feed.ndjson` 读取学校／队伍名称和比赛记录，不读取附带的 `roster.json`；Natsume 不伪造完整比赛事件流。使用者需另从 DOMjudge 取得完整事件流，核对其中 team.id 等于 account、organization.id 等于 `INST-xxx`，与素材共同组成 CDP。配置仅声明 `[presentation]` 的 `logo_extension = "png"`、`team_photo_extension = "jpg"`；已有 CDP 配置须合并这两项，不覆盖人工配置。名单 JSON 用于资料交付及核对，素材包本身不是可直接滚榜的完整 CDP。
 
 ### 23.7 GUI 及目标环境验证
 

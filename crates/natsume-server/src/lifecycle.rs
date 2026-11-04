@@ -76,6 +76,10 @@ pub(crate) struct Admission {
 }
 
 impl Admission {
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.shutdown_signal.is_cancelled()
+    }
+
     pub(crate) async fn stopping(&self) {
         self.shutdown_signal.cancelled().await;
     }
