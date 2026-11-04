@@ -149,6 +149,12 @@ fn before(deadline: Instant) -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct CleanupCounts {
+    removed_entries: u64,
+    removed_bytes: u64,
+}
+
 // NO_XDEV rejects even same-device bind mounts. Every lookup is relative to an
 // already-open directory, never a contestant-provided path or symlink target.
 fn walk(
@@ -157,6 +163,7 @@ fn walk(
     removing: bool,
     safe_to_remove: bool,
     deadline: Instant,
+    counts: &mut CleanupCounts,
 ) -> Result<()> {
     let entries = Dir::read_from(directory).context(DescriptorSnafu)?;
     for entry in entries {
@@ -203,7 +210,7 @@ fn walk(
                 (actual.dev(), actual.ino()) == (metadata.dev(), metadata.ino()),
                 UnsafeSnafu
             );
-            walk(&child, uid, removing || owned, safe_child, deadline)?;
+            walk(&child, uid, removing || owned, safe_child, deadline, counts)?;
         }
         if owned {
             // Reject a replacement between enumeration and removal. The closed
@@ -223,6 +230,10 @@ fn walk(
                 AtFlags::empty()
             };
             rustix::fs::unlinkat(directory, name, flags).context(DescriptorSnafu)?;
+            counts.removed_entries = counts.removed_entries.saturating_add(1);
+            if metadata.is_file() {
+                counts.removed_bytes = counts.removed_bytes.saturating_add(metadata.len());
+            }
         } else {
             ensure!(!removing, UnsafeSnafu);
         }
@@ -458,25 +469,66 @@ fn wait_keyring_worker(mut child: Child, deadline: Instant) -> Result<()> {
 }
 
 pub(super) fn run(root: &Path, epoch: u64) -> std::result::Result<(), ResourceControlError> {
-    require_policy(root)?;
-    if complete(root, epoch)? {
-        return Ok(());
-    }
-    let account = crate::session::account(root, "teams")?;
-    let deadline = Instant::now() + Duration::from_secs(1);
-    unmount_fuse(root, account.uid)?;
-    boundary((|| {
-        for relative in SCOPES {
-            before(deadline)?;
-            if let Some(directory) = scope(root, relative)? {
-                walk(&directory, account.uid, false, true, deadline)?;
-            }
+    let started = Instant::now();
+    let mut counts = CleanupCounts::default();
+    let mut deadline_hit = false;
+    let mut skipped = false;
+    let result = (|| {
+        require_policy(root)?;
+        if complete(root, epoch)? {
+            skipped = true;
+            return Ok(());
         }
-        keys(account.uid, account.gid, deadline)
-    })())?;
-    // This proof precedes Home Verified and gate publication. A crash after it
-    // may replay mount verification, but must never erase new-generation state.
-    super::write_state(root, COMPLETION, &format!("2\n{epoch}\n"))
+        let account = crate::session::account(root, "teams")?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        unmount_fuse(root, account.uid)?;
+        let cleaned = (|| {
+            for relative in SCOPES {
+                before(deadline)?;
+                if let Some(directory) = scope(root, relative)? {
+                    walk(&directory, account.uid, false, true, deadline, &mut counts)?;
+                }
+            }
+            keys(account.uid, account.gid, deadline)
+        })();
+        deadline_hit = matches!(&cleaned, Err(Error::Deadline));
+        boundary(cleaned)?;
+        // This proof precedes Home Verified and gate publication. A crash after it
+        // may replay mount verification, but must never erase new-generation state.
+        super::write_state(root, COMPLETION, &format!("2\n{epoch}\n"))
+    })();
+    trace_cleanup(
+        epoch,
+        started.elapsed(),
+        &counts,
+        deadline_hit,
+        skipped,
+        &result,
+    );
+    result
+}
+
+fn trace_cleanup(
+    epoch: u64,
+    elapsed: Duration,
+    counts: &CleanupCounts,
+    deadline_hit: bool,
+    skipped: bool,
+    result: &std::result::Result<(), ResourceControlError>,
+) {
+    if !skipped || result.is_err() {
+        tracing::info!(
+            operation = "cleanup",
+            reset_epoch = epoch,
+            elapsed_us = crate::duration_micros(elapsed),
+            removed_entries = counts.removed_entries,
+            removed_bytes = counts.removed_bytes,
+            deadline_hit,
+            skipped,
+            result = crate::local_result(result, false),
+            "home reset completed"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -599,7 +651,17 @@ pub(crate) mod tests {
             0,
         )?;
         let socket = std::os::unix::net::UnixListener::bind(root.path().join("socket"))?;
-        assert!(walk(&directory, uid, false, true, Instant::now()).is_err());
+        assert!(
+            walk(
+                &directory,
+                uid,
+                false,
+                true,
+                Instant::now(),
+                &mut CleanupCounts::default()
+            )
+            .is_err()
+        );
         assert!(root.path().join("owned/file").exists());
         assert!(
             walk(
@@ -607,7 +669,8 @@ pub(crate) mod tests {
                 uid,
                 false,
                 true,
-                Instant::now() + Duration::from_secs(1)
+                Instant::now() + Duration::from_secs(1),
+                &mut CleanupCounts::default()
             )
             .is_ok()
         );
@@ -617,7 +680,8 @@ pub(crate) mod tests {
                 uid,
                 false,
                 true,
-                Instant::now() + Duration::from_secs(1)
+                Instant::now() + Duration::from_secs(1),
+                &mut CleanupCounts::default()
             )
             .is_ok()
         );
@@ -648,7 +712,8 @@ pub(crate) mod tests {
                 uid,
                 false,
                 true,
-                Instant::now() + Duration::from_secs(1)
+                Instant::now() + Duration::from_secs(1),
+                &mut CleanupCounts::default()
             )
             .is_err()
         );
@@ -664,7 +729,8 @@ pub(crate) mod tests {
                 uid.wrapping_add(1),
                 false,
                 true,
-                Instant::now() + Duration::from_secs(1)
+                Instant::now() + Duration::from_secs(1),
+                &mut CleanupCounts::default()
             )
             .is_ok()
         );
@@ -682,7 +748,8 @@ pub(crate) mod tests {
                     contestant,
                     false,
                     true,
-                    Instant::now() + Duration::from_secs(1)
+                    Instant::now() + Duration::from_secs(1),
+                    &mut CleanupCounts::default()
                 )
                 .is_err()
             );
@@ -718,7 +785,8 @@ pub(crate) mod tests {
                 2000,
                 false,
                 true,
-                Instant::now() + Duration::from_secs(1)
+                Instant::now() + Duration::from_secs(1),
+                &mut CleanupCounts::default()
             )
             .is_err()
         );
@@ -741,7 +809,8 @@ pub(crate) mod tests {
                 2000,
                 false,
                 true,
-                Instant::now() + Duration::from_secs(1)
+                Instant::now() + Duration::from_secs(1),
+                &mut CleanupCounts::default()
             )
             .is_ok()
         );
@@ -765,7 +834,8 @@ pub(crate) mod tests {
                 2000,
                 false,
                 true,
-                Instant::now() + Duration::from_secs(1)
+                Instant::now() + Duration::from_secs(1),
+                &mut CleanupCounts::default()
             )
             .is_err()
         );
@@ -870,5 +940,120 @@ pub(crate) mod tests {
         let selected = fuse_mounts(root.path(), 2000)?;
         assert_eq!(selected.first().map(|mount| mount.mnt_id), Some(11));
         Ok(())
+    }
+    #[test]
+    fn walk_counts_only_successful_unlinks_and_regular_file_logical_bytes() {
+        use crate::tests::{Capture, Value, assert_text, subscriber_guard};
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("root: {e}"));
+        let outside = tempfile::tempdir().unwrap_or_else(|e| panic!("outside: {e}"));
+        fs::write(root.path().join("file-canary"), b"abc").unwrap_or_else(|e| panic!("file: {e}"));
+        fs::hard_link(
+            root.path().join("file-canary"),
+            root.path().join("hardlink-canary"),
+        )
+        .unwrap_or_else(|e| panic!("link: {e}"));
+        fs::write(outside.path().join("keep"), b"untouched")
+            .unwrap_or_else(|e| panic!("outside: {e}"));
+        symlink(outside.path(), root.path().join("symlink-canary"))
+            .unwrap_or_else(|e| panic!("symlink: {e}"));
+        let directory = File::open(root.path()).unwrap_or_else(|e| panic!("directory: {e}"));
+        let mut counts = CleanupCounts::default();
+        let started = Instant::now();
+        let result = walk(
+            &directory,
+            rustix::process::geteuid().as_raw(),
+            false,
+            true,
+            started + Duration::from_secs(1),
+            &mut counts,
+        );
+        assert!(result.is_ok());
+        assert_eq!(counts.removed_entries, 3);
+        assert_eq!(counts.removed_bytes, 6);
+        trace_cleanup(
+            7,
+            started.elapsed(),
+            &counts,
+            false,
+            false,
+            &boundary(result),
+        );
+        let events = capture.events("home reset completed");
+        assert_eq!(events.len(), 1);
+        assert_text(&events[0], "operation", "cleanup");
+        assert_text(&events[0], "result", "ok");
+        assert_eq!(
+            events[0].fields.get("removed_entries"),
+            Some(&Value::Unsigned(3))
+        );
+        assert_eq!(
+            events[0].fields.get("removed_bytes"),
+            Some(&Value::Unsigned(6))
+        );
+        assert_eq!(
+            events[0].fields.get("deadline_hit"),
+            Some(&Value::Boolean(false))
+        );
+        assert_eq!(
+            fs::read(outside.path().join("keep")).unwrap_or_else(|e| panic!("preserved: {e}")),
+            b"untouched"
+        );
+        assert!(!format!("{:?}", events[0]).contains("canary"));
+    }
+
+    #[test]
+    fn cleanup_deadline_is_distinct_from_request_timeout_and_replay_is_silent() {
+        use crate::tests::{Capture, Value, assert_text, subscriber_guard};
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("root: {e}"));
+        fs::write(root.path().join("keep"), b"keep").unwrap_or_else(|e| panic!("file: {e}"));
+        let directory = File::open(root.path()).unwrap_or_else(|e| panic!("directory: {e}"));
+        let mut counts = CleanupCounts::default();
+        let started = Instant::now();
+        let result = walk(
+            &directory,
+            rustix::process::geteuid().as_raw(),
+            false,
+            true,
+            started,
+            &mut counts,
+        );
+        let deadline_hit = matches!(&result, Err(Error::Deadline));
+        assert!(deadline_hit);
+        trace_cleanup(
+            8,
+            started.elapsed(),
+            &counts,
+            deadline_hit,
+            false,
+            &boundary(result),
+        );
+        let events = capture.events("home reset completed");
+        assert_eq!(events.len(), 1);
+        assert_text(&events[0], "result", "error");
+        assert_eq!(
+            events[0].fields.get("deadline_hit"),
+            Some(&Value::Boolean(true))
+        );
+        assert_eq!(
+            events[0].fields.get("removed_entries"),
+            Some(&Value::Unsigned(0))
+        );
+        policy_fixture(root.path()).unwrap_or_else(|e| panic!("policy: {e}"));
+        fs::create_dir_all(super::super::state_directory(root.path()))
+            .unwrap_or_else(|e| panic!("state: {e}"));
+        super::super::write_state(root.path(), COMPLETION, "2\n8\n")
+            .unwrap_or_else(|e| panic!("proof: {e}"));
+        run(root.path(), 8).unwrap_or_else(|e| panic!("replay: {e}"));
+        assert_eq!(capture.events("home reset completed").len(), 1);
+        assert_eq!(
+            fs::read(root.path().join("keep")).unwrap_or_else(|e| panic!("preserved: {e}")),
+            b"keep"
+        );
     }
 }
