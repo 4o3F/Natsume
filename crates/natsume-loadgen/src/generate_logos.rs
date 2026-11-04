@@ -175,7 +175,7 @@ fn background(
 ) -> Result<Vec<u8>> {
     let pixels = width as usize * height as usize;
     let mut clean = vec![0; pixels * 3];
-    for (pixel, color) in clean.chunks_exact_mut(3).enumerate() {
+    for (pixel, color) in clean.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let x = pixel % width as usize;
         let y = pixel / width as usize;
         color.copy_from_slice(&match codec {
@@ -240,7 +240,9 @@ fn encode(
             let rgba;
             let source = if matches!(codec, Encoder::LibwebpRgba) {
                 rgba = rgb
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .enumerate()
                     .flat_map(|(pixel, color)| {
                         let x = pixel % width as usize / 8;

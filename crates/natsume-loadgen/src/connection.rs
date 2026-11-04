@@ -428,7 +428,7 @@ async fn handshake(socket: &mut Socket, emulator: &mut Emulator, run: &Run) -> R
                 deadline = Instant::now() + CONNECT_TIMEOUT;
             }
             Some(server_handshake_envelope::Body::SessionReady(ready)) if !enrolling => {
-                if !Uuid::from_slice(&ready.session_id).ok().is_some_and(|u| {
+                if !Uuid::from_slice(&ready.session_id).is_ok_and(|u| {
                     u.get_version() == Some(Version::SortRand)
                         && u.get_variant() == Variant::RFC4122
                 }) {
@@ -448,7 +448,7 @@ async fn handshake(socket: &mut Socket, emulator: &mut Emulator, run: &Run) -> R
 }
 
 pub(crate) fn uuid_v7(value: &str) -> bool {
-    Uuid::parse_str(value).ok().is_some_and(|u| {
+    Uuid::parse_str(value).is_ok_and(|u| {
         u.get_version() == Some(Version::SortRand)
             && u.get_variant() == Variant::RFC4122
             && u.to_string() == value
