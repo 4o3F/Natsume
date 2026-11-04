@@ -13,7 +13,10 @@ import {
 import { usePageToast } from "@/components/use-page-toast";
 
 import { unwrap } from "@/api/errors";
-import type { PrintPairingCode, PrintPrinter } from "@/api/generated/types";
+import type {
+  PrintPairingCode,
+  PrintPrinter_Serialize as PrintPrinter,
+} from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSessionScope } from "@/auth/session-context";
 import { CopyButton } from "@/components/copy-button";

@@ -13,7 +13,7 @@ import {
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
 import type {
-  AccountResponse,
+  AccountResponse_Serialize as AccountResponse,
   BindingResponse,
   SeatResponse,
 } from "@/api/generated/types";

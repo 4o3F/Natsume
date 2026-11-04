@@ -1,6 +1,6 @@
 import { TriangleAlert } from "lucide-react";
 
-import type { JournalHealth } from "@/api/generated/types";
+import type { JournalHealth_Serialize as JournalHealth } from "@/api/generated/types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { formatOffset, formatTimestamp } from "@/lib/time";
 import { availabilityLabels } from "./event-labels";

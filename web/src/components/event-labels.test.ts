@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 
-import type { Event } from "../api/generated/types";
+import type { Event_Serialize as Event } from "../api/generated/types";
 import {
   categoryLabels,
   describeEvent,

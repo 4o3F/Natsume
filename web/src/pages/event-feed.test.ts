@@ -1,9 +1,9 @@
 import { expect, it, vi } from "vitest";
 
 import type {
-  EventPage,
-  JournalHealth,
-  JournalRecord,
+  EventPage_Serialize as EventPage,
+  JournalHealth_Serialize as JournalHealth,
+  JournalRecord_Serialize as JournalRecord,
 } from "../api/generated/types";
 import {
   MAX_EVENT_ROWS,

@@ -1,11 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import type {
-  DeviceSummaries,
-  DeviceTimeline,
-  EventPage,
-  JournalHealth,
-  JournalRecord,
+  DeviceSummaries_Serialize as DeviceSummaries,
+  DeviceTimeline_Serialize as DeviceTimeline,
+  EventPage_Serialize as EventPage,
+  JournalHealth_Serialize as JournalHealth,
+  JournalRecord_Serialize as JournalRecord,
 } from "../src/api/generated/types";
 import { device, fulfillJson, operator } from "./fixtures/devices";
 import { deviceRow, openDeviceDetails } from "./fixtures/ui";

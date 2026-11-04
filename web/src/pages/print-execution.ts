@@ -1,7 +1,7 @@
 import type {
   ExecutionState,
-  PrintExecution,
-  PrintQueueEntry,
+  PrintExecution_Serialize as PrintExecution,
+  PrintQueueEntry_Serialize as PrintQueueEntry,
 } from "@/api/generated/types";
 
 export const executionLabels: Record<ExecutionState, string> = {

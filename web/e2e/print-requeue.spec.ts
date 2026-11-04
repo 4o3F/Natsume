@@ -1,8 +1,8 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { closeDetails } from "./fixtures/ui";
 import type {
-  PrintExecution,
-  PrintQueueEntry,
+  PrintExecution_Serialize as PrintExecution,
+  PrintQueueEntry_Serialize as PrintQueueEntry,
 } from "../src/api/generated/types";
 
 const entry: PrintQueueEntry = {

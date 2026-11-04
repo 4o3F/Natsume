@@ -4,9 +4,9 @@ import { CircleAlert, TriangleAlert } from "lucide-react";
 
 import { unwrap } from "@/api/errors";
 import type {
-  DeviceTimeline as Timeline,
-  TimelineGap,
-  TimelineSession,
+  DeviceTimeline_Serialize as Timeline,
+  TimelineGap_Serialize as TimelineGap,
+  TimelineSession_Serialize as TimelineSession,
 } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSessionScope } from "@/auth/session-context";
