@@ -54,6 +54,7 @@ async fn finishing_a_new_team_does_not_open_or_hash_an_unrelated_teams_final() -
 
 #[tokio::test]
 async fn pending_ingestion_blocks_retirement_until_the_confirmed_group_drains() -> Result {
+    use image::ImageEncoder as _;
     use std::os::windows::fs::OpenOptionsExt as _;
     let fixture = fixture().await?;
     let (folder, group) = prepare_team(&fixture).await?;
@@ -63,13 +64,16 @@ async fn pending_ingestion_blocks_retirement_until_the_confirmed_group_drains() 
         .confirm_photo(confirm)
         .await
         .context(HotFolderSnafu)?;
-    let late = fixture.hot.join("late.png");
-    write_timed_png(&late, b"2026:10:31 10:00:02")?;
+    // Acquire the exclusive handle before the monitor can open the new source.
     let writing = fs::OpenOptions::new()
         .write(true)
+        .create_new(true)
         .share_mode(0)
-        .open(&late)
+        .open(fixture.hot.join("late.png"))
         .context(IoSnafu)?;
+    image::codecs::png::PngEncoder::new(&writing)
+        .write_image(&[30; 8 * 6 * 3], 8, 6, image::ExtendedColorType::Rgb8)
+        .context(ImageSnafu)?;
     wait(&folder, |s| s.pending_tasks > 0).await?;
     assert!(matches!(
         folder.finish_group(group).await,
