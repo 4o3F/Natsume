@@ -151,7 +151,7 @@ serde-saphyr = { version = "2.0", default-features = false, features = [
 ] }
 sha2 = { version = "0.11", default-features = false }
 # Require Skia binaries; never fall back to building upstream sources.
-skia-bindings = { version = "0.153", features = ["no-compile"] }
+skia-bindings = { version = "0.157", features = ["no-compile"] }
 slint = { version = "1.18", default-features = false, features = [
   "compat-1-2",
   "std"
