@@ -29,6 +29,23 @@
       ],
       "groupName": "specta",
       "separateMajorMinor": false
+    },
+    {
+      "description": "Update the coupled Slint and Skia dependencies together",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "slint",
+        "slint-build",
+        "skia-bindings"
+      ],
+      "groupName": "slint and skia",
+      "separateMajorMinor": false
+    },
+    {
+      "description": "Keep Skia bindings compatible with Slint 1.18 until its Skia dependency is upgraded",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["skia-bindings"],
+      "allowedVersions": "<0.154"
     }
   ]
 }
