@@ -1,20 +1,42 @@
 //! Synthetic workstation fleet and operator workloads over production HTTPS and WSS.
 
+#[cfg(not(target_os = "linux"))]
+fn main() -> std::process::ExitCode {
+    tracing_subscriber::fmt().with_target(false).init();
+    tracing::error!("natsume-loadgen requires Linux");
+    std::process::ExitCode::FAILURE
+}
+
+#[cfg(target_os = "linux")]
 mod cli;
+#[cfg(target_os = "linux")]
 mod connection;
+#[cfg(target_os = "linux")]
 mod convergence;
+#[cfg(target_os = "linux")]
 mod emulate;
+#[cfg(target_os = "linux")]
 mod error;
+#[cfg(target_os = "linux")]
 mod generate_logos;
+#[cfg(target_os = "linux")]
 mod identity;
+#[cfg(target_os = "linux")]
 mod logo;
+#[cfg(target_os = "linux")]
 mod metrics;
+#[cfg(target_os = "linux")]
 mod operator;
+#[cfg(target_os = "linux")]
 mod probe;
+#[cfg(target_os = "linux")]
 mod scenario;
+#[cfg(target_os = "linux")]
 mod setup;
+#[cfg(target_os = "linux")]
 mod target;
 
+#[cfg(target_os = "linux")]
 use std::{
     fs::{self, File, OpenOptions},
     os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _},
@@ -23,11 +45,16 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(target_os = "linux")]
 use clap::Parser as _;
+#[cfg(target_os = "linux")]
 use snafu::ResultExt as _;
+#[cfg(target_os = "linux")]
 use tokio::{task::JoinSet, time::Instant};
+#[cfg(target_os = "linux")]
 use tokio_util::sync::CancellationToken;
 
+#[cfg(target_os = "linux")]
 use crate::{
     cli::{Cli, Command, Run},
     connection::Settings,
@@ -37,6 +64,7 @@ use crate::{
     metrics::Metrics,
 };
 
+#[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -75,6 +103,7 @@ async fn main() -> ExitCode {
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn execute(mut run: Run) -> Result<()> {
     if let Some(path) = &run.scenario {
         scenario::Scenario::load(path)?.apply(&mut run)?;
@@ -140,6 +169,7 @@ async fn execute(mut run: Run) -> Result<()> {
     result
 }
 
+#[cfg(target_os = "linux")]
 async fn wait_until_epoch(target: u64) -> Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -158,6 +188,7 @@ async fn wait_until_epoch(target: u64) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn lock_fleet(run: &Run) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
@@ -171,6 +202,7 @@ fn lock_fleet(run: &Run) -> Result<File> {
     Ok(file)
 }
 
+#[cfg(target_os = "linux")]
 async fn supervise(
     devices: &mut JoinSet<Result<()>>,
     metrics: &Metrics,
@@ -202,6 +234,7 @@ async fn supervise(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn write_manifest(run: &Run, metrics: &Metrics) -> Result<()> {
     let manifest = serde_json::json!({
         "format_version": 2, "version": env!("CARGO_PKG_VERSION"), "protocol": natsume_workstation_protocol::CONTROL_SUBPROTOCOL,

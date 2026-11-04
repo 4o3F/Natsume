@@ -8,6 +8,10 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 clap.workspace = true
 ed25519-dalek.workspace = true
 flate2.workspace = true
@@ -31,15 +35,13 @@ tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 toml.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 zip.workspace = true
 x509-parser = { workspace = true, features = ["verify"] }
 
-[dev-dependencies]
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
