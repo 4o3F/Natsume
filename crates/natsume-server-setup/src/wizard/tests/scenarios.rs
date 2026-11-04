@@ -10,6 +10,7 @@ use crate::{
 };
 use std::{
     collections::VecDeque,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -173,7 +174,10 @@ fn abort_phrase_removes_a_previously_saved_key_without_system_writes() -> TestRe
     let mut script = ScriptedInteraction::new(prompts);
     assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     assert_eq!((script.reveals, script.clears), (2, 2));
     assert_eq!(fixture.host.calls, [Call::Preflight]);
     assert!(script.notices.iter().any(|notice| matches!(
@@ -423,8 +427,8 @@ fn csr_publication_interrupt_aborts_and_removes_new_pending_without_system_write
                 .any(|notice| matches!(notice, Notice::OfflineSigningInstructions { .. }))
         );
         fixture.assert_no_deployment()?;
-        assert!(files_under(&fixture.path("/etc"))?.is_empty());
-        assert!(files_under(&fixture.path("/var/lib"))?.is_empty());
+        assert_eq!(files_under(&fixture.path("/etc"))?, [] as [PathBuf; 0]);
+        assert_eq!(files_under(&fixture.path("/var/lib"))?, [] as [PathBuf; 0]);
         assert!(!fixture.path(config::KEYS_DIRECTORY).exists());
         assert_eq!(
             fixture.host.calls,
@@ -450,7 +454,7 @@ fn csr_instructions_interrupt_aborts_and_removes_new_pending() -> TestResult {
     assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
     assert!(!fixture.path("/admin/pki/pending").exists());
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/var/lib"))?.is_empty());
+    assert_eq!(files_under(&fixture.path("/var/lib"))?, [] as [PathBuf; 0]);
     Ok(())
 }
 
@@ -729,7 +733,10 @@ fn health_failure_rolls_back_but_preserves_bootstrap_state_and_rerun_skips_boots
     for path in [config::DATABASE, config::ROOT_KEY] {
         assert_eq!(fs::read(fixture.path(path))?, b"bootstrap-owned-state");
     }
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     let mut expected = success_calls(true);
     expected.extend([
         Call::Systemctl(ServiceAction::Stop),
@@ -822,7 +829,10 @@ fn bootstrap_three_failures_roll_back_and_keep_original_process_source() -> Test
         }
     ));
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     assert_eq!(
         fixture
             .host
@@ -1051,7 +1061,10 @@ fn interruption_during_bootstrap_retry_rolls_back_deployment_and_saved_keys() ->
     let mut script = ScriptedInteraction::new(prompts);
     assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     assert_eq!(
         fixture.host.calls,
         [
@@ -1114,7 +1127,10 @@ fn service_failure_preserves_original_error_and_records_cleanup_failures() -> Te
     assert_eq!(rollback.service_failures.len(), 2);
     assert!(rollback.files.failures.is_empty());
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     let mut expected = success_calls(false);
     expected.pop();
     expected.extend([
@@ -1150,7 +1166,7 @@ fn imported_key_passphrase_stops_after_three_wrong_attempts_without_writes() -> 
             rollback: None
         })
     ));
-    assert!(files_under(fixture.root.path())?.is_empty());
+    assert_eq!(files_under(fixture.root.path())?, [] as [PathBuf; 0]);
     assert_eq!(
         fixture.host.calls,
         [
@@ -1176,7 +1192,7 @@ fn warnings_require_explicit_confirmation_and_declined_plans_allow_edit_or_abort
         Reply::Confirm(false),
     )]);
     assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
-    assert!(files_under(fixture.root.path())?.is_empty());
+    assert_eq!(files_under(fixture.root.path())?, [] as [PathBuf; 0]);
     assert_eq!(fixture.host.calls, [Call::Preflight]);
     for selection in [0, 1] {
         let mut fixture = Fixture::new()?;
@@ -1191,7 +1207,7 @@ fn warnings_require_explicit_confirmation_and_declined_plans_allow_edit_or_abort
         }
         let mut script = ScriptedInteraction::new(prompts);
         assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
-        assert!(files_under(fixture.root.path())?.is_empty());
+        assert_eq!(files_under(fixture.root.path())?, [] as [PathBuf; 0]);
         assert_eq!(script.reveals, 0);
         assert_eq!(fixture.host.calls, [Call::Preflight]);
     }
@@ -1212,7 +1228,7 @@ fn certificate_only_expired_control_is_rejected_before_creating_pending() -> Tes
     prompts.push((PromptId::ControlCaSource, Reply::Interrupt));
     let mut script = ScriptedInteraction::new(prompts);
     assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
-    assert!(files_under(fixture.root.path())?.is_empty());
+    assert_eq!(files_under(fixture.root.path())?, [] as [PathBuf; 0]);
     assert_eq!(
         fixture.host.calls,
         [Call::Preflight, Call::Read("control.crt".into())]
@@ -1370,7 +1386,10 @@ fn three_nonzero_bootstrap_exits_roll_back_and_preserve_the_last_exit_code() -> 
         })
     ));
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     assert_eq!(
         fixture.host.calls,
         [
@@ -1434,7 +1453,10 @@ fn escape_after_key_reveal_still_allows_explicit_abort() -> TestResult {
     let mut script = ScriptedInteraction::new(prompts);
     assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     assert_eq!((script.reveals, script.clears), (1, 1));
     assert_eq!(fixture.host.calls, [Call::Preflight]);
     Ok(())
@@ -1462,7 +1484,10 @@ fn escape_or_decline_bootstrap_retry_preserves_original_failure() -> TestResult 
             })
         ));
         fixture.assert_no_deployment()?;
-        assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+        assert_eq!(
+            files_under(&fixture.path("/admin/pki"))?,
+            [] as [PathBuf; 0]
+        );
         assert_eq!(
             fixture.host.calls,
             [
@@ -1494,7 +1519,7 @@ fn not_root_preflight_fails_once_without_prompting_or_writes() -> TestResult {
     ));
     assert_eq!(fixture.host.calls, [Call::Preflight]);
     assert!(script.notices.is_empty());
-    assert!(files_under(fixture.root.path())?.is_empty());
+    assert_eq!(files_under(fixture.root.path())?, [] as [PathBuf; 0]);
     Ok(())
 }
 
@@ -1506,7 +1531,10 @@ fn interrupt_during_bootstrap_rolls_back() -> TestResult {
     let mut script = generated_script(true);
     assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     assert!(
         fixture
             .host
@@ -1527,7 +1555,10 @@ fn interrupt_during_health_rolls_back() -> TestResult {
     let mut script = generated_script(true);
     assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     assert!(
         fixture
             .host
@@ -1621,7 +1652,10 @@ fn publication_sync_failure_rolls_back_saved_pki() -> TestResult {
             }
         ));
         fixture.assert_no_deployment()?;
-        assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+        assert_eq!(
+            files_under(&fixture.path("/admin/pki"))?,
+            [] as [PathBuf; 0]
+        );
         assert!(script.notices.iter().any(|notice| matches!(notice, Notice::RollbackReport { failures, .. } if failures.is_empty())));
     }
     Ok(())
@@ -1664,7 +1698,10 @@ fn publication_interrupt_preserves_apply_error_and_partial_rollback() -> TestRes
             .contains(&fixture.path(config::ORIGIN_CA_KEY))
     );
     assert_eq!(fs::read(&failed.path)?, b"modified during rollback");
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     let reports: Vec<_> = script
         .notices
         .iter()
@@ -1701,7 +1738,10 @@ fn health_failure_takes_precedence_over_simultaneous_interrupt() -> TestResult {
         })
     ));
     fixture.assert_no_deployment()?;
-    assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    assert_eq!(
+        files_under(&fixture.path("/admin/pki"))?,
+        [] as [PathBuf; 0]
+    );
     Ok(())
 }
 

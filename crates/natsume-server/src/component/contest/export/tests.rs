@@ -272,5 +272,5 @@ fn memory_archive_rejects_an_oversized_write_without_allocating_it() {
     let mut writer = LimitedArchive(Cursor::new(Vec::new()));
     checked(writer.seek(SeekFrom::Start(MAX_EXPORT_BYTES)));
     assert!(writer.write_all(b"x").is_err());
-    assert!(writer.0.get_ref().is_empty());
+    assert_eq!(writer.0.get_ref().as_slice(), [] as [u8; 0]);
 }

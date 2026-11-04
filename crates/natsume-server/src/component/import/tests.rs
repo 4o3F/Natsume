@@ -193,7 +193,7 @@ async fn identical_and_metadata_only_imports_preserve_credentials_and_binding_ta
     assert_eq!(preview.diff().affected_account_count, 1);
     assert_eq!(preview.diff().binding_impacts.len(), 1);
     assert!(!preview.diff().blocks_commit());
-    assert!(preview.diff().passwords_changed.is_empty());
+    assert_eq!(preview.diff().passwords_changed, [] as [String; 0]);
     checked(fixture.commit(&preview, &bytes).await);
     assert_eq!(credentials, contest_evidence(&fixture.database).await);
     assert_eq!(binding_and_seat_counts(&fixture.database).await, (1, 1));
@@ -224,8 +224,8 @@ async fn only_changed_passwords_advance_revisions_and_commit_checks_the_change_s
     let bytes = workbook(&[changed]);
     let preview = fixture.preview(&bytes).await;
     assert_eq!(preview.diff().passwords_changed, ["team-1"]);
-    assert!(preview.diff().team_changes.is_empty());
-    assert!(preview.diff().organization_changes.is_empty());
+    assert_eq!(preview.diff().team_changes, []);
+    assert_eq!(preview.diff().organization_changes, []);
     assert!(
         !pending_preview_json(&fixture.database)
             .await
@@ -424,7 +424,7 @@ async fn full_roster_fills_legacy_metadata_without_replacing_the_account_or_vaul
         .await;
     let preview = fixture.preview(&bytes).await;
     assert_eq!(preview.diff().team_changes.len(), 1);
-    assert!(preview.diff().passwords_changed.is_empty());
+    assert_eq!(preview.diff().passwords_changed, [] as [String; 0]);
     checked(fixture.commit(&preview, &bytes).await);
     assert_eq!(before, contest_evidence(&fixture.database).await);
     assert_eq!(binding_and_seat_counts(&fixture.database).await, (1, 1));

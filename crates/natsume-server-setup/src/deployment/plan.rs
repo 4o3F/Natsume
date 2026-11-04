@@ -556,7 +556,10 @@ pub(super) mod tests {
                 .all(|directory| !directory.path.exists())
         );
         assert_eq!(fs::read_dir(fixture.root.path())?.count(), 2);
-        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert_eq!(
+            detect_existing_deployment(fixture.root.path())?,
+            [] as [PathBuf; 0]
+        );
         Ok(())
     }
 
@@ -586,7 +589,10 @@ pub(super) mod tests {
             assert!(
                 matches!(fixture.plan(), Err(TestError::Plan { source: PlanError::DirectoryMetadata { path: rejected, actual_mode: 0o777, .. } }) if rejected == path)
             );
-            assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+            assert_eq!(
+                detect_existing_deployment(fixture.root.path())?,
+                [] as [PathBuf; 0]
+            );
             assert_eq!(fs::metadata(&path)?.mode() & 0o7777, 0o777);
             fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
             let mut owners = Owners {
@@ -602,7 +608,10 @@ pub(super) mod tests {
                 build_plan(fixture.root.path(), owners, fixture.materials()),
                 Err(PlanError::DirectoryMetadata { .. })
             ));
-            assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+            assert_eq!(
+                detect_existing_deployment(fixture.root.path())?,
+                [] as [PathBuf; 0]
+            );
         }
         Ok(())
     }
@@ -713,7 +722,10 @@ pub(super) mod tests {
     fn journal_database_alone_does_not_count_as_existing_deployment() -> Result<(), TestError> {
         let fixture = Fixture::new()?;
         fixture.write(config::JOURNAL_DATABASE, b"journal database")?;
-        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert_eq!(
+            detect_existing_deployment(fixture.root.path())?,
+            [] as [PathBuf; 0]
+        );
         fixture.plan()?;
         Ok(())
     }
@@ -732,7 +744,10 @@ pub(super) mod tests {
             fixture.write(destination, b"sidecar")?;
         }
         fixture.write(config::ROOT_KEY, b"vault key")?;
-        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert_eq!(
+            detect_existing_deployment(fixture.root.path())?,
+            [] as [PathBuf; 0]
+        );
         fixture.plan()?;
         for destination in DEPLOYMENT_FILES {
             fixture.write(destination, b"preexisting")?;

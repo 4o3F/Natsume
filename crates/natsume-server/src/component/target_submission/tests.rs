@@ -248,7 +248,7 @@ async fn receipt_or_target_write_failure_rolls_back_all_targets_and_the_id() {
         fixture.sql(trigger).await;
         let request = Fixture::request(TargetAction::ResetHome);
         assert!(matches!(fixture.submit(fixture.owner, request.clone()).await, Err(TargetSubmissionError::PersistenceFailed { .. })));
-        assert!(fixture.home_epochs().await.is_empty());
+        assert_eq!(fixture.home_epochs().await, []);
         assert_eq!(fixture.receipts().await, 0);
         fixture.sql("DROP TRIGGER fail_write".into()).await;
         assert!(fixture.submit(fixture.owner, request).await.is_ok());
@@ -265,7 +265,7 @@ async fn commit_failure_rolls_back_targets_and_receipt_together() {
         fixture.submit(fixture.owner, request.clone()).await,
         Err(TargetSubmissionError::PersistenceFailed { .. })
     ));
-    assert!(fixture.home_epochs().await.is_empty());
+    assert_eq!(fixture.home_epochs().await, []);
     assert_eq!(fixture.receipts().await, 0);
     fixture.sql("DROP TRIGGER fail_commit".into()).await;
     assert!(fixture.submit(fixture.owner, request).await.is_ok());
@@ -288,7 +288,7 @@ async fn empty_and_all_rejected_submissions_are_replayable() {
         .submit(fixture.owner, rejected.clone())
         .await
         .unwrap_or_else(|error| panic!("rejected: {error}"));
-    assert!(a.results.is_empty());
+    assert_eq!(a.results, []);
     assert_eq!(
         b.results[0].rejection,
         Some(TargetRejection::DeviceNotEnabled)
@@ -298,7 +298,7 @@ async fn empty_and_all_rejected_submissions_are_replayable() {
         .await;
     assert!(matches!(fixture.submit(fixture.owner, empty).await, Ok(actual) if actual == a));
     assert!(matches!(fixture.submit(fixture.owner, rejected).await, Ok(actual) if actual == b));
-    assert!(fixture.home_epochs().await.is_empty());
+    assert_eq!(fixture.home_epochs().await, []);
 }
 
 #[tokio::test]

@@ -37,7 +37,7 @@ async fn finishing_a_new_team_does_not_open_or_hash_an_unrelated_teams_final() -
         .context(HotFolderSnafu)?;
     let report = folder.finish_group(group).await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
-    assert!(report.pending_paths.is_empty());
+    assert_eq!(report.pending_paths, [] as [std::path::PathBuf; 0]);
     drop(writing);
     assert_eq!(
         fixture
@@ -207,7 +207,7 @@ async fn queued_source_deletion_rechecks_references_when_the_next_team_reuses_th
         .context(HotFolderSnafu)?;
     let report = folder.finish_group(b).await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
-    assert!(report.pending_paths.is_empty());
+    assert_eq!(report.pending_paths, [] as [std::path::PathBuf; 0]);
     assert!(!archive.exists());
     folder.shutdown().await.context(HotFolderSnafu)?;
     Ok(())
@@ -248,7 +248,7 @@ async fn finishing_removes_group_copies_but_preserves_originals_finals_and_forei
     fs::write(&foreign, b"leave this alone").context(IoSnafu)?;
     let report = folder.finish_group(group).await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
-    assert!(report.pending_paths.is_empty());
+    assert_eq!(report.pending_paths, [] as [std::path::PathBuf; 0]);
     let unique_files = paths
         .iter()
         .collect::<std::collections::BTreeSet<_>>()
@@ -315,7 +315,7 @@ async fn a_preview_lease_defers_deletion_without_undoing_confirmation_or_blockin
     drop(lease);
     let report = folder.retry_cleanup().await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
-    assert!(report.pending_paths.is_empty());
+    assert_eq!(report.pending_paths, [] as [std::path::PathBuf; 0]);
     assert!(!path.exists());
     folder.abandon_group(b).await.context(HotFolderSnafu)?;
     folder.shutdown().await.context(HotFolderSnafu)?;

@@ -61,7 +61,7 @@ fn certificate_and_plaintext_pkcs8_format_matrix() -> Result<(), TestError> {
     assert_eq!(imported.ip_sans(), vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
     assert!(is_self_signed(&imported)?);
     assert!(!imported.is_ca());
-    assert!(!imported.subject().is_empty());
+    assert_ne!(imported.subject(), "");
     assert_eq!(import_certificate(imported.to_pem().as_bytes())?, imported);
     assert_eq!(imported.sha256_fingerprint().len(), 95);
     let fingerprint = imported.sha256_fingerprint();

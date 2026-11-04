@@ -352,7 +352,7 @@ mod tests {
         drop(sender);
         assert!(activation.await.is_err());
         assert!(registry.take(created.review_id()).await.is_none());
-        assert!(registry.list().await.is_empty());
+        assert_eq!(registry.list().await, []);
     }
 
     #[tokio::test]
@@ -395,7 +395,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("second action failed: {error}")),
         ];
         assert_eq!(outcomes.into_iter().filter(|won| *won).count(), 1);
-        assert!(registry.list().await.is_empty());
+        assert_eq!(registry.list().await, []);
     }
 
     #[tokio::test]
@@ -407,6 +407,6 @@ mod tests {
             .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
         assert_eq!(old_registry.list().await.len(), 1);
 
-        assert!(EnrollmentReviewRegistry::new().list().await.is_empty());
+        assert_eq!(EnrollmentReviewRegistry::new().list().await, []);
     }
 }

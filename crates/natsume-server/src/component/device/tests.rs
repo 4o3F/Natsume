@@ -559,13 +559,7 @@ async fn approval_claims_the_review_once() {
     assert!(matches!(activation
             .await
             .unwrap_or_else(|error| panic!("activation notification failed: {error}")), Ok(actual) if actual == super::EnrollmentReviewDecision::Activated(activated)));
-    assert!(
-        fixture
-            .component
-            .pending_enrollment_reviews()
-            .await
-            .is_empty()
-    );
+    assert_eq!(fixture.component.pending_enrollment_reviews().await, []);
     assert!(matches!(
         fixture
             .component
@@ -590,10 +584,6 @@ async fn approval_claims_the_review_once() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "keeps cancellation, approval, replay, and journal causality in one scenario"
-)]
 async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_replays() {
     let mut fixture = Fixture::new().await;
     let machine = machine(FIRST_MACHINE);
@@ -665,13 +655,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
         replay,
         Ok(EnrollmentStartOutcome::Replay(authority)) if authority == activated
     ));
-    assert!(
-        fixture
-            .component
-            .pending_enrollment_reviews()
-            .await
-            .is_empty()
-    );
+    assert_eq!(fixture.component.pending_enrollment_reviews().await, []);
     assert!(
         !fixture
             .component

@@ -1379,7 +1379,7 @@ async fn authorized_invitation_issuance_rechecks_persisted_issuer_not_caller_rol
         let body: Value =
             serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await?)?;
         assert_eq!(body["code"], "OPERATOR_LINK_UNAVAILABLE");
-        assert!(f.operator.list_invitations().await?.is_empty());
+        assert_eq!(f.operator.list_invitations().await?, []);
     }
     Ok(())
 }

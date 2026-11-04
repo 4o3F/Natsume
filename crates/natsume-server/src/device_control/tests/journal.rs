@@ -393,7 +393,7 @@ async fn panicking_actor_reports_its_real_current_session_without_panic_contents
     assert_eq!(stopped.len(), 1);
     assert_eq!(stopped[0].session_id, Some(SessionId::from_lease(session)));
     assert!(!stopped[0].details().contains("actor-session-secret-canary"));
-    assert!(disconnects(&records, session).is_empty());
+    assert_eq!(disconnects(&records, session), [] as [&Disconnected; 0]);
     assert!(
         fixture
             .runtime

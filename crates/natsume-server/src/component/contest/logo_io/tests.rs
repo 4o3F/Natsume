@@ -121,7 +121,14 @@ fn svg_content_with_xml_header_bom_and_webp_extension_renders_without_mutating_s
 fn svg_text_is_rendered_or_reports_missing_fonts() {
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text x="5" y="25" font-size="20">Team</text></svg>"#;
     match render_svg(svg) {
-        Ok(pixels) => assert!(pixels.data().chunks_exact(4).any(|rgba| rgba[3] != 0)),
+        Ok(pixels) => assert!(
+            pixels
+                .data()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|rgba| rgba[3] != 0)
+        ),
         Err(LogoError::SvgFont) => {}
         Err(error) => panic!("unexpected SVG text error: {error}"),
     }

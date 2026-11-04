@@ -1538,7 +1538,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| panic!("fixture lock: {e}"));
         assert_eq!(state.termination_calls.len(), 1);
-        assert!(state.home_calls.is_empty());
+        assert_eq!(state.home_calls, [] as [u64; 0]);
         assert!(state.progress.is_none());
         assert!(
             !active
@@ -1624,7 +1624,7 @@ mod tests {
         let state = active.resources.helper.lock().map_err(|_| "fixture lock")?;
         assert!(state.home_calls.len() >= 3);
         assert!(state.home_calls.iter().all(|epoch| *epoch == 8));
-        assert!(state.termination_calls.is_empty());
+        assert_eq!(state.termination_calls, []);
         assert!(completed.exists());
         assert!(!active.pump.is_finished());
         Ok(())
@@ -1755,14 +1755,14 @@ mod tests {
         .await
         .map_err(|_| "local recovery blocked transport shutdown")?;
         assert!(!active.pump.is_finished(), "owned recovery must be joined");
-        assert!(
+        assert_eq!(
             active
                 .resources
                 .helper
                 .lock()
                 .map_err(|_| "fixture lock")?
-                .home_calls
-                .is_empty()
+                .home_calls,
+            [] as [u64; 0]
         );
         release.notify_one();
         timeout(Duration::from_secs(5), &mut active.pump)

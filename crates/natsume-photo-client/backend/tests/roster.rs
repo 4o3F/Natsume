@@ -31,8 +31,8 @@ fn maps_two_teams_without_confusing_internal_and_external_identity() -> Result {
     assert_eq!(teams[0].team_name_zh, "测试一队");
     assert_eq!(teams[0].team_name_en, "Test Team One");
     assert_eq!(teams[1].account, "T-002");
-    assert!(teams[1].school_name_en.is_empty());
-    assert!(teams[1].team_name_en.is_empty());
+    assert_eq!(teams[1].school_name_en, "");
+    assert_eq!(teams[1].team_name_en, "");
     Ok(())
 }
 
@@ -44,8 +44,8 @@ fn missing_optional_english_names_default_to_empty() -> Result {
     first.remove("team_name_en");
     let bytes = serde_json::to_vec(&input).context(JsonSnafu)?;
     let roster = Roster::parse(&bytes).context(RosterSnafu)?;
-    assert!(roster.teams()[0].school_name_en.is_empty());
-    assert!(roster.teams()[0].team_name_en.is_empty());
+    assert_eq!(roster.teams()[0].school_name_en, "");
+    assert_eq!(roster.teams()[0].team_name_en, "");
     Ok(())
 }
 
