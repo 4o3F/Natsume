@@ -1,6 +1,6 @@
 import type {
   ConnectionStateResponse,
-  DeviceSummary,
+  DeviceSummary_Serialize as DeviceSummary,
 } from "../api/generated/types";
 
 /** Window for the device table's journal columns and flapping tile. */

@@ -5,23 +5,24 @@ import { expect, expectTypeOf, it } from "vitest";
 import type {
   AttemptReport,
   BindingEvaluationResponse,
+  BindingTargetResponse_Deserialize,
   BindingTargetResponse_Serialize,
   DeviceResponse_Serialize,
-  ImportPendingResponse,
-  ImportPendingSummary,
+  ImportPendingResponse_Serialize as ImportPendingResponse,
+  ImportPendingSummary_Serialize as ImportPendingSummary,
   OperatorRegistrationRequest,
-  PrintAttempt,
+  PrintAttempt_Serialize as PrintAttempt,
   PrintClaim,
   PrintClientIssued,
   PrintClientPair,
   PrintDocument,
-  PrintExecution,
+  PrintExecution_Serialize as PrintExecution,
   PrintGenerationFailure,
   PrintPairingCode,
-  PrintPrinter,
-  PrintQueueEntry,
+  PrintPrinter_Serialize as PrintPrinter,
+  PrintQueueEntry_Serialize as PrintQueueEntry,
   PrintRegistration,
-  PrintRequest,
+  PrintRequest_Serialize as PrintRequest,
 } from "./generated/types";
 
 const source = ts.createSourceFile(
@@ -43,9 +44,16 @@ it("keeps required nullable response fields distinct from omitted fields", () =>
     network: DeviceResponse_Serialize["network"];
   }>();
   type Unbound = Extract<BindingTargetResponse_Serialize, { state: "unbound" }>;
-  expectTypeOf<Unbound["evaluation"]>().toEqualTypeOf<
-    BindingEvaluationResponse | null | undefined
-  >();
+  expectTypeOf<Pick<Unbound, "evaluation">>().toEqualTypeOf<{
+    evaluation?: BindingEvaluationResponse;
+  }>();
+  type UnboundInput = Extract<
+    BindingTargetResponse_Deserialize,
+    { state: "unbound" }
+  >;
+  expectTypeOf<Pick<UnboundInput, "evaluation">>().toEqualTypeOf<{
+    evaluation?: BindingEvaluationResponse | null;
+  }>();
 });
 
 it("exports queue counters as JSON numbers and keeps the optional seat value required", () => {
@@ -148,7 +156,8 @@ it("does not leak credential fields outside explicitly authorized HTTP DTOs", ()
     "PrintSourceIssued.token",
     "PrintClientIssued.token",
     "PhotoEnrollmentIssued.token",
-    "ImportPreviewResponse.preview_token",
+    "ImportPreviewResponse_Deserialize.preview_token",
+    "ImportPreviewResponse_Serialize.preview_token",
     "OperatorInvitationIssuedResponse.token",
     "OperatorPasswordResetIssuedResponse.token",
     "OperatorTokenRequest.token",

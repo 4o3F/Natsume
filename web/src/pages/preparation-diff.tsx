@@ -1,9 +1,9 @@
 import type {
-  ImportOrganizationChangeResponse,
+  ImportOrganizationChangeResponse_Serialize as ImportOrganizationChangeResponse,
   ImportOrganizationResponse,
-  ImportRedactedDiff,
-  ImportTeamChangeResponse,
-  ImportTeamResponse,
+  ImportRedactedDiff_Serialize as ImportRedactedDiff,
+  ImportTeamChangeResponse_Serialize as ImportTeamChangeResponse,
+  ImportTeamResponse_Serialize as ImportTeamResponse,
 } from "@/api/generated/types";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";

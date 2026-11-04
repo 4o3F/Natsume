@@ -24,8 +24,8 @@ import { ApiError, unwrap } from "@/api/errors";
 import type {
   DeviceConvergenceResponse_Serialize as DeviceConvergenceResponse,
   DeviceResponse_Serialize as DeviceResponse,
-  DeviceSummaries,
-  DeviceSummary,
+  DeviceSummaries_Serialize as DeviceSummaries,
+  DeviceSummary_Serialize as DeviceSummary,
 } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";

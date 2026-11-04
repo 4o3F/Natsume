@@ -25,8 +25,8 @@ import {
 import { journalExportHref } from "@/api/client";
 import { ApiError, unwrap } from "@/api/errors";
 import type {
-  EventPage,
-  JournalRecord,
+  EventPage_Serialize as EventPage,
+  JournalRecord_Serialize as JournalRecord,
   OperatorAccountResponse,
   Severity,
 } from "@/api/generated/types";

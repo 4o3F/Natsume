@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { PrintExecution, PrintQueueEntry } from "@/api/generated/types";
+import type {
+  PrintExecution_Serialize as PrintExecution,
+  PrintQueueEntry_Serialize as PrintQueueEntry,
+} from "@/api/generated/types";
 import {
   executionCounts,
   executionLabels,

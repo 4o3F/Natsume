@@ -10,7 +10,7 @@ import {
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
-import type { OrganizationLogoResponse } from "@/api/generated/types";
+import type { OrganizationLogoResponse_Serialize as OrganizationLogoResponse } from "@/api/generated/types";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {

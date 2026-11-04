@@ -6,10 +6,10 @@ import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
 import type {
   ImportBindingImpactResponse,
-  ImportMappingChangeResponse,
-  ImportPendingResponse,
-  ImportPendingSummary,
-  ImportPreviewResponse,
+  ImportMappingChangeResponse_Serialize as ImportMappingChangeResponse,
+  ImportPendingResponse_Serialize as ImportPendingResponse,
+  ImportPendingSummary_Serialize as ImportPendingSummary,
+  ImportPreviewResponse_Serialize as ImportPreviewResponse,
 } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";

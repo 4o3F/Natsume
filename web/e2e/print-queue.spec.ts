@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { PrintQueueEntry } from "../src/api/generated/types";
+import type { PrintQueueEntry_Serialize as PrintQueueEntry } from "../src/api/generated/types";
 import {
   closeDetails,
   closeNavigation,

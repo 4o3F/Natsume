@@ -870,7 +870,6 @@ test("ready desktops still wait for binding before contest presentation", async 
     target: {
       state: "unbound",
       negotiation_id: "01912345-6789-7abc-8def-0123456789ae",
-      evaluation: null,
     },
     actual: {
       assignment_state: "absent",

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
-import type { AccountResponse } from "@/api/generated/types";
+import type { AccountResponse_Serialize as AccountResponse } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
