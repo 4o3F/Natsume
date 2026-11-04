@@ -1676,10 +1676,9 @@ pub(crate) mod tests {
             assert_eq!(metadata.uid(), ownership().uid);
             assert_eq!(metadata.gid(), ownership().gid);
         }
-        assert!(
-            ensure_directory(&third, ownership(), 0o750)
-                .context(TestFileSnafu)?
-                .is_empty()
+        assert_eq!(
+            ensure_directory(&third, ownership(), 0o750).context(TestFileSnafu)?,
+            [] as [PathBuf; 0]
         );
         for path in paths.iter().rev() {
             assert_eq!(

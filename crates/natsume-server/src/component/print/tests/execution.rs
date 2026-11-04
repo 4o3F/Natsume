@@ -678,13 +678,13 @@ async fn assigned_document_is_verified_before_bytes_are_returned() {
     let a = claim(&f, &c, &Uuid::now_v7().to_string(), now)
         .await
         .unwrap_or_else(|| panic!("claim"));
-    assert!(
-        !must(
+    assert_ne!(
+        must(
             f.print
                 .attempt_document(c.clone(), a.attempt_id.clone())
                 .await
-        )
-        .is_empty()
+        ),
+        [] as [u8; 0]
     );
     must(std::fs::write(
         f.documents_path()

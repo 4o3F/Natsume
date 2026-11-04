@@ -198,10 +198,19 @@ mod tests {
             assert!(
                 raster
                     .pixels
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2] && pixel[3] == 255)
             );
-            assert!(raster.pixels.chunks_exact(4).any(|pixel| pixel[0] < 200));
+            assert!(
+                raster
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[0] < 200)
+            );
         }
         Ok(())
     }

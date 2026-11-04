@@ -410,8 +410,8 @@ async fn disconnected_home_recovery_returns_from_greeter_to_waiting()
             waiting_session()
         )]
     );
-    assert!(state.preparation_calls.is_empty());
-    assert!(state.termination_calls.is_empty());
+    assert_eq!(state.preparation_calls, []);
+    assert_eq!(state.termination_calls, []);
     Ok(())
 }
 
@@ -437,8 +437,8 @@ async fn disconnected_home_recovery_preserves_other_foregrounds_and_pending_logi
         fixture.snapshots.recover_local().await?;
         let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
         assert_eq!(state.foreground, Some(foreground));
-        assert!(state.activation_calls.is_empty());
-        assert!(state.preparation_calls.is_empty());
+        assert_eq!(state.activation_calls, []);
+        assert_eq!(state.preparation_calls, []);
     }
     Ok(())
 }
@@ -969,9 +969,9 @@ async fn observation_preserves_binding_eligibility_while_the_replacement_frame_i
     assert!(!maintenance.retry);
     assert_eq!(maintenance.actual, Some(waiting_session()));
     let helper = fixture.helper.lock().map_err(|_| "helper lock")?;
-    assert!(helper.waiting_recovery_calls.is_empty());
-    assert!(helper.termination_calls.is_empty());
-    assert!(helper.home_calls.is_empty());
+    assert_eq!(helper.waiting_recovery_calls, []);
+    assert_eq!(helper.termination_calls, []);
+    assert_eq!(helper.home_calls, [] as [u64; 0]);
     Ok(())
 }
 
@@ -1572,9 +1572,9 @@ async fn failed_contest_preparation_retries_without_repeating_maintenance()
             state.preparation_calls,
             [natsume_workstation_ipc::SessionRole::Contest]
         );
-        assert!(state.home_calls.is_empty());
-        assert!(state.termination_calls.is_empty());
-        assert!(state.activation_calls.is_empty());
+        assert_eq!(state.home_calls, [] as [u64; 0]);
+        assert_eq!(state.termination_calls, []);
+        assert_eq!(state.activation_calls, []);
         state.assert_blocked();
     }
     fixture
@@ -1659,10 +1659,10 @@ async fn new_maintenance_waits_for_a_live_waiting_frame_before_capturing_contest
     assert!(outcome.retry);
     let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
     state.assert_blocked();
-    assert!(state.termination_calls.is_empty());
-    assert!(state.home_calls.is_empty());
-    assert!(state.activation_calls.is_empty());
-    assert!(state.preparation_calls.is_empty());
+    assert_eq!(state.termination_calls, []);
+    assert_eq!(state.home_calls, [] as [u64; 0]);
+    assert_eq!(state.activation_calls, []);
+    assert_eq!(state.preparation_calls, []);
     assert!(state.progress.is_none());
     assert!(
         !fixture
@@ -1741,8 +1741,8 @@ async fn binding_keeps_waiting_until_the_operator_selects_contest()
             state.activation_calls.len(),
             usize::from(expected == SessionForeground::Contest)
         );
-        assert!(state.termination_calls.is_empty());
-        assert!(state.home_calls.is_empty());
+        assert_eq!(state.termination_calls, []);
+        assert_eq!(state.home_calls, [] as [u64; 0]);
     }
     Ok(())
 }
@@ -1789,9 +1789,9 @@ async fn foreground_and_repeated_targets_keep_ready_without_reloading_caddy()
     assert_eq!(state.activation_calls.len(), 2);
     assert_eq!(state.activation_calls[0].1, waiting_session());
     assert_eq!(state.activation_calls[1].1.logind_session_id, "c2");
-    assert!(state.preparation_calls.is_empty());
-    assert!(state.termination_calls.is_empty());
-    assert!(state.home_calls.is_empty());
+    assert_eq!(state.preparation_calls, []);
+    assert_eq!(state.termination_calls, []);
+    assert_eq!(state.home_calls, [] as [u64; 0]);
     Ok(())
 }
 
@@ -2047,9 +2047,9 @@ async fn display_updates_keep_ready_caddy_and_credentials_while_waiting_for_a_ne
         );
     }
     let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
-    assert!(state.activation_calls.is_empty());
-    assert!(state.preparation_calls.is_empty());
-    assert!(state.termination_calls.is_empty());
-    assert!(state.home_calls.is_empty());
+    assert_eq!(state.activation_calls, []);
+    assert_eq!(state.preparation_calls, []);
+    assert_eq!(state.termination_calls, []);
+    assert_eq!(state.home_calls, [] as [u64; 0]);
     Ok(())
 }

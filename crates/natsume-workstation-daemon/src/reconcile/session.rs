@@ -743,13 +743,13 @@ pub(super) mod tests {
         assert!(session.observe().await?.waiting_ready);
         let mut health = session.waiting_health.lock().map_err(|_| "health lock")?;
         assert!(!health.observe(Instant::now(), false));
-        assert!(
+        assert_eq!(
             fixture
                 .helper
                 .lock()
                 .map_err(|_| "helper lock")?
-                .waiting_recovery_calls
-                .is_empty()
+                .waiting_recovery_calls,
+            []
         );
         Ok(())
     }
@@ -786,8 +786,8 @@ pub(super) mod tests {
         assert!(!session.observe().await?.waiting_ready);
         session.maintain_waiting().await?;
         let helper = fixture.helper.lock().map_err(|_| "helper lock")?;
-        assert!(helper.waiting_recovery_calls.is_empty());
-        assert!(helper.activation_calls.is_empty());
+        assert_eq!(helper.waiting_recovery_calls, []);
+        assert_eq!(helper.activation_calls, []);
         assert!(
             session
                 .waiting_health
@@ -852,13 +852,13 @@ pub(super) mod tests {
         let session = &fixture.snapshots.session;
         assert!(!session.observe().await?.waiting_ready);
         session.maintain_waiting().await?;
-        assert!(
+        assert_eq!(
             fixture
                 .helper
                 .lock()
                 .map_err(|_| "helper lock")?
-                .waiting_recovery_calls
-                .is_empty()
+                .waiting_recovery_calls,
+            []
         );
         {
             let now = Instant::now();

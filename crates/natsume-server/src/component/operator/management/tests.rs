@@ -148,7 +148,7 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
     let viewer = register(&f.component, &issued.token, "Admin").await?;
     assert_eq!(viewer.role, OperatorRole::Viewer);
     assert_eq!(f.component.list_accounts().await?.len(), 2);
-    assert!(f.component.list_invitations().await?.is_empty());
+    assert_eq!(f.component.list_invitations().await?, []);
     assert!(matches!(
         register(&f.component, &issued.token, "another").await,
         Err(OperatorError::LinkUnavailable)
@@ -368,7 +368,7 @@ async fn issuer_loss_revokes_both_link_kinds_and_promotion_does_not_resurrect_th
                 Some(OperatorError::LinkUnavailable)
             ));
         }
-        assert!(f.component.list_invitations().await?.is_empty());
+        assert_eq!(f.component.list_invitations().await?, []);
     }
     Ok(())
 }

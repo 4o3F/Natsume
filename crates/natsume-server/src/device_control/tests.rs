@@ -2211,14 +2211,14 @@ async fn open_window_automatically_enrolls_without_operator_approval() {
     let (mut socket, server) = connect(fixture).await;
     submit_enrollment_proof(&mut socket).await;
     let (_, session_id) = finish_enrollment(&mut socket).await;
-    assert!(
+    assert_eq!(
         fixture
             .runtime
             .device_control()
             .device
             .pending_enrollment_reviews()
-            .await
-            .is_empty()
+            .await,
+        []
     );
     assert_eq!(
         fixture
@@ -2280,27 +2280,27 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
             .len(),
         1
     );
-    assert!(
+    assert_eq!(
         fixture
             .runtime
             .device_control()
             .device
             .list_devices(crate::component::device::DeviceListFilter::All)
             .await
-            .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
-            .is_empty()
+            .unwrap_or_else(|error| panic!("Device lookup failed: {error}")),
+        []
     );
 
     fixture.runtime.device_control().provisioning.open_window();
     let (_, session_id) = finish_enrollment(&mut socket).await;
-    assert!(
+    assert_eq!(
         fixture
             .runtime
             .device_control()
             .device
             .pending_enrollment_reviews()
-            .await
-            .is_empty()
+            .await,
+        []
     );
     send_active_heartbeat(&mut socket, &session_id).await;
     drop(socket);
@@ -2606,14 +2606,14 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
         }
         tokio::task::yield_now().await;
     }
-    assert!(
+    assert_eq!(
         fixture
             .runtime
             .device_control()
             .device
             .pending_enrollment_reviews()
-            .await
-            .is_empty()
+            .await,
+        []
     );
 
     let records = crate::journal::tests::drain_events(&mut recorded.receiver);
@@ -3145,14 +3145,14 @@ async fn pending_enrollment_is_interrupted_by_shutdown_and_releases_its_admissio
     assert_closed(&mut socket).await;
     fixture.runtime.device_control().shutdown().await;
     server.abort();
-    assert!(
+    assert_eq!(
         fixture
             .runtime
             .device_control()
             .device
             .pending_enrollment_reviews()
-            .await
-            .is_empty()
+            .await,
+        []
     );
     let records = crate::journal::tests::drain_events(&mut recorded.receiver);
     assert_eq!(records.iter().filter(|record| matches!(&record.event, crate::journal::event::Event::ReviewCancelled(event) if event.cause == crate::journal::event::types::ReviewCancelCause::ServerStopping)).count(), 1);

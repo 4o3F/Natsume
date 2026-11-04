@@ -234,7 +234,10 @@ mod tests {
                 ..
             })
         ));
-        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert_eq!(
+            detect_existing_deployment(fixture.root.path())?,
+            [] as [PathBuf; 0]
+        );
         assert!(!plan.directories[0].path.exists());
         assert!(!plan.rollback_directory.path.exists());
         Ok(())
@@ -249,7 +252,10 @@ mod tests {
             apply_plan(&plan),
             Err(ApplyError::PrepareRollback { .. })
         ));
-        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert_eq!(
+            detect_existing_deployment(fixture.root.path())?,
+            [] as [PathBuf; 0]
+        );
         assert!(!plan.directories[0].path.exists());
         Ok(())
     }
@@ -265,7 +271,10 @@ mod tests {
         );
         let outcome = rollback(&report);
         assert!(outcome.failures.is_empty(), "{outcome:?}");
-        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert_eq!(
+            detect_existing_deployment(fixture.root.path())?,
+            [] as [PathBuf; 0]
+        );
         Ok(())
     }
 
@@ -354,7 +363,10 @@ mod tests {
             };
             assert!(matches!(source, FileError::PublishedNotDurable { .. }));
             assert!(rollback.failures.is_empty(), "{rollback:?}");
-            assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+            assert_eq!(
+                detect_existing_deployment(fixture.root.path())?,
+                [] as [PathBuf; 0]
+            );
             assert_eq!(fs::read_dir(fixture.root.path())?.count(), 2);
         }
         Ok(())
@@ -456,7 +468,10 @@ mod tests {
             assert!(!report.created_directories.contains(&keys));
             let outcome = rollback(&report);
             assert!(outcome.failures.is_empty(), "{outcome:?}");
-            assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+            assert_eq!(
+                detect_existing_deployment(fixture.root.path())?,
+                [] as [PathBuf; 0]
+            );
             let after = fs::metadata(&keys)?;
             assert_eq!(after.ino(), before.ino());
             assert_eq!(after.mode(), before.mode());
@@ -593,7 +608,10 @@ mod tests {
             !plan.rollback_directory.path.exists(),
             "quarantine must be empty and removed"
         );
-        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert_eq!(
+            detect_existing_deployment(fixture.root.path())?,
+            [] as [PathBuf; 0]
+        );
         assert!(outcome.failures.is_empty(), "{outcome:?}");
         Ok(())
     }
@@ -667,7 +685,10 @@ mod tests {
         assert_eq!(path, trust);
         assert!(matches!(source, FileError::DirectoryMetadata { .. }));
         assert!(rollback.failures.is_empty(), "{rollback:?}");
-        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        assert_eq!(
+            detect_existing_deployment(fixture.root.path())?,
+            [] as [PathBuf; 0]
+        );
         assert!(fixture.path(config::STATE_DIRECTORY).is_dir());
         assert!(!fixture.path(config::KEYS_DIRECTORY).exists());
         assert_eq!(fs::read_dir(trust)?.count(), 0);

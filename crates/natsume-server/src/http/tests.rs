@@ -1310,7 +1310,7 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
         .insert(header::IF_NONE_MATCH, format!("\"old\", W/{etag}").parse()?);
     let unchanged = drive(&application, conditional).await?;
     assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
-    assert!(unchanged.body.is_empty());
+    assert_eq!(unchanged.body, [] as [u8; 0]);
     assert_eq!(unchanged.headers[header::ETAG], image.headers[header::ETAG]);
     assert_eq!(unchanged.headers[header::CACHE_CONTROL], "public, no-cache");
     assert_eq!(unchanged.headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");

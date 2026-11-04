@@ -55,7 +55,7 @@ async fn admin_requeue_changes_one_round_and_rejects_duplicate_or_stale_requests
     let response = requeue(&f, path, r#"{"expected_requeue_count":0}"#).await?;
     assert_eq!(response.status, StatusCode::NO_CONTENT);
     assert_eq!(response.headers[header::CACHE_CONTROL], "no-store");
-    assert!(response.body.is_empty());
+    assert_eq!(response.body, [] as [u8; 0]);
     assert_eq!(
         requeue(&f, path, r#"{"expected_requeue_count":0}"#)
             .await?

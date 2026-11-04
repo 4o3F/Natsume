@@ -112,13 +112,13 @@ async fn complete_confirmation_is_idempotent_freezes_selection_and_survives_reop
     let group = folder.start_group().await.context(HotFolderSnafu)?;
     folder.attach_display().await.context(HotFolderSnafu)?;
     let confirm = intent(&folder, &fixture.hot, "one.png", b"2026:10:31 10:00:01").await?;
-    assert!(
+    assert_eq!(
         fixture
             .workspace
             .current_result_entries()
             .await
-            .context(WorkspaceSnafu)?
-            .is_empty()
+            .context(WorkspaceSnafu)?,
+        []
     );
     let saved = folder
         .confirm_photo(confirm.clone())
@@ -427,13 +427,13 @@ async fn a_changed_selection_rejects_a_previously_prepared_intent_without_writin
             source: PresentationError::NotPresented
         })
     ));
-    assert!(
+    assert_eq!(
         fixture
             .workspace
             .confirmed_photos()
             .await
-            .context(WorkspaceSnafu)?
-            .is_empty()
+            .context(WorkspaceSnafu)?,
+        []
     );
     folder.abandon_group(group).await.context(HotFolderSnafu)?;
     folder.shutdown().await.context(HotFolderSnafu)?;
