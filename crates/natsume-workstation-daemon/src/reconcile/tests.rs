@@ -7,7 +7,7 @@ use natsume_workstation_protocol::generated::{
 };
 use uuid::Uuid;
 
-use super::{access::applied_runtime_origin, *};
+use super::{access::applied_runtime_origin, observability::tests::context as plan_context, *};
 
 #[test]
 fn helper_retry_policy_uses_error_types_and_rejects_unknown_failures() {
@@ -783,7 +783,8 @@ fn waiting_session() -> GraphicalSession {
     }
 }
 
-async fn ready_fixture() -> Result<(Fixture, ValidatedSnapshot), Box<dyn std::error::Error>> {
+pub(super) async fn ready_fixture()
+-> Result<(Fixture, ValidatedSnapshot), Box<dyn std::error::Error>> {
     use natsume_workstation_protocol::generated::{GatewayCertificateGrant, GatewayState};
     use rustls_pki_types::pem::PemObject as _;
     let mut fixture = fixture(HelperState::default()).await?;
@@ -826,7 +827,7 @@ async fn ready_fixture() -> Result<(Fixture, ValidatedSnapshot), Box<dyn std::er
     let fence = CancellationToken::new();
     resources.begin_plan(&fence)?;
     let actual = resources
-        .reconcile(&target, fence)
+        .reconcile(&target, fence, &plan_context())
         .await?
         .actual
         .actual
@@ -905,7 +906,7 @@ async fn observation_preserves_binding_eligibility_while_the_replacement_frame_i
 
     fixture
         .snapshots
-        .reconcile(&target, cancellation.clone())
+        .reconcile(&target, cancellation.clone(), &plan_context())
         .await?;
     let binding =
         binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
@@ -1036,7 +1037,10 @@ async fn waiting_os_or_live_agent_loss_revokes_binding_eligibility()
         let target = validate_server_snapshot(snapshot())?;
         let cancellation = CancellationToken::new();
         fixture.snapshots.begin_plan(&cancellation)?;
-        fixture.snapshots.reconcile(&target, cancellation).await?;
+        fixture
+            .snapshots
+            .reconcile(&target, cancellation, &plan_context())
+            .await?;
         let binding =
             binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
         assert_eq!(
@@ -1094,7 +1098,10 @@ async fn waiting_agent_bus_owner_loss_revokes_pending_binding_eligibility()
     let target = validate_server_snapshot(snapshot())?;
     let cancellation = CancellationToken::new();
     fixture.snapshots.begin_plan(&cancellation)?;
-    fixture.snapshots.reconcile(&target, cancellation).await?;
+    fixture
+        .snapshots
+        .reconcile(&target, cancellation, &plan_context())
+        .await?;
     let binding =
         binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
     assert_eq!(binding.screen, SessionScreenKind::BindingPrompt);
@@ -1133,7 +1140,10 @@ async fn pending_binding_frame_does_not_mask_foreground_contest_home_or_target_f
         let mut target = validate_server_snapshot(snapshot())?;
         let cancellation = CancellationToken::new();
         fixture.snapshots.begin_plan(&cancellation)?;
-        fixture.snapshots.reconcile(&target, cancellation).await?;
+        fixture
+            .snapshots
+            .reconcile(&target, cancellation, &plan_context())
+            .await?;
         let binding =
             binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
         assert_eq!(
@@ -1202,7 +1212,10 @@ async fn observation_revokes_binding_and_loaded_access_without_a_new_target()
     let target = validate_server_snapshot(wire)?;
     let fence = CancellationToken::new();
     fixture.snapshots.begin_plan(&fence)?;
-    fixture.snapshots.reconcile(&target, fence).await?;
+    fixture
+        .snapshots
+        .reconcile(&target, fence, &plan_context())
+        .await?;
     // The Caddy fixture exercises real mode/config persistence and admin I/O.
     // Seed a previously loaded READY mode without requiring a public TLS port.
     std::fs::write(
@@ -1247,7 +1260,10 @@ async fn observation_cannot_reuse_a_binding_frame_after_withdrawing_input()
     let target = validate_server_snapshot(snapshot())?;
     let fence = CancellationToken::new();
     fixture.snapshots.begin_plan(&fence)?;
-    fixture.snapshots.reconcile(&target, fence).await?;
+    fixture
+        .snapshots
+        .reconcile(&target, fence, &plan_context())
+        .await?;
     fixture.agent_task.abort();
     while !fixture.agent_task.is_finished() {
         tokio::task::yield_now().await;
@@ -1486,7 +1502,10 @@ async fn loaded_ready_is_blocked_on_local_failure_and_restored_by_current_plan()
         ));
         let fence = CancellationToken::new();
         fixture.snapshots.begin_plan(&fence)?;
-        fixture.snapshots.reconcile(&target, fence).await?;
+        fixture
+            .snapshots
+            .reconcile(&target, fence, &plan_context())
+            .await?;
         assert!(matches!(
             fixture.snapshots.caddy.observe().await.mode,
             Some(caddy::CaddyModeArtifact::Ready { .. })
@@ -1517,7 +1536,10 @@ async fn pending_epochs_block_ready_before_helper_effects_and_wait_for_completio
     for complete in [false, true] {
         let fence = CancellationToken::new();
         fixture.snapshots.begin_plan(&fence)?;
-        let outcome = fixture.snapshots.reconcile(&target, fence).await?;
+        let outcome = fixture
+            .snapshots
+            .reconcile(&target, fence, &plan_context())
+            .await?;
         let actual = outcome.actual.actual.ok_or("missing actual")?;
         assert_eq!(outcome.retry, !complete);
         assert_eq!(
@@ -1554,7 +1576,10 @@ async fn failed_contest_preparation_retries_without_repeating_maintenance()
     }
     let fence = CancellationToken::new();
     fixture.snapshots.begin_plan(&fence)?;
-    let outcome = fixture.snapshots.reconcile(&target, fence).await?;
+    let outcome = fixture
+        .snapshots
+        .reconcile(&target, fence, &plan_context())
+        .await?;
     assert!(outcome.retry);
     assert_eq!(
         outcome
@@ -1584,7 +1609,10 @@ async fn failed_contest_preparation_retries_without_repeating_maintenance()
         .session_state = Some(GraphicalSessionState::Running);
     let fence = CancellationToken::new();
     fixture.snapshots.begin_plan(&fence)?;
-    fixture.snapshots.reconcile(&target, fence).await?;
+    fixture
+        .snapshots
+        .reconcile(&target, fence, &plan_context())
+        .await?;
     assert!(matches!(
         fixture.snapshots.caddy.observe().await.mode,
         Some(caddy::CaddyModeArtifact::Ready { .. })
@@ -1618,7 +1646,7 @@ async fn home_effect_cannot_reopen_access_from_the_pre_reset_session_observation
     fixture.snapshots.begin_plan(&fence)?;
     let actual = fixture
         .snapshots
-        .reconcile(&target, fence)
+        .reconcile(&target, fence, &plan_context())
         .await?
         .actual
         .actual
@@ -1655,7 +1683,10 @@ async fn new_maintenance_waits_for_a_live_waiting_frame_before_capturing_contest
     .ok_or("invalid target")?;
     let fence = CancellationToken::new();
     fixture.snapshots.begin_plan(&fence)?;
-    let outcome = fixture.snapshots.reconcile(&target, fence).await?;
+    let outcome = fixture
+        .snapshots
+        .reconcile(&target, fence, &plan_context())
+        .await?;
     assert!(outcome.retry);
     let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
     state.assert_blocked();
@@ -1691,7 +1722,10 @@ async fn failed_blocking_aborts_before_any_home_or_terminate_effect()
     let fence = CancellationToken::new();
     fixture.snapshots.begin_plan(&fence)?;
     assert!(matches!(
-        fixture.snapshots.reconcile(&target, fence).await,
+        fixture
+            .snapshots
+            .reconcile(&target, fence, &plan_context())
+            .await,
         Err(SnapshotError::Caddy)
     ));
     {
@@ -1766,7 +1800,10 @@ async fn foreground_and_repeated_targets_keep_ready_without_reloading_caddy()
         .ok_or("fixture Session target")?;
         let fence = CancellationToken::new();
         fixture.snapshots.begin_plan(&fence)?;
-        fixture.snapshots.reconcile(&target, fence).await?;
+        fixture
+            .snapshots
+            .reconcile(&target, fence, &plan_context())
+            .await?;
         assert!(matches!(
             fixture.snapshots.caddy.observe().await.mode,
             Some(caddy::CaddyModeArtifact::Ready { .. })
@@ -1816,7 +1853,10 @@ async fn observation_cannot_revoke_replacement_plan_ownership_or_reopen_old_acce
         .map_err(|_| "fixture lock")?
         .session_state = Some(GraphicalSessionState::Running);
     assert!(matches!(
-        fixture.snapshots.reconcile(&target, old).await,
+        fixture
+            .snapshots
+            .reconcile(&target, old, &plan_context())
+            .await,
         Err(SnapshotError::Cancelled)
     ));
     assert!(matches!(
@@ -1824,7 +1864,10 @@ async fn observation_cannot_revoke_replacement_plan_ownership_or_reopen_old_acce
         Some(caddy::CaddyModeArtifact::Blocked { .. })
     ));
     target.home_epoch = Some(7);
-    fixture.snapshots.reconcile(&target, replacement).await?;
+    fixture
+        .snapshots
+        .reconcile(&target, replacement, &plan_context())
+        .await?;
     assert!(matches!(
         fixture.snapshots.caddy.observe().await.mode,
         Some(caddy::CaddyModeArtifact::Ready { .. })
@@ -1839,7 +1882,10 @@ async fn observation_blocks_a_previously_verified_home_that_needs_recovery()
     target.home_epoch = Some(7);
     let fence = CancellationToken::new();
     fixture.snapshots.begin_plan(&fence)?;
-    fixture.snapshots.reconcile(&target, fence).await?;
+    fixture
+        .snapshots
+        .reconcile(&target, fence, &plan_context())
+        .await?;
     fixture
         .helper
         .lock()
@@ -1866,7 +1912,10 @@ async fn observation_blocks_a_previously_verified_home_that_needs_recovery()
         .home_failures = 0;
     let fence = CancellationToken::new();
     fixture.snapshots.begin_plan(&fence)?;
-    fixture.snapshots.reconcile(&target, fence).await?;
+    fixture
+        .snapshots
+        .reconcile(&target, fence, &plan_context())
+        .await?;
     assert!(matches!(
         fixture.snapshots.caddy.observe().await.mode,
         Some(caddy::CaddyModeArtifact::Ready { .. })

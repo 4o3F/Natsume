@@ -76,7 +76,7 @@ mod tests {
                         team_name_en: "Fixture Team".to_owned(),
                         school_name_zh: "测试学校".to_owned(),
                         school_name_en: "Fixture School".to_owned(),
-                        organization_id: "FIXTURE-001".to_owned(),
+                        organization_id: "INST-001".to_owned(),
                     }),
                 }),
             }),

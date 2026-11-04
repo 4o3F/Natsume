@@ -848,7 +848,14 @@ pub(super) mod tests {
             crate::reconcile::validate_server_snapshot(crate::reconcile::tests::snapshot())?;
         let cancellation = CancellationToken::new();
         fixture.snapshots.begin_plan(&cancellation)?;
-        fixture.snapshots.reconcile(&target, cancellation).await?;
+        fixture
+            .snapshots
+            .reconcile(
+                &target,
+                cancellation,
+                &crate::reconcile::observability::tests::context(),
+            )
+            .await?;
         let session = &fixture.snapshots.session;
         assert!(!session.observe().await?.waiting_ready);
         session.maintain_waiting().await?;
