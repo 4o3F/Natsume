@@ -3,23 +3,15 @@ use super::super::{
     PhotoRoster,
     acceptance::{CurrentPhoto, PendingPhoto, SavedResult, SubmissionState},
 };
-use super::{PersistenceError, UuidSnafu, ValueSnafu, now};
-use crate::{
-    db::Transaction,
-    diesel_schema::{photo_import_jobs as jobs, photo_submissions as submissions},
-};
-use diesel::{
-    BoolExpressionMethods as _, ExpressionMethods as _, OptionalExtension as _, QueryDsl as _,
-    RunQueryDsl as _,
-};
+use super::{PersistenceError, UuidSnafu, ValueSnafu};
+use crate::{db::Transaction, diesel_schema::photo_submissions as submissions};
+use diesel::{BoolExpressionMethods as _, ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _};
 use natsume_photo_protocol::{
     SourceId,
     results::{SignedResults, SubmissionId, TeamResult},
 };
 use snafu::ResultExt as _;
 use uuid::Uuid;
-
-type PackageRow = (String, Option<String>, Option<String>);
 
 pub(in crate::component::photo) fn pending(
     tx: &mut Transaction<'_>,
@@ -41,8 +33,11 @@ pub(in crate::component::photo) fn pending(
     let mut query = submissions::table
         .filter(
             submissions::state
-                .eq_any(["pending_review", "needs_association"])
-                .or(submissions::state.eq("active").and(
+                .eq_any([
+                    SubmissionState::PendingReview.as_str(),
+                    SubmissionState::NeedsAssociation.as_str(),
+                ])
+                .or(submissions::state.eq(SubmissionState::Active.as_str()).and(
                     submissions::assigned_account_id
                         .is_null()
                         .or(submissions::assigned_account_id.ne_all(roster.ids())),
@@ -102,7 +97,8 @@ pub(in crate::component::photo) fn pending(
                     image_sha256: hash.parse().context(ValueSnafu {
                         field: "Photo hash",
                     })?,
-                    state: state_value(&state)?,
+                    state: SubmissionState::parse(&state)
+                        .ok_or_else(|| PersistenceError::invalid("Photo submission state"))?,
                     revision,
                 })
             },
@@ -110,22 +106,9 @@ pub(in crate::component::photo) fn pending(
         .collect()
 }
 
-pub(in crate::component::photo) fn package(
-    tx: &mut Transaction<'_>,
-    id: Uuid,
-) -> Result<Option<PackageRow>, PersistenceError> {
-    jobs::table
-        .find(id.to_string())
-        .select((jobs::state, jobs::manifest_json, jobs::manifest_sha256))
-        .first(tx.connection())
-        .optional()
-        .map_err(PersistenceError::from)
-}
-
-pub(in crate::component::photo) fn matching(
+pub(in crate::component::photo) fn saved_submissions(
     tx: &mut Transaction<'_>,
     signed: &SignedResults,
-    image: &TeamResult,
 ) -> Result<Vec<SavedResult>, PersistenceError> {
     type Row = (
         String,
@@ -141,8 +124,20 @@ pub(in crate::component::photo) fn matching(
         .filter(submissions::source_id.eq(signed.manifest.context.source_id.as_str()))
         .filter(
             submissions::submission_id
-                .eq(image.submission_id.as_str())
-                .or(submissions::result_id.eq(image.result_id.as_str())),
+                .eq_any(
+                    signed
+                        .manifest
+                        .results
+                        .iter()
+                        .map(|image| image.submission_id.as_str()),
+                )
+                .or(submissions::result_id.eq_any(
+                    signed
+                        .manifest
+                        .results
+                        .iter()
+                        .map(|image| image.result_id.as_str()),
+                )),
         )
         .select((
             submissions::submission_id,
@@ -154,7 +149,6 @@ pub(in crate::component::photo) fn matching(
             submissions::state,
             submissions::revision,
         ))
-        .limit(2)
         .load::<Row>(tx.connection())?
         .into_iter()
         .map(
@@ -181,7 +175,8 @@ pub(in crate::component::photo) fn matching(
                     image_sha256: hash.parse().context(ValueSnafu {
                         field: "Photo hash",
                     })?,
-                    state: state_value(&state)?,
+                    state: SubmissionState::parse(&state)
+                        .ok_or_else(|| PersistenceError::invalid("Photo submission state"))?,
                     revision,
                 })
             },
@@ -189,48 +184,48 @@ pub(in crate::component::photo) fn matching(
         .collect()
 }
 
-fn state_value(raw: &str) -> Result<SubmissionState, PersistenceError> {
-    match raw {
-        "active" => Ok(SubmissionState::Active),
-        "pending_review" => Ok(SubmissionState::PendingReview),
-        "needs_association" => Ok(SubmissionState::NeedsAssociation),
-        "rejected" => Ok(SubmissionState::Rejected),
-        "superseded" => Ok(SubmissionState::Superseded),
-        _ => Err(PersistenceError::invalid("Photo submission state")),
-    }
-}
-
-pub(in crate::component::photo) fn current(
+pub(in crate::component::photo) fn current_assignments(
     tx: &mut Transaction<'_>,
-    account_id: &str,
-) -> Result<Option<CurrentPhoto>, PersistenceError> {
-    type Row = (String, String, i64, String);
-    let row = submissions::table
-        .filter(submissions::assigned_account_id.eq(account_id))
-        .filter(submissions::state.eq("active"))
+    accounts: Vec<&str>,
+) -> Result<std::collections::HashMap<String, CurrentPhoto>, PersistenceError> {
+    type Row = (Option<String>, String, String, i64, String);
+    submissions::table
+        .filter(submissions::assigned_account_id.eq_any(accounts))
+        .filter(submissions::state.eq(SubmissionState::Active.as_str()))
         .select((
+            submissions::assigned_account_id,
             submissions::source_id,
             submissions::submission_id,
             submissions::revision,
             submissions::image_sha256,
         ))
-        .first::<Row>(tx.connection())
-        .optional()?;
-    row.map(|(source, submission, revision, hash)| {
-        Ok(CurrentPhoto {
-            source_id: source.parse().context(ValueSnafu {
-                field: "Photo current source",
-            })?,
-            submission_id: submission.parse().context(ValueSnafu {
-                field: "Photo current submission",
-            })?,
-            revision,
-            image_sha256: hash.parse().context(ValueSnafu {
-                field: "Photo current hash",
-            })?,
+        .load::<Row>(tx.connection())?
+        .into_iter()
+        .map(|(account, source, submission, revision, hash)| {
+            Ok((
+                account.ok_or_else(|| PersistenceError::invalid("Photo assigned account"))?,
+                CurrentPhoto {
+                    source_id: source.parse().context(ValueSnafu {
+                        field: "Photo current source",
+                    })?,
+                    submission_id: submission.parse().context(ValueSnafu {
+                        field: "Photo current submission",
+                    })?,
+                    revision,
+                    image_sha256: hash.parse().context(ValueSnafu {
+                        field: "Photo current hash",
+                    })?,
+                },
+            ))
         })
-    })
-    .transpose()
+        .collect()
+}
+
+pub(in crate::component::photo) fn current(
+    tx: &mut Transaction<'_>,
+    account: &str,
+) -> Result<Option<CurrentPhoto>, PersistenceError> {
+    Ok(current_assignments(tx, vec![account])?.remove(account))
 }
 
 pub(in crate::component::photo) fn insert(
@@ -251,10 +246,7 @@ pub(in crate::component::photo) fn insert(
             submissions::account.eq(&image.account),
             submissions::assigned_account_id.eq(assigned),
             submissions::image_sha256.eq(image.image_sha256.as_str()),
-            submissions::image_format.eq(match image.image_format {
-                natsume_photo_protocol::results::PhotoFormat::Jpeg => "jpeg",
-                natsume_photo_protocol::results::PhotoFormat::Png => "png",
-            }),
+            submissions::image_format.eq(super::format_name(image.image_format)),
             submissions::image_bytes.eq(i64::try_from(image.image_bytes)
                 .map_err(|_| PersistenceError::invalid("Photo image bytes"))?),
             submissions::state.eq(state.as_str()),
@@ -288,27 +280,6 @@ pub(in crate::component::photo) fn transition(
     .execute(tx.connection())?;
     if count != 1 {
         return Err(PersistenceError::invalid("Photo submission transition"));
-    }
-    Ok(())
-}
-
-pub(in crate::component::photo) fn committed(
-    tx: &mut Transaction<'_>,
-    id: Uuid,
-) -> Result<(), PersistenceError> {
-    let now = now(tx)?;
-    let count = diesel::update(
-        jobs::table
-            .find(id.to_string())
-            .filter(jobs::state.eq("ready")),
-    )
-    .set((
-        jobs::state.eq("committed"),
-        jobs::updated_at_unix_ms.eq(now),
-    ))
-    .execute(tx.connection())?;
-    if count != 1 {
-        return Err(PersistenceError::invalid("Photo import commit"));
     }
     Ok(())
 }

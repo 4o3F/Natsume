@@ -5,7 +5,23 @@ use crate::{db::Transaction, diesel_schema::photo_submissions as submissions};
 use diesel::{ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _};
 use snafu::ResultExt as _;
 
-pub(in crate::component::photo) fn read(
+pub(in crate::component::photo) fn current_photos(
+    tx: &mut Transaction<'_>,
+    roster: &PhotoRoster,
+    limit: Option<i64>,
+) -> Result<Vec<PhotoRecord>, PersistenceError> {
+    read(tx, None, roster, limit)
+}
+
+pub(in crate::component::photo) fn current_photo(
+    tx: &mut Transaction<'_>,
+    roster: &PhotoRoster,
+    account_id: &str,
+) -> Result<Option<PhotoRecord>, PersistenceError> {
+    Ok(read(tx, Some(account_id), roster, Some(1))?.pop())
+}
+
+fn read(
     tx: &mut Transaction<'_>,
     exact: Option<&str>,
     roster: &PhotoRoster,
@@ -13,7 +29,7 @@ pub(in crate::component::photo) fn read(
 ) -> Result<Vec<PhotoRecord>, PersistenceError> {
     type Row = (Option<String>, String, String, i64, String, String, i64);
     let mut query = submissions::table
-        .filter(submissions::state.eq("active"))
+        .filter(submissions::state.eq(super::super::acceptance::SubmissionState::Active.as_str()))
         .filter(submissions::assigned_account_id.eq_any(roster.ids()))
         .select((
             submissions::assigned_account_id,
@@ -55,11 +71,7 @@ pub(in crate::component::photo) fn read(
                 image_sha256: hash.parse().context(ValueSnafu {
                     field: "Photo hash",
                 })?,
-                image_format: match format.as_str() {
-                    "jpeg" => natsume_photo_protocol::results::PhotoFormat::Jpeg,
-                    "png" => natsume_photo_protocol::results::PhotoFormat::Png,
-                    _ => return Err(PersistenceError::invalid("Photo image format")),
-                },
+                image_format: super::parse_format(&format)?,
                 image_bytes: u64::try_from(bytes)
                     .map_err(|_| PersistenceError::invalid("Photo image bytes"))?,
             })

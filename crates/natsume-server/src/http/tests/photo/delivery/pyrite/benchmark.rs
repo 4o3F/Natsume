@@ -257,7 +257,7 @@ async fn pyrite_download_each_team_over_real_windows_https() -> TestResult {
     let path = std::env::var_os("NATSUME_PHOTO_BENCHMARK_INPUT")
         .ok_or(TestError::missing("benchmark input JSON"))?;
     let inputs: Inputs = serde_json::from_slice(&std::fs::read(path)?)?;
-    assert!(!inputs.teams.is_empty());
+    assert_ne!(inputs.teams, [] as [PhotoTeam; 0]);
     let (mut f, cookie) = admin().await?;
     seed(&f, inputs.teams.clone()).await?;
     for entry in std::fs::read_dir(&inputs.logos)? {

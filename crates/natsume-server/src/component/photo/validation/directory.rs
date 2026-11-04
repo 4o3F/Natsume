@@ -34,8 +34,8 @@ pub(super) fn preflight(file: &mut File, expected_bytes: u64) -> Result<Director
         (22..=PACKAGE_LIMIT).contains(&length) && length == expected_bytes,
         ArchiveSnafu
     );
-    let tail_size = usize::try_from(length.min(65_557)).map_err(|_| ArchiveSnafu.build())?;
-    let tail_start = length - u64::try_from(tail_size).map_err(|_| ArchiveSnafu.build())?;
+    let tail_size = length.min(super::super::limits::ZIP_EOCD_SCAN_BYTES) as usize;
+    let tail_start = length - tail_size as u64;
     let tail = read(file, tail_start, tail_size)?;
     let end = tail
         .windows(4)
@@ -61,7 +61,7 @@ pub(super) fn preflight(file: &mut File, expected_bytes: u64) -> Result<Director
     );
     let size = u32::from_le_bytes(number(&tail, end + 12)?);
     let start = u32::from_le_bytes(number(&tail, end + 16)?);
-    let end_offset = tail_start + u64::try_from(end).map_err(|_| ArchiveSnafu.build())?;
+    let end_offset = tail_start + end as u64;
     let (start, bytes, count, footer) =
         if count == u16::MAX || size == u32::MAX || start == u32::MAX {
             zip64(file, end_offset)?
@@ -74,25 +74,22 @@ pub(super) fn preflight(file: &mut File, expected_bytes: u64) -> Result<Director
             )
         };
     ensure!(
-        (1..=u64::try_from(PACKAGE_ENTRY_LIMIT).map_err(|_| ArchiveSnafu.build())?)
-            .contains(&count),
+        (1..=(PACKAGE_ENTRY_LIMIT as u64)).contains(&count),
         ArchiveSnafu
     );
     ensure!(
-        bytes <= u64::try_from(ZIP_METADATA_LIMIT).map_err(|_| ArchiveSnafu.build())?
-            && start.checked_add(bytes) == Some(footer),
+        bytes <= (ZIP_METADATA_LIMIT as u64) && start.checked_add(bytes) == Some(footer),
         ArchiveSnafu
     );
     let footer_bytes = length - footer;
     ensure!(
-        bytes + footer_bytes
-            <= u64::try_from(ZIP_METADATA_LIMIT).map_err(|_| ArchiveSnafu.build())?,
+        bytes + footer_bytes <= (ZIP_METADATA_LIMIT as u64),
         ArchiveSnafu
     );
     Ok(Directory {
         start,
         bytes: bytes + footer_bytes,
-        entries: usize::try_from(count).map_err(|_| ArchiveSnafu.build())?,
+        entries: usize::try_from(count).ok().context(ArchiveSnafu)?,
     })
 }
 
@@ -109,7 +106,7 @@ fn zip64(file: &mut File, end: u64) -> Result<(u64, u64, u64, u64)> {
     ensure!(&record[..4] == b"PK\x06\x06", ArchiveSnafu);
     let size = u64::from_le_bytes(number(&record, 4)?);
     ensure!(
-        (44..=u64::try_from(ZIP_METADATA_LIMIT).map_err(|_| ArchiveSnafu.build())?).contains(&size)
+        (44..=(ZIP_METADATA_LIMIT as u64)).contains(&size)
             && offset.checked_add(12).and_then(|v| v.checked_add(size)) == end.checked_sub(20),
         ArchiveSnafu
     );

@@ -161,7 +161,7 @@ impl PhotoComponent {
             return snapshot(record).map(Preparation::Existing);
         }
         let permit = self
-            .snapshot_work
+            .snapshot_build_slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| BusySnafu.build())?;
@@ -268,7 +268,7 @@ impl PhotoComponent {
             .find(|logo| logo.sha256.as_str() == hash)
             .context(NotFoundSnafu)?;
         let permit = self
-            .download_work
+            .snapshot_download_slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| BusySnafu.build())?;

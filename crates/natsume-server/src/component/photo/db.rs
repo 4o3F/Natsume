@@ -1,11 +1,27 @@
 //! Typed persistence operations; authorization and transitions belong to Photo.
 pub(super) mod acceptance;
 pub(super) mod delivery;
-pub(super) mod imports;
-pub(super) mod validation;
+pub(super) mod jobs;
 use diesel::{ExpressionMethods as _, OptionalExtension as _, QueryDsl as _, RunQueryDsl as _};
 
 use super::SourceState;
+
+fn format_name(format: natsume_photo_protocol::results::PhotoFormat) -> &'static str {
+    match format {
+        natsume_photo_protocol::results::PhotoFormat::Jpeg => "jpeg",
+        natsume_photo_protocol::results::PhotoFormat::Png => "png",
+    }
+}
+
+fn parse_format(
+    raw: &str,
+) -> Result<natsume_photo_protocol::results::PhotoFormat, PersistenceError> {
+    match raw {
+        "jpeg" => Ok(natsume_photo_protocol::results::PhotoFormat::Jpeg),
+        "png" => Ok(natsume_photo_protocol::results::PhotoFormat::Png),
+        _ => Err(PersistenceError::invalid("Photo image format")),
+    }
+}
 
 use crate::{
     db::{PersistenceError as SharedPersistenceError, Transaction},
@@ -335,6 +351,29 @@ pub(super) fn initialization_completed(
         .first::<bool>(tx.connection())
         .optional()
         .map(|completed| completed.unwrap_or(false))
+        .map_err(PersistenceError::from)
+}
+
+/// Current authorization facts only; never loads or re-parses snapshot JSON.
+pub(super) fn result_source_authorized(
+    tx: &mut Transaction<'_>,
+    signed: &natsume_photo_protocol::results::SignedResults,
+) -> Result<bool, PersistenceError> {
+    use diesel::JoinOnDsl as _;
+    let context = &signed.manifest.context;
+    sources::table
+        .inner_join(initializations::table.on(initializations::source_id.eq(sources::source_id)))
+        .filter(sources::source_id.eq(context.source_id.as_str()))
+        .filter(sources::state.eq(super::enrollment::source_state_wire(SourceState::Enabled)))
+        .filter(sources::confirmed.eq(1))
+        .filter(sources::public_key.eq(signed.manifest.signing_public_key.as_str()))
+        .filter(initializations::initialization_id.eq(context.initialization_id.as_str()))
+        .filter(initializations::manifest_sha256.eq(context.initialization_sha256.as_str()))
+        .filter(initializations::completed_at_unix_ms.is_not_null())
+        .select(sources::source_id)
+        .first::<String>(tx.connection())
+        .optional()
+        .map(|row| row.is_some())
         .map_err(PersistenceError::from)
 }
 

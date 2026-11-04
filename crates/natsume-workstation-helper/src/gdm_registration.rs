@@ -468,6 +468,6 @@ mod tests {
         let mut replacement = context();
         replacement.owner = Some(":1.40".into());
         cache.refresh(replacement);
-        assert!(cache.receipts.is_empty());
+        assert_eq!(cache.receipts, []);
     }
 }

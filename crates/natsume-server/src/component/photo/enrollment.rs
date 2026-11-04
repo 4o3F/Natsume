@@ -45,7 +45,7 @@ impl From<db::PersistenceError> for EnrollmentError {
     }
 }
 pub(crate) use natsume_photo_protocol::{PhotoSource, SourceState};
-fn source_state_wire(state: SourceState) -> &'static str {
+pub(super) fn source_state_wire(state: SourceState) -> &'static str {
     match state {
         SourceState::Enabled => "enabled",
         SourceState::Disabled => "disabled",

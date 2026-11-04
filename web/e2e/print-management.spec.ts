@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type {
-  PrintExecution,
-  PrintPrinter,
+  PrintExecution_Serialize as PrintExecution,
+  PrintPrinter_Serialize as PrintPrinter,
   PrintSource,
 } from "../src/api/generated/types";
 

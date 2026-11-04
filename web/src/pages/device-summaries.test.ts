@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 
-import type { DeviceSummary } from "../api/generated/types";
+import type { DeviceSummary_Serialize as DeviceSummary } from "../api/generated/types";
 import { FLAPPING_DISCONNECTS, isFlapping, lastSeen } from "./device-summaries";
 
 const summary: DeviceSummary = {

@@ -120,7 +120,7 @@ impl Pdf {
             .fail();
         }
         // Grayscale pixels also protect monochrome output when a driver ignores dmColor.
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             let weighted =
                 u32::from(pixel[0]) * 29 + u32::from(pixel[1]) * 150 + u32::from(pixel[2]) * 77;
             // The weights sum to 256, so the shifted value always fits in one byte.
@@ -198,10 +198,19 @@ mod tests {
             assert!(
                 raster
                     .pixels
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2] && pixel[3] == 255)
             );
-            assert!(raster.pixels.chunks_exact(4).any(|pixel| pixel[0] < 200));
+            assert!(
+                raster
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[0] < 200)
+            );
         }
         Ok(())
     }

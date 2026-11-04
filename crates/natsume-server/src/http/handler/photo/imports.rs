@@ -1,6 +1,6 @@
 //! Operator ZIP transport; Photo owns upload admission and persistence.
 use crate::{
-    component::photo::{ImportError, PhotoComponent},
+    component::photo::{PhotoComponent, ResultImportError},
     http::{
         Routes,
         error::ApiError,
@@ -49,7 +49,7 @@ async fn upload(State(photo): State<Arc<PhotoComponent>>, request: Request) -> R
             return ApiError::invalid_request("photo_upload_length").into_response();
         };
         if length > natsume_photo_protocol::results::PACKAGE_LIMIT {
-            return response_error(ImportError::Limit);
+            return ApiError::from_photo_import(ResultImportError::Limit).into_response();
         }
     }
     let audit = request.extensions().get::<RequestAudit>().cloned();
@@ -60,7 +60,7 @@ async fn upload(State(photo): State<Arc<PhotoComponent>>, request: Request) -> R
     else {
         return ApiError::unavailable("photo_upload_not_admitted").into_response();
     };
-    let deadline = tokio::time::Instant::now() + Duration::from_mins(15);
+    let deadline = tokio::time::Instant::now() + crate::component::photo::limits::OPERATION_TIMEOUT;
     let stream = futures_util::stream::unfold(
         (request.into_body().into_data_stream(), deadline, admission),
         |(mut body, deadline, admission)| async move {
@@ -85,7 +85,7 @@ async fn upload(State(photo): State<Arc<PhotoComponent>>, request: Request) -> R
             }
             (StatusCode::ACCEPTED, Json(job)).into_response()
         }
-        Err(error) => response_error(error),
+        Err(error) => ApiError::from_photo_import(error).into_response(),
     }
 }
 
@@ -101,16 +101,6 @@ async fn read(
     };
     match photo.read_import(id).await {
         Ok(job) => Json(job).into_response(),
-        Err(error) => response_error(error),
+        Err(error) => ApiError::from_photo_import(error).into_response(),
     }
-}
-
-fn response_error(error: ImportError) -> Response {
-    let mut response = ApiError::from_photo_import(error).into_response();
-    if response.status() == StatusCode::SERVICE_UNAVAILABLE {
-        response
-            .headers_mut()
-            .insert(header::RETRY_AFTER, header::HeaderValue::from_static("1"));
-    }
-    response
 }

@@ -3,11 +3,11 @@ use crate::{
     component::{
         contest::{ContestComponent, ContestError},
         photo::{
-            AcceptanceError, ImportPreview, PendingPhotoPage, PendingPhotoQuery, PhotoComponent,
-            PhotoDecision,
+            AcceptanceError, PendingPhotoPage, PendingPhotoQuery, PhotoComponent, PhotoDecision,
+            PhotoRoster, ResultImportPreview,
         },
     },
-    db::{Database, TransactionError},
+    db::{Database, Transaction, TransactionError},
 };
 use snafu::{ResultExt as _, Snafu};
 use uuid::Uuid;
@@ -38,9 +38,7 @@ impl AcceptPhotoResults {
     ) -> Result<PendingPhotoPage, Error> {
         self.database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx)
-                    .context(RosterSnafu)?
-                    .into();
+                let roster = load_roster(tx)?;
                 PhotoComponent::pending_in(tx, query, &roster).context(PhotoSnafu)
             })
             .await
@@ -51,23 +49,19 @@ impl AcceptPhotoResults {
         Self { database }
     }
 
-    pub(crate) async fn preview(&self, id: Uuid) -> Result<ImportPreview, Error> {
+    pub(crate) async fn preview(&self, id: Uuid) -> Result<ResultImportPreview, Error> {
         self.database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx)
-                    .context(RosterSnafu)?
-                    .into();
+                let roster = load_roster(tx)?;
                 PhotoComponent::preview_in(tx, id, &roster).context(PhotoSnafu)
             })
             .await
             .map_err(TransactionError::into_error)
     }
-    pub(crate) async fn commit(&self, id: Uuid) -> Result<ImportPreview, Error> {
+    pub(crate) async fn commit(&self, id: Uuid) -> Result<ResultImportPreview, Error> {
         self.database
             .write(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx)
-                    .context(RosterSnafu)?
-                    .into();
+                let roster = load_roster(tx)?;
                 PhotoComponent::commit_in(tx, id, &roster).context(PhotoSnafu)
             })
             .await
@@ -77,15 +71,19 @@ impl AcceptPhotoResults {
         &self,
         id: Uuid,
         decision: PhotoDecision,
-    ) -> Result<ImportPreview, Error> {
+    ) -> Result<ResultImportPreview, Error> {
         self.database
             .write(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx)
-                    .context(RosterSnafu)?
-                    .into();
+                let roster = load_roster(tx)?;
                 PhotoComponent::decide_in(tx, id, decision, &roster).context(PhotoSnafu)
             })
             .await
             .map_err(TransactionError::into_error)
     }
+}
+
+fn load_roster(tx: &mut Transaction<'_>) -> Result<PhotoRoster, Error> {
+    ContestComponent::photo_roster_in(tx)
+        .context(RosterSnafu)
+        .map(PhotoRoster::from)
 }

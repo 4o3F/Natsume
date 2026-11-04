@@ -10,7 +10,6 @@ use axum::{
     routing::get,
 };
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use super::{super::super::error::ApiError, middleware};
 use crate::component::contest::{
@@ -55,8 +54,16 @@ pub(crate) fn import_candidate_routes() -> Routes<ImportCandidateState> {
 pub(super) fn public_routes() -> Routes<Arc<ContestComponent>> {
     vec![(
         "/organizations/{organization_id}/logo",
-        get(organization_logo),
+        get(organization_logo).layer(axum::middleware::map_response(close_logo_connection)),
     )]
+}
+
+async fn close_logo_connection(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CONNECTION,
+        axum::http::HeaderValue::from_static("close"),
+    );
+    response
 }
 
 #[derive(Serialize, specta::Type)]
@@ -139,8 +146,16 @@ pub(crate) async fn organization_logo(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    match state.list_organizations().await {
-        Ok(schools) => logo(&state, schools, &id, &headers, false).await,
+    let Some(number) = id
+        .strip_prefix("INST-")
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|number| format!("INST-{number:03}") == id)
+    else {
+        return no_store(ApiError::not_found("organization_not_found").into_response());
+    };
+    match state.find_organization(number).await {
+        Ok(Some(school)) => logo(&state, school, &headers, false).await,
+        Ok(None) => no_store(ApiError::not_found("organization_not_found").into_response()),
         Err(error) => ApiError::from_contest(error).into_response(),
     }
 }
@@ -151,7 +166,13 @@ pub(crate) async fn candidate_logo(
     headers: HeaderMap,
 ) -> Response {
     let response = match candidate_schools(&state.import, &import_id).await {
-        Ok(schools) => logo(&state.contest, schools, &id, &headers, true).await,
+        Ok(schools) => match schools
+            .into_iter()
+            .find(|school| format!("INST-{:03}", school.organization_id) == id)
+        {
+            Some(school) => logo(&state.contest, school, &headers, true).await,
+            None => ApiError::not_found("organization_not_found").into_response(),
+        },
         Err(error) => error.into_response(),
     };
     no_store(response)
@@ -172,34 +193,27 @@ async fn candidate_schools(
 
 async fn logo(
     state: &ContestComponent,
-    schools: Vec<OrganizationDetails>,
-    id: &str,
+    school: OrganizationDetails,
     headers: &HeaderMap,
     private: bool,
 ) -> Response {
-    let Some(school) = schools
-        .into_iter()
-        .find(|school| format!("INST-{:03}", school.organization_id) == id)
-    else {
-        return no_store(ApiError::not_found("organization_not_found").into_response());
+    let conditions = if private {
+        Vec::new()
+    } else {
+        headers
+            .get_all(header::IF_NONE_MATCH)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .collect()
     };
-    match state.organization_logo(school).await {
-        Ok(image) => {
-            let etag = format!("\"{}\"", hex::encode(Sha256::digest(&image.bytes)));
-            let unchanged = !private
-                && headers
-                    .get_all(header::IF_NONE_MATCH)
-                    .iter()
-                    .filter_map(|value| value.to_str().ok())
-                    .flat_map(|value| value.split(','))
-                    .any(|value| {
-                        let value = value.trim();
-                        value == "*" || value.strip_prefix("W/").unwrap_or(value) == etag
-                    });
-            let mut response = if unchanged {
-                StatusCode::NOT_MODIFIED.into_response()
-            } else {
+    match state.organization_logo(school, conditions).await {
+        Ok(result) => {
+            let etag = result.etag;
+            let mut response = if let Some(image) = result.image {
                 ([(header::CONTENT_TYPE, image.content_type)], image.bytes).into_response()
+            } else {
+                StatusCode::NOT_MODIFIED.into_response()
             };
             if let Ok(value) = etag.parse() {
                 response.headers_mut().insert(header::ETAG, value);

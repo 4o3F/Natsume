@@ -1,4 +1,5 @@
 //! Authorized transport with tracked, bounded download producers.
+use crate::component::photo::limits::{IO_BUFFER_BYTES, OPERATION_TIMEOUT};
 use crate::{
     component::photo::PreparedDownload,
     http::{Routes, error::ApiError, middleware},
@@ -9,11 +10,12 @@ use axum::{
     Json,
     body::Body,
     extract::{Path, State, rejection::PathRejection},
-    http::{StatusCode, header},
+    http::header,
     response::{IntoResponse as _, Response},
     routing::{get, post},
 };
-use std::io::Read as _;
+use futures_util::StreamExt as _;
+use tokio_util::io::ReaderStream;
 
 pub(crate) fn routes() -> Routes<DeliverPhotoResults> {
     vec![
@@ -32,7 +34,7 @@ pub(crate) fn routes() -> Routes<DeliverPhotoResults> {
 async fn list(State(deliver): State<DeliverPhotoResults>) -> Response {
     match deliver.list().await {
         Ok(value) => Json(value).into_response(),
-        Err(error) => failure(error),
+        Err(error) => ApiError::from_photo_delivery(error).into_response(),
     }
 }
 async fn image(
@@ -44,7 +46,7 @@ async fn image(
     };
     match deliver.image(id).await {
         Ok((ready, admission)) => response(ready, admission, None),
-        Err(error) => failure(error),
+        Err(error) => ApiError::from_photo_delivery(error).into_response(),
     }
 }
 async fn export(State(deliver): State<DeliverPhotoResults>) -> Response {
@@ -54,7 +56,7 @@ async fn export(State(deliver): State<DeliverPhotoResults>) -> Response {
             admission,
             Some("attachment; filename=\"team-photos.zip\""),
         ),
-        Err(error) => failure(error),
+        Err(error) => ApiError::from_photo_delivery(error).into_response(),
     }
 }
 
@@ -65,19 +67,8 @@ async fn export_pyrite(State(deliver): State<DeliverPhotoResults>) -> Response {
             admission,
             Some("attachment; filename=\"pyrite-assets.zip\""),
         ),
-        Err(error) => failure(error),
+        Err(error) => ApiError::from_photo_delivery(error).into_response(),
     }
-}
-
-fn failure(error: crate::photo_delivery::Error) -> Response {
-    let mut response = ApiError::from_photo_delivery(error).into_response();
-    if response.status() == StatusCode::SERVICE_UNAVAILABLE {
-        response.headers_mut().insert(
-            header::RETRY_AFTER,
-            axum::http::HeaderValue::from_static("1"),
-        );
-    }
-    response
 }
 
 fn response(
@@ -85,20 +76,34 @@ fn response(
     admission: Admission,
     attachment: Option<&'static str>,
 ) -> Response {
-    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
     let length = ready.length;
     let content_type = ready.content_type;
-    let tracking = admission.clone();
-    // The tracked async task joins the real blocking reader; its closure owns
-    // the file, admission and permit until physical IO has finished.
-    drop(tracking.spawn(async move {
-        let result = tokio::task::spawn_blocking(move || pump(ready, &admission, &sender)).await;
-        if let Err(source) = result {
-            tracing::error!(error = %crate::task::TaskFailure::from(source), "Photo download worker failed");
+    let reader = ReaderStream::with_capacity(
+        DownloadFile {
+            file: Some(tokio::fs::File::from_std(ready.file)),
+            permit: Some(ready.permit),
+            admission: admission.clone(),
+        },
+        IO_BUFFER_BYTES,
+    );
+    let deadline = tokio::time::Instant::now() + OPERATION_TIMEOUT;
+    let stream = futures_util::stream::unfold(Some((reader, admission)), move |state| async move {
+        let (mut reader, admission) = state?;
+        let next = tokio::select! {
+            () = admission.stopping() => Some(Err(std::io::Error::new(std::io::ErrorKind::Interrupted,"Photo download stopped"))),
+            next = tokio::time::timeout_at(deadline,reader.next()) => match next {
+                Ok(next) => next,
+                Err(source) => Some(Err(std::io::Error::new(std::io::ErrorKind::TimedOut,source))),
+            },
+        };
+        match next {
+            Some(Ok(bytes)) => Some((Ok(bytes), Some((reader, admission)))),
+            Some(Err(error)) => {
+                tracing::warn!(%error,"Photo download interrupted");
+                Some((Err(error), None))
+            }
+            None => None,
         }
-    }));
-    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
-        receiver.recv().await.map(|chunk| (chunk, receiver))
     });
     let mut response = (
         [
@@ -121,40 +126,45 @@ fn response(
     response
 }
 
-fn pump(
-    ready: PreparedDownload,
-    admission: &Admission,
-    sender: &tokio::sync::mpsc::Sender<Result<Vec<u8>, std::io::Error>>,
-) {
-    let _permit = ready.permit;
-    let mut file = ready.file;
-    let runtime = tokio::runtime::Handle::current();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_mins(15);
-    loop {
-        if admission.is_stopping() || tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        let mut buffer = vec![0_u8; 64 * 1024];
-        let count = match file.read(&mut buffer) {
-            Ok(count) => count,
-            Err(error) => {
-                tracing::error!(%error, "Photo download failed");
-                break;
-            }
+// Keep the slot on the actual reader, rather than only on its response body.
+struct DownloadFile {
+    file: Option<tokio::fs::File>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    admission: Admission,
+}
+impl tokio::io::AsyncRead for DownloadFile {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let Some(file) = this.file.as_mut() else {
+            return std::task::Poll::Ready(Ok(()));
         };
-        if count == 0 {
-            return;
+        let before = buffer.filled().len();
+        let result = std::pin::Pin::new(file).poll_read(cx, buffer);
+        if result.is_ready()
+            && (matches!(&result, std::task::Poll::Ready(Err(_)))
+                || buffer.filled().len() == before)
+        {
+            // EOF/error means this file has no pending read; release immediately.
+            drop(this.permit.take());
         }
-        buffer.truncate(count);
-        let sent = runtime.block_on(async {
-            tokio::select! {
-                () = admission.stopping() => false,
-                result = tokio::time::timeout_at(deadline, sender.send(Ok(buffer))) => matches!(result, Ok(Ok(()))),
-            }
-        });
-        if !sent {
-            break;
+        result
+    }
+}
+impl Drop for DownloadFile {
+    fn drop(&mut self) {
+        if let (Some(file), Some(permit)) = (self.file.take(), self.permit.take()) {
+            let admission = self.admission.clone();
+            // An aborted body may leave a blocking Tokio read in flight. Wait
+            // for it in a tracked task before releasing either ownership token.
+            drop(self.admission.spawn(async move {
+                drop(file.into_std().await);
+                drop(permit);
+                drop(admission);
+            }));
         }
     }
-    let _sent = sender.try_send(Err(std::io::Error::other("Photo download interrupted")));
 }

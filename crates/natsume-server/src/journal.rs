@@ -427,14 +427,15 @@ impl Journal {
             })
             .is_err()
         {
-            let _ = self.stats.queue_depth.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |value| Some(value.saturating_sub(1)),
-            );
+            let _ =
+                self.stats
+                    .queue_depth
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                        Some(value.saturating_sub(1))
+                    });
             let _ = counters
                 .queued
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     Some(value.saturating_sub(1))
                 });
             self.stats.drop_events(&category, 1, occurred_at_ms);

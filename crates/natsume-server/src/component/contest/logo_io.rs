@@ -2,7 +2,7 @@ use snafu::Snafu;
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    fs::{self, File},
+    fs::{self, File, Metadata},
     io::{self, Cursor, Read, Seek},
     os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
@@ -29,6 +29,21 @@ pub(super) struct LogoFingerprint {
     length: u64,
     modified: (i64, i64),
     changed: (i64, i64),
+}
+
+impl LogoFingerprint {
+    // Both timestamps include nanoseconds where supported. Same-size in-place
+    // writes within the filesystem's mtime AND ctime granularity can be missed;
+    // atomic replacement changes inode identity even if timestamps are preserved.
+    pub(super) fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            length: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
 }
 
 /// An opened logo whose metadata and validation use the same file descriptor.
@@ -72,19 +87,27 @@ impl LogoFile {
             .file
             .metadata()
             .map_err(|source| LogoError::Read { source })?;
+        Self::checked_fingerprint(&metadata)
+    }
+
+    /// Stat the final entry without opening or reading image content.
+    pub(super) fn path_fingerprint(path: &Path) -> Result<LogoFingerprint, LogoError> {
+        let metadata = fs::symlink_metadata(path).map_err(|source| LogoError::Read { source })?;
+        Self::checked_fingerprint(&metadata)
+    }
+
+    fn checked_fingerprint(metadata: &Metadata) -> Result<LogoFingerprint, LogoError> {
         if !metadata.is_file() {
             return Err(LogoError::NotRegularFile);
         }
         if metadata.len() > MAX_LOGO_BYTES {
             return Err(LogoError::TooLarge);
         }
-        Ok(LogoFingerprint {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            length: metadata.len(),
-            modified: (metadata.mtime(), metadata.mtime_nsec()),
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        })
+        Ok(LogoFingerprint::from_metadata(metadata))
+    }
+
+    pub(super) fn http_image(&mut self) -> Result<LogoImage, LogoError> {
+        decode_logo(&mut self.file)?.into_http()
     }
 
     /// Fully validate this opened file with the normal content and image limits.

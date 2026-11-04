@@ -102,9 +102,9 @@ jobs:
       - name: Check Server-generated TypeScript bindings
         if: matrix.module == 'server'
         run: deno task api --check
-      - name: Install pinned Server schema tool
+      - name: Install Server schema tool
         if: matrix.module == 'server'
-        run: cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled
+        run: cargo install diesel_cli --locked --no-default-features --features sqlite-bundled
       - name: Check the Server Diesel schema
         if: matrix.module == 'server'
         run: deno task schema:check
@@ -119,7 +119,7 @@ jobs:
           VERSION: ${{ runner.os == 'Windows' && inputs.release_version || inputs.package_version }}
         run: deno task package ${{ matrix.module }} --output dist/packages/ci
       - name: Upload the module's verified package
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: package-${{ matrix.module }}-${{ runner.os }}-amd64
           path: dist/packages/ci/*
@@ -128,7 +128,7 @@ jobs:
 
   web:
     name: Web checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
@@ -154,7 +154,7 @@ jobs:
           CI: "true"
       - name: Upload Playwright diagnostics
         if: failure()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: playwright-diagnostics
           path: |

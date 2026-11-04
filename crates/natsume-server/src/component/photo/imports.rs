@@ -2,52 +2,42 @@
 use super::{PhotoComponent, db, results_storage};
 use crate::db::TransactionError;
 use snafu::{ResultExt as _, Snafu, ensure};
-use std::io::{Read as _, Write as _};
 use tokio::io::AsyncRead;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, serde::Serialize, specta::Type)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ImportState {
-    Uploading,
-    Processing,
-    Ready,
-    Committed,
-    Failed,
+string_enum! {
+    pub(crate) enum ResultImportState {
+        Uploading => "uploading", Processing => "processing", Ready => "ready",
+        Committed => "committed", Failed => "failed",
+    }
 }
 
 #[derive(serde::Serialize, specta::Type)]
-pub(crate) struct ImportJob {
+pub(crate) struct ResultImportJob {
     pub import_id: Uuid,
-    pub state: ImportState,
+    pub state: ResultImportState,
     #[specta(type = specta_typescript::Number)]
     pub uploaded_bytes: i64,
     #[specta(type = specta_typescript::Number)]
     pub verified_images: i64,
-    pub failure_code: Option<ImportFailure>,
+    pub failure_code: Option<ResultImportFailure>,
 }
 
-#[derive(serde::Serialize, specta::Type)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ImportFailure {
-    Limit,
-    Input,
-    Storage,
-    Archive,
-    Signature,
-    Authorization,
-    Image,
-    Conflict,
-    Interrupted,
+string_enum! {
+    pub(crate) enum ResultImportFailure {
+        Limit => "limit", Input => "input", Storage => "storage", Archive => "archive",
+        Signature => "signature", Authorization => "authorization", Image => "image",
+        Conflict => "conflict", Interrupted => "interrupted",
+    }
 }
 
 #[derive(Debug, Snafu)]
-pub(crate) enum ImportError {
+pub(crate) enum ResultImportError {
     #[snafu(display("Photo upload capacity is exhausted"))]
     Busy,
     #[snafu(display("Photo import does not exist"))]
     NotFound,
-    #[snafu(display("Photo upload is empty or exceeds its resource limit"))]
+    #[snafu(display("Photo upload exceeds its resource limit"))]
     Limit,
     #[snafu(display("Photo upload is empty"))]
     Empty,
@@ -68,17 +58,30 @@ pub(crate) enum ImportError {
     },
 }
 
+impl From<&ResultImportError> for ResultImportFailure {
+    fn from(error: &ResultImportError) -> Self {
+        match error {
+            ResultImportError::Limit => Self::Limit,
+            ResultImportError::Input { .. } | ResultImportError::Empty => Self::Input,
+            _ => Self::Storage,
+        }
+    }
+}
+
 impl PhotoComponent {
-    pub(crate) async fn read_import(&self, id: Uuid) -> Result<ImportJob, ImportError> {
+    pub(crate) async fn read_import(&self, id: Uuid) -> Result<ResultImportJob, ResultImportError> {
         self.database
-            .read(move |tx| db::imports::read(tx, id))
+            .read(move |tx| db::jobs::read(tx, id))
             .await
             .map_err(TransactionError::into_error)
             .context(PersistenceSnafu)?
             .ok_or_else(|| NotFoundSnafu.build())
     }
 
-    pub(crate) async fn upload_results<R>(&self, input: R) -> Result<ImportJob, ImportError>
+    pub(crate) async fn upload_results<R>(
+        &self,
+        input: R,
+    ) -> Result<ResultImportJob, ResultImportError>
     where
         R: AsyncRead + Unpin + Send + 'static,
     {
@@ -86,10 +89,10 @@ impl PhotoComponent {
         let admitted = self
             .database
             .write(move |tx| {
-                if db::imports::active_count(tx)? != 0 {
+                if db::jobs::active_count(tx)? != 0 {
                     return Ok::<_, db::PersistenceError>(false);
                 }
-                db::imports::begin(tx, id)?;
+                db::jobs::begin_upload(tx, id)?;
                 Ok(true)
             })
             .await
@@ -109,29 +112,23 @@ impl PhotoComponent {
                 files.directory.sync_all().context(IoSnafu)?;
                 let mut input =
                     tokio_util::io::SyncIoBridge::new_with_handle(input, runtime.clone());
-                let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-                loop {
-                    let read = input.read(&mut buffer).context(InputSnafu)?;
-                    if read == 0 {
-                        break;
-                    }
-                    total = total
-                        .checked_add(u64::try_from(read).map_err(|_| LimitSnafu.build())?)
-                        .ok_or_else(|| LimitSnafu.build())?;
-                    ensure!(
-                        total <= natsume_photo_protocol::results::PACKAGE_LIMIT,
-                        LimitSnafu
-                    );
-                    files.file.write_all(&buffer[..read]).context(IoSnafu)?;
-                }
+                super::transfer::copy_verified(
+                    &mut input,
+                    &mut files.file,
+                    super::transfer::Expectation::Upload {
+                        limit: natsume_photo_protocol::results::PACKAGE_LIMIT,
+                    },
+                    &mut total,
+                    || true,
+                )?;
                 ensure!(total != 0, EmptySnafu);
                 files.file.sync_all().context(IoSnafu)?;
                 files.directory.sync_all().context(IoSnafu)?;
                 runtime
-                    .block_on(database.write(move |tx| db::imports::finish(tx, id, total, None)))
+                    .block_on(database.write(move |tx| db::jobs::finish_upload(tx, id, total)))
                     .map_err(TransactionError::into_error)
                     .context(PersistenceSnafu)?;
-                Ok::<_, ImportError>(())
+                Ok::<_, ResultImportError>(())
             })();
             if let Err(error) = result {
                 // Only unlink a name exclusively created by this admitted operation.
@@ -140,17 +137,13 @@ impl PhotoComponent {
                     // Leave the durable uploading fact to block further admission.
                     return Err(error);
                 }
-                let failure = match error {
-                    ImportError::Limit => "limit",
-                    ImportError::Input { .. } | ImportError::Empty => "input",
-                    _ => "storage",
-                };
+                let failure = ResultImportFailure::from(&error);
                 if let Err(persistence) = runtime.block_on(database.write(move |tx| {
-                    db::imports::finish(
+                    db::jobs::mark_failed(
                         tx,
                         id,
-                        total.min(natsume_photo_protocol::results::PACKAGE_LIMIT),
-                        Some(failure),
+                        failure,
+                        Some(total.min(natsume_photo_protocol::results::PACKAGE_LIMIT)),
                     )
                 })) {
                     let persistence = persistence.into_error();
@@ -164,5 +157,22 @@ impl PhotoComponent {
         .context(WorkerSnafu)??;
         self.validation_wake.notify_one();
         self.read_import(id).await
+    }
+}
+
+impl From<super::transfer::TransferError> for ResultImportError {
+    fn from(error: super::transfer::TransferError) -> Self {
+        use super::transfer::TransferError as Error;
+        match error {
+            Error::Read { source } => Self::Input { source },
+            Error::Write { source } => Self::Io { source },
+            Error::Limit | Error::Integrity => Self::Limit,
+            Error::Interrupted => Self::Input {
+                source: std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "Photo upload interrupted",
+                ),
+            },
+        }
     }
 }

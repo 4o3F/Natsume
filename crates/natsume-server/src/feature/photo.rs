@@ -25,23 +25,25 @@ impl PhotoFeature {
         contest: Arc<ContestComponent>,
         lifecycle: crate::lifecycle::ServerLifecycle,
     ) -> Result<Self, PhotoStorageError> {
-        let acceptance_database = database.clone();
-        let photo = tokio::task::spawn_blocking(move || {
-            PhotoComponent::load(database, &directory, &results_directory)
-        })
-        .await
-        .map_err(|source| PhotoStorageError::Worker {
-            source: source.into(),
-        })??;
+        let photo = {
+            let database = database.clone();
+            tokio::task::spawn_blocking(move || {
+                PhotoComponent::load(database, &directory, &results_directory)
+            })
+            .await
+            .map_err(|source| PhotoStorageError::Worker {
+                source: source.into(),
+            })??
+        };
         let photo = Arc::new(photo);
         Ok(Self {
             delivery: crate::photo_delivery::DeliverPhotoResults::new(
-                acceptance_database.clone(),
+                database.clone(),
                 photo.clone(),
                 contest.clone(),
                 lifecycle,
             ),
-            acceptance: crate::photo_acceptance::AcceptPhotoResults::new(acceptance_database),
+            acceptance: crate::photo_acceptance::AcceptPhotoResults::new(database),
             initialization: PreparePhotoInitialization::new(photo, contest),
         })
     }

@@ -1,8 +1,8 @@
 import type {
-  EventPage,
-  JournalHealth,
-  JournalRecord,
-  OperatorDisplayName,
+  EventPage_Serialize as EventPage,
+  JournalHealth_Serialize as JournalHealth,
+  JournalRecord_Serialize as JournalRecord,
+  OperatorDisplayName_Serialize as OperatorDisplayName,
 } from "../api/generated/types";
 
 /** Head polling cadence for the live event list. */

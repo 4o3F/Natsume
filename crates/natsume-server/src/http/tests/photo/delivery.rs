@@ -89,7 +89,7 @@ async fn activate(
         .await?,
     )?;
     let entry = &preview["entries"][index];
-    value(call(f,cookie,Method::POST,&format!("{id}/decisions"),json!({"submission_id":entry["submission_id"],"expected_submission_revision":entry["submission_revision"],"decision":{"action":"activate","account_id":target,"expected_current":expected}})).await?)
+    value(call(f,cookie,Method::POST,&format!("{id}/decisions"),json!({"submission_id":entry["submission_id"],"expected_submission_revision":entry["submission_revision"],"action":{"action":"activate","account_id":target,"expected_current":expected}})).await?)
 }
 fn expected(current: &Value) -> Value {
     json!({"source_id":current["source_id"],"submission_id":current["submission_id"]})
@@ -151,7 +151,7 @@ async fn stale_target_identity_cannot_replace_a_newly_approved_photo() -> TestRe
     let third = ready(&f, &cookie, &c, &bytes).await?;
     commit(&f, &cookie, third).await?;
     activate(&f, &cookie, second, 0, "account-a", old.clone()).await?;
-    let request = json!({"submission_id":c.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-a","expected_current":old}});
+    let request = json!({"submission_id":c.manifest.results[0].submission_id,"expected_submission_revision":1,"action":{"action":"activate","account_id":"account-a","expected_current":old}});
     assert_eq!(
         call(
             &f,
@@ -215,7 +215,10 @@ async fn recreated_team_does_not_inherit_old_photo_even_with_the_same_username()
             .status,
         StatusCode::NOT_FOUND
     );
-    assert!(archive(export(&f, &cookie).await?.body)?.is_empty());
+    assert_eq!(
+        archive(export(&f, &cookie).await?.body)?,
+        [] as [(String, Vec<u8>); 0]
+    );
     let associated = activate(&f, &cookie, id, 0, "account-rebuilt", Value::Null).await?;
     assert_eq!(associated["entries"][0]["account_id"], "account-a");
     assert_eq!(
@@ -557,7 +560,7 @@ async fn rejecting_an_invalid_assignment_preserves_other_submissions() -> TestRe
                 .map_err(PersistenceError::from)
         })
         .await?;
-    let request = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"reject"}});
+    let request = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"action":{"action":"reject"}});
     let rejected = value(
         call(
             &f,
@@ -569,7 +572,10 @@ async fn rejecting_an_invalid_assignment_preserves_other_submissions() -> TestRe
         .await?,
     )?;
     assert_eq!(rejected["entries"][0]["state"], "rejected");
-    assert!(archive(export(&f, &cookie).await?.body)?.is_empty());
+    assert_eq!(
+        archive(export(&f, &cookie).await?.body)?,
+        [] as [(String, Vec<u8>); 0]
+    );
     let (new, image) = different(&signed, 33)?;
     let new_id = ready(&f, &cookie, &new, &image).await?;
     assert_eq!(

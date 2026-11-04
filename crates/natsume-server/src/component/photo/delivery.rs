@@ -5,14 +5,8 @@ use natsume_photo_protocol::{
     Sha256Digest, SourceId,
     results::{PACKAGE_LIMIT, PhotoFormat, RESULT_IMAGES_LIMIT, SubmissionId},
 };
-use sha2::{Digest as _, Sha256};
 use snafu::{ResultExt as _, Snafu, ensure};
-use std::{
-    collections::BTreeSet,
-    fs::File,
-    io::{Read as _, Seek as _},
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeSet, fs::File, io::Seek as _, time::Instant};
 use tokio::sync::OwnedSemaphorePermit;
 
 mod pyrite;
@@ -92,7 +86,7 @@ impl PhotoComponent {
         tx: &mut Transaction<'_>,
         roster: &PhotoRoster,
     ) -> Result<Vec<PhotoRecord>> {
-        db::delivery::read(tx, None, roster, None).context(PersistenceSnafu)
+        db::delivery::current_photos(tx, roster, None).context(PersistenceSnafu)
     }
 
     pub(crate) fn photo_in(
@@ -100,10 +94,12 @@ impl PhotoComponent {
         id: &str,
         roster: &PhotoRoster,
     ) -> Result<PhotoRecord> {
-        ensure!(!id.is_empty() && id.len() <= 512, InvalidSnafu);
-        db::delivery::read(tx, Some(id), roster, Some(1))
+        ensure!(
+            !id.is_empty() && id.len() <= super::limits::ACCOUNT_ID_BYTES,
+            InvalidSnafu
+        );
+        db::delivery::current_photo(tx, roster, id)
             .context(PersistenceSnafu)?
-            .pop()
             .ok_or_else(|| NotFoundSnafu.build())
     }
 
@@ -111,9 +107,8 @@ impl PhotoComponent {
         tx: &mut Transaction<'_>,
         roster: &PhotoRoster,
     ) -> Result<Vec<PhotoRecord>> {
-        let entries = db::delivery::read(
+        let entries = db::delivery::current_photos(
             tx,
-            None,
             roster,
             Some(
                 i64::try_from(natsume_photo_protocol::TEAM_LIMIT)
@@ -130,7 +125,7 @@ impl PhotoComponent {
     }
 
     pub(crate) fn reserve_export(&self) -> Result<OwnedSemaphorePermit> {
-        self.export_work
+        self.export_slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| BusySnafu.build())
@@ -144,7 +139,7 @@ impl PhotoComponent {
     ) -> Result<PreparedDownload> {
         let store = self.results.clone();
         tokio::task::spawn_blocking(move || {
-            let deadline = Instant::now() + Duration::from_mins(15);
+            let deadline = Instant::now() + super::limits::OPERATION_TIMEOUT;
             let mut names = BTreeSet::new();
             let mut total = 0_u64;
             let mut inputs = Vec::with_capacity(entries.len());
@@ -163,28 +158,10 @@ impl PhotoComponent {
             let mut writer = zip::ZipWriter::new(BoundedFile(file));
             for (entry, name, mut source) in inputs {
                 check(&admission, deadline)?;
-                writer
-                    .start_file(
-                        name,
-                        zip::write::SimpleFileOptions::default()
-                            .compression_method(zip::CompressionMethod::Stored)
-                            .large_file(true),
-                    )
-                    .context(ZipSnafu)?;
+                start_entry(&mut writer, &name, &admission, deadline)?;
                 copy(&mut source, &mut writer, &entry, &admission, deadline)?;
             }
-            let mut file = writer.finish().context(ZipSnafu)?.0;
-            file.sync_all().context(IoSnafu)?;
-            let length = file.metadata().context(IoSnafu)?.len();
-            ensure!(length <= PACKAGE_LIMIT, LimitSnafu);
-            file.rewind().context(IoSnafu)?;
-            check(&admission, deadline)?;
-            Ok(PreparedDownload {
-                file,
-                length,
-                content_type: "application/zip",
-                permit,
-            })
+            finish_export(writer, permit, &admission, deadline)
         })
         .await
         .context(WorkerSnafu)?
@@ -196,7 +173,7 @@ impl PhotoComponent {
         admission: Admission,
     ) -> Result<PreparedDownload> {
         let permit = self
-            .result_download_work
+            .photo_download_slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| BusySnafu.build())?;
@@ -208,7 +185,7 @@ impl PhotoComponent {
                 &mut std::io::sink(),
                 &entry,
                 &admission,
-                Instant::now() + Duration::from_mins(15),
+                Instant::now() + super::limits::OPERATION_TIMEOUT,
             )?;
             file.rewind().context(IoSnafu)?;
             let content_type = match entry.image_format {
@@ -246,24 +223,30 @@ fn copy(
         source.metadata().context(IoSnafu)?.len() == entry.image_bytes,
         IntegritySnafu
     );
-    let mut remaining = entry.image_bytes;
-    let mut buffer = vec![0_u8; 64 * 1024];
-    let mut hash = Sha256::new();
-    while remaining != 0 {
-        check(admission, deadline)?;
-        let capacity = usize::try_from(remaining.min(64 * 1024)).map_err(|_| LimitSnafu.build())?;
-        let count = source.read(&mut buffer[..capacity]).context(IoSnafu)?;
-        ensure!(count != 0, IntegritySnafu);
-        remaining -= u64::try_from(count).map_err(|_| LimitSnafu.build())?;
-        hash.update(&buffer[..count]);
-        target.write_all(&buffer[..count]).context(IoSnafu)?;
-    }
-    ensure!(
-        hex::encode(hash.finalize()) == entry.image_sha256.as_str()
-            && source.metadata().context(IoSnafu)?.len() == entry.image_bytes,
-        IntegritySnafu
-    );
+    let mut copied = 0;
+    super::transfer::copy_verified(
+        source,
+        target,
+        super::transfer::Expectation::Image {
+            bytes: entry.image_bytes,
+            sha256: &entry.image_sha256,
+        },
+        &mut copied,
+        || !admission.is_stopping() && Instant::now() < deadline,
+    )?;
     Ok(())
+}
+
+impl From<super::transfer::TransferError> for DeliveryError {
+    fn from(error: super::transfer::TransferError) -> Self {
+        use super::transfer::TransferError as Error;
+        match error {
+            Error::Read { source } | Error::Write { source } => Self::Io { source },
+            Error::Limit => Self::Limit,
+            Error::Integrity => Self::Integrity,
+            Error::Interrupted => Self::Interrupted,
+        }
+    }
 }
 
 fn export_name(entry: &PhotoRecord) -> Result<String> {
@@ -329,4 +312,40 @@ impl std::io::Seek for BoundedFile {
     fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
         self.0.seek(position)
     }
+}
+
+fn start_entry(
+    writer: &mut zip::ZipWriter<BoundedFile>,
+    name: &str,
+    admission: &Admission,
+    deadline: Instant,
+) -> Result<()> {
+    check(admission, deadline)?;
+    writer
+        .start_file(
+            name,
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored)
+                .large_file(true),
+        )
+        .context(ZipSnafu)
+}
+
+fn finish_export(
+    writer: zip::ZipWriter<BoundedFile>,
+    permit: OwnedSemaphorePermit,
+    admission: &Admission,
+    deadline: Instant,
+) -> Result<PreparedDownload> {
+    let mut file = writer.finish().context(ZipSnafu)?.0;
+    file.sync_all().context(IoSnafu)?;
+    let length = file.metadata().context(IoSnafu)?.len();
+    file.rewind().context(IoSnafu)?;
+    check(admission, deadline)?;
+    Ok(PreparedDownload {
+        file,
+        length,
+        content_type: "application/zip",
+        permit,
+    })
 }

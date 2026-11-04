@@ -773,7 +773,7 @@ async fn summaries_bound_payload_reads_to_connection_kinds_and_the_count_window(
             .iter()
             .filter(|query| query.contains("SELECT") && query.contains("`details`"))
             .collect::<Vec<_>>();
-        assert!(!payload_reads.is_empty());
+        assert_ne!(payload_reads, [] as [&String; 0]);
         assert!(
             payload_reads
                 .iter()

@@ -6,6 +6,7 @@ use natsume_photo_protocol::{
     results::{ResultId, SignedResults, SubmissionId, TeamResult},
 };
 use snafu::{OptionExt as _, ResultExt as _, Snafu, ensure};
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 #[derive(Debug, Snafu)]
@@ -19,13 +20,9 @@ pub(crate) enum AcceptanceError {
     #[snafu(display("Photo acceptance persistence failed"))]
     Persistence { source: db::PersistenceError },
     #[snafu(display("Photo acceptance authorization failed"))]
-    Validation { source: validation::ValidationError },
+    Authorization { source: validation::ValidationError },
     #[snafu(display("Photo saved manifest is invalid"))]
     Json { source: serde_json::Error },
-    #[snafu(display("Photo saved manifest fingerprint failed"))]
-    Fingerprint {
-        source: natsume_photo_protocol::results::ResultError,
-    },
     #[snafu(display("Photo saved manifest is inconsistent"))]
     Corrupt,
 }
@@ -38,24 +35,10 @@ impl From<crate::db::PersistenceError> for AcceptanceError {
 }
 type Result<T> = std::result::Result<T, AcceptanceError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SubmissionState {
-    Active,
-    PendingReview,
-    NeedsAssociation,
-    Rejected,
-    Superseded,
-}
-impl SubmissionState {
-    pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::PendingReview => "pending_review",
-            Self::NeedsAssociation => "needs_association",
-            Self::Rejected => "rejected",
-            Self::Superseded => "superseded",
-        }
+string_enum! {
+    pub(crate) enum SubmissionState {
+        Active => "active", PendingReview => "pending_review", NeedsAssociation => "needs_association",
+        Rejected => "rejected", Superseded => "superseded",
     }
 }
 
@@ -70,7 +53,18 @@ pub(super) struct SavedResult {
     pub revision: i64,
 }
 
-#[derive(serde::Serialize, specta::Type)]
+impl SavedResult {
+    fn effective_state(&self, roster: &PhotoRoster) -> SubmissionState {
+        effective_state(
+            self.state,
+            &self.account_id,
+            self.assigned_account_id.as_deref(),
+            roster,
+        )
+    }
+}
+
+#[derive(Clone, serde::Serialize, specta::Type)]
 pub(crate) struct CurrentPhoto {
     pub source_id: SourceId,
     pub submission_id: SubmissionId,
@@ -92,7 +86,7 @@ pub(crate) struct PhotoPreviewEntry {
     pub active_account_id: Option<String>,
 }
 #[derive(serde::Serialize, specta::Type)]
-pub(crate) struct ImportPreview {
+pub(crate) struct ResultImportPreview {
     pub import_id: Uuid,
     pub committed: bool,
     pub entries: Vec<PhotoPreviewEntry>,
@@ -141,7 +135,7 @@ pub(crate) struct ExpectedPhoto {
 #[derive(serde::Deserialize, specta::Type)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum PhotoAction {
-    Reject {},
+    Reject,
     Activate {
         account_id: String,
         expected_current: Option<ExpectedPhoto>,
@@ -153,15 +147,18 @@ pub(crate) struct PhotoDecision {
     pub submission_id: SubmissionId,
     #[specta(type = specta_typescript::Number)]
     pub expected_submission_revision: i64,
-    pub decision: PhotoAction,
+    pub action: PhotoAction,
 }
 
-fn package(tx: &mut Transaction<'_>, id: Uuid) -> Result<(bool, SignedResults)> {
-    let (state, json, hash) = db::acceptance::package(tx, id)
+fn load_verified_manifest(tx: &mut Transaction<'_>, id: Uuid) -> Result<(bool, SignedResults)> {
+    let (state, json) = db::jobs::load_manifest(tx, id)
         .context(PersistenceSnafu)?
         .context(NotFoundSnafu)?;
     ensure!(
-        matches!(state.as_str(), "ready" | "committed"),
+        matches!(
+            state,
+            super::imports::ResultImportState::Ready | super::imports::ResultImportState::Committed
+        ),
         ConflictSnafu
     );
     let json = json.context(CorruptSnafu)?;
@@ -169,41 +166,70 @@ fn package(tx: &mut Transaction<'_>, id: Uuid) -> Result<(bool, SignedResults)> 
         json.len() <= natsume_photo_protocol::MANIFEST_LIMIT,
         CorruptSnafu
     );
-    let signed: SignedResults = serde_json::from_str(&json).context(JsonSnafu)?;
-    ensure!(
-        hash.as_deref()
-            == Some(
-                Sha256Digest::of(&signed.manifest.signing_bytes().context(FingerprintSnafu)?)
-                    .as_str()
-            ),
-        CorruptSnafu
-    );
-    validation::trusted(tx, &signed).context(ValidationSnafu)?;
-    Ok((state == "committed", signed))
+    let signed = serde_json::from_str(&json).context(JsonSnafu)?;
+    Ok((
+        state == super::imports::ResultImportState::Committed,
+        signed,
+    ))
 }
 
-fn existing(
-    tx: &mut Transaction<'_>,
-    signed: &SignedResults,
-    image: &TeamResult,
-) -> Result<Option<SavedResult>> {
-    let rows = db::acceptance::matching(tx, signed, image).context(PersistenceSnafu)?;
-    ensure!(rows.len() <= 1, ConflictSnafu);
-    let row = rows.into_iter().next();
-    if let Some(row) = &row {
-        ensure!(
-            row.submission_id == image.submission_id
-                && row.result_id == image.result_id
-                && row.account_id == image.account_id
-                && row.account == image.account
-                && row.image_sha256 == image.image_sha256,
-            ConflictSnafu
-        );
+// One pair of bulk queries per review snapshot, independent of team count.
+struct ReviewFacts {
+    saved: HashMap<SubmissionId, SavedResult>,
+    results: HashMap<ResultId, SubmissionId>,
+    current: HashMap<String, CurrentPhoto>,
+}
+impl ReviewFacts {
+    fn load(tx: &mut Transaction<'_>, signed: &SignedResults) -> Result<Self> {
+        let saved = db::acceptance::saved_submissions(tx, signed).context(PersistenceSnafu)?;
+        let targets: BTreeSet<_> = signed
+            .manifest
+            .results
+            .iter()
+            .map(|image| image.account_id.as_str())
+            .chain(
+                saved
+                    .iter()
+                    .filter_map(|row| row.assigned_account_id.as_deref()),
+            )
+            .collect();
+        let current = db::acceptance::current_assignments(tx, targets.into_iter().collect())
+            .context(PersistenceSnafu)?;
+        let results = saved
+            .iter()
+            .map(|row| (row.result_id.clone(), row.submission_id.clone()))
+            .collect();
+        Ok(Self {
+            saved: saved
+                .into_iter()
+                .map(|row| (row.submission_id.clone(), row))
+                .collect(),
+            results,
+            current,
+        })
     }
-    Ok(row)
+
+    // New/uncommitted input must not reuse either signed identity with other content.
+    fn find_saved_submission(&self, image: &TeamResult) -> Result<Option<&SavedResult>> {
+        let by_result = self.results.get(&image.result_id);
+        if let Some(id) = by_result {
+            ensure!(id == &image.submission_id, ConflictSnafu);
+        }
+        let row = self.saved.get(&image.submission_id);
+        if let Some(row) = row {
+            ensure!(
+                row.result_id == image.result_id
+                    && row.account_id == image.account_id
+                    && row.account == image.account
+                    && row.image_sha256 == image.image_sha256,
+                ConflictSnafu
+            );
+        }
+        Ok(row)
+    }
 }
 
-fn proposed(
+fn initial_state(
     image: &TeamResult,
     roster: &PhotoRoster,
     current: Option<&CurrentPhoto>,
@@ -221,7 +247,7 @@ fn proposed(
     }
 }
 
-fn projected(
+fn effective_state(
     state: SubmissionState,
     original: &str,
     assigned: Option<&str>,
@@ -270,7 +296,7 @@ impl PhotoComponent {
             None
         };
         for entry in &mut entries {
-            entry.state = projected(
+            entry.state = effective_state(
                 entry.state,
                 &entry.account_id,
                 entry.assigned_account_id.as_deref(),
@@ -284,8 +310,8 @@ impl PhotoComponent {
         tx: &mut Transaction<'_>,
         id: Uuid,
         roster: &PhotoRoster,
-    ) -> Result<ImportPreview> {
-        let (committed, signed) = package(tx, id)?;
+    ) -> Result<ResultImportPreview> {
+        let (committed, signed) = load_verified_manifest(tx, id)?;
         preview(tx, id, committed, &signed, roster)
     }
 
@@ -293,23 +319,24 @@ impl PhotoComponent {
         tx: &mut Transaction<'_>,
         id: Uuid,
         roster: &PhotoRoster,
-    ) -> Result<ImportPreview> {
-        let (committed, signed) = package(tx, id)?;
+    ) -> Result<ResultImportPreview> {
+        let (committed, signed) = load_verified_manifest(tx, id)?;
+        validation::verify_source_authorization(tx, &signed).context(AuthorizationSnafu)?;
         if !committed {
+            let facts = ReviewFacts::load(tx, &signed)?;
             for image in &signed.manifest.results {
-                if existing(tx, &signed, image)?.is_some() {
+                if facts.find_saved_submission(image)?.is_some() {
                     continue;
                 }
-                let current =
-                    db::acceptance::current(tx, &image.account_id).context(PersistenceSnafu)?;
-                let state = proposed(image, roster, current.as_ref());
+                let current = facts.current.get(&image.account_id);
+                let state = initial_state(image, roster, current);
                 let assigned = roster
                     .contains(&image.account_id)
                     .then_some(image.account_id.as_str());
                 db::acceptance::insert(tx, id, &signed, image, state, assigned)
                     .context(PersistenceSnafu)?;
             }
-            db::acceptance::committed(tx, id).context(PersistenceSnafu)?;
+            db::jobs::mark_committed(tx, id).context(PersistenceSnafu)?;
         }
         preview(tx, id, true, &signed, roster)
     }
@@ -321,31 +348,31 @@ fn preview(
     committed: bool,
     signed: &SignedResults,
     roster: &PhotoRoster,
-) -> Result<ImportPreview> {
+) -> Result<ResultImportPreview> {
+    let facts = ReviewFacts::load(tx, signed)?;
     let mut entries = Vec::with_capacity(signed.manifest.results.len());
     for image in &signed.manifest.results {
-        let saved = existing(tx, signed, image)?;
+        let saved = if committed {
+            facts.saved.get(&image.submission_id)
+        } else {
+            facts.find_saved_submission(image)?
+        };
         ensure!(!committed || saved.is_some(), CorruptSnafu);
         let target = saved
             .as_ref()
             .and_then(|saved| saved.assigned_account_id.as_deref())
             .unwrap_or(&image.account_id);
-        let current = db::acceptance::current(tx, target).context(PersistenceSnafu)?;
+        let current = facts.current.get(target).cloned();
         let (state, submission_revision, active_account_id) = if let Some(saved) = saved {
-            let state = projected(
-                saved.state,
-                &saved.account_id,
-                saved.assigned_account_id.as_deref(),
-                roster,
-            );
+            let state = saved.effective_state(roster);
             let assigned = if state == SubmissionState::Active {
-                saved.assigned_account_id
+                saved.assigned_account_id.clone()
             } else {
                 None
             };
             (state, saved.revision, assigned)
         } else {
-            (proposed(image, roster, current.as_ref()), 0, None)
+            (initial_state(image, roster, current.as_ref()), 0, None)
         };
         entries.push(PhotoPreviewEntry {
             submission_id: image.submission_id.clone(),
@@ -359,7 +386,7 @@ fn preview(
             active_account_id,
         });
     }
-    Ok(ImportPreview {
+    Ok(ResultImportPreview {
         import_id: id,
         committed,
         entries,
@@ -372,9 +399,10 @@ impl PhotoComponent {
         id: Uuid,
         decision: PhotoDecision,
         roster: &PhotoRoster,
-    ) -> Result<ImportPreview> {
+    ) -> Result<ResultImportPreview> {
         ensure!(decision.expected_submission_revision > 0, InvalidSnafu);
-        let (committed, signed) = package(tx, id)?;
+        let (committed, signed) = load_verified_manifest(tx, id)?;
+        validation::verify_source_authorization(tx, &signed).context(AuthorizationSnafu)?;
         ensure!(committed, ConflictSnafu);
         let image = signed
             .manifest
@@ -382,23 +410,22 @@ impl PhotoComponent {
             .iter()
             .find(|image| image.submission_id == decision.submission_id)
             .context(NotFoundSnafu)?;
-        let saved = existing(tx, &signed, image)?.context(CorruptSnafu)?;
+        let facts = ReviewFacts::load(tx, &signed)?;
+        let saved = facts
+            .saved
+            .get(&image.submission_id)
+            .context(CorruptSnafu)?;
         ensure!(
             saved.revision == decision.expected_submission_revision
                 && matches!(
-                    projected(
-                        saved.state,
-                        &saved.account_id,
-                        saved.assigned_account_id.as_deref(),
-                        roster
-                    ),
+                    saved.effective_state(roster),
                     SubmissionState::PendingReview | SubmissionState::NeedsAssociation
                 ),
             ConflictSnafu
         );
         let source = &signed.manifest.context.source_id;
-        match decision.decision {
-            PhotoAction::Reject {} => db::acceptance::transition(
+        match decision.action {
+            PhotoAction::Reject => db::acceptance::transition(
                 tx,
                 source,
                 &saved.submission_id,

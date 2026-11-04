@@ -4,7 +4,7 @@ import { createApiClient } from "./client";
 import { ApiError, unwrap } from "./errors";
 import type {
   DeviceUpdateRequest,
-  PrintQueueEntry,
+  PrintQueueEntry_Serialize as PrintQueueEntry,
   TargetSubmissionBody,
 } from "./generated/types";
 

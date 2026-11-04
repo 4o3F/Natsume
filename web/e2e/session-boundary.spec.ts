@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import type {
-  ImportPendingSummary,
-  ImportPreviewResponse,
+  ImportPendingSummary_Serialize as ImportPendingSummary,
+  ImportPreviewResponse_Serialize as ImportPreviewResponse,
 } from "../src/api/generated/types";
 
 const admin = {

@@ -755,7 +755,7 @@ async fn photo_acceptance_routes_keep_admin_authority_and_audit_mutations_withou
     ] {
         let path = format!("/api/v2/photo/imports/{id}/{action}");
         let body = serde_json::to_string(
-            &json!({"submission_id": natsume_photo_protocol::results::SubmissionId::generate(), "expected_submission_revision":1,"decision":{"action":"reject"}}),
+            &json!({"submission_id": natsume_photo_protocol::results::SubmissionId::generate(), "expected_submission_revision":1,"action":{"action":"reject"}}),
         )?;
         for (cookie, status) in [
             (None, StatusCode::UNAUTHORIZED),
@@ -782,7 +782,7 @@ async fn photo_acceptance_routes_keep_admin_authority_and_audit_mutations_withou
             }
         }
     }
-    let body = r#"{"submission_id":"private-photo-decision-canary","expected_submission_revision":1,"decision":{"action":"reject"}}"#;
+    let body = r#"{"submission_id":"private-photo-decision-canary","expected_submission_revision":1,"action":{"action":"reject"}}"#;
     let response = f
         .request(
             Method::POST,

@@ -146,7 +146,7 @@ impl ApiError {
             } => Self::invalid_request("photo_decision"),
             Error::Photo {
                 source:
-                    AcceptanceError::Validation {
+                    AcceptanceError::Authorization {
                         source: ValidationError::Authorization | ValidationError::Signature { .. },
                     },
             } => Self::authorization_denied("photo_acceptance_source"),
@@ -157,7 +157,7 @@ impl ApiError {
             }
             Error::Photo {
                 source:
-                    AcceptanceError::Validation {
+                    AcceptanceError::Authorization {
                         source: ValidationError::Persistence { ref source },
                     },
             } if source.is_transient() => {
@@ -172,21 +172,21 @@ impl ApiError {
         }
     }
 
-    pub(super) fn from_photo_import(error: crate::component::photo::ImportError) -> Self {
-        use crate::component::photo::ImportError;
+    pub(super) fn from_photo_import(error: crate::component::photo::ResultImportError) -> Self {
+        use crate::component::photo::ResultImportError;
         match error {
-            ImportError::Busy => Self::unavailable("photo_upload_busy"),
-            ImportError::NotFound => Self::not_found("photo_import_not_found"),
-            ImportError::Limit => Self::new(
+            ResultImportError::Busy => Self::unavailable("photo_upload_busy"),
+            ResultImportError::NotFound => Self::not_found("photo_import_not_found"),
+            ResultImportError::Limit => Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Payload Too Large",
                 ApiErrorCode::PayloadTooLarge,
                 "photo_upload_limit",
             ),
-            ImportError::Input { .. } | ImportError::Empty => {
+            ResultImportError::Input { .. } | ResultImportError::Empty => {
                 Self::invalid_request("photo_upload_input")
             }
-            ImportError::Persistence { ref source } if source.is_transient() => {
+            ResultImportError::Persistence { ref source } if source.is_transient() => {
                 Self::unavailable("photo_upload_database_busy").report_from(error)
             }
             error => Self::internal_error_from(error, "photo_upload_failed"),

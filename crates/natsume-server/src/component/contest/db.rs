@@ -1,4 +1,6 @@
-use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigInt};
+use diesel::{
+    ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigInt,
+};
 
 use crate::{
     component::{
@@ -168,6 +170,37 @@ pub(in crate::component::contest) fn list_bindings(
             })
         })
         .collect()
+}
+
+pub(super) fn find_organization(
+    transaction: &mut Transaction<'_>,
+    id: i64,
+) -> Result<Option<super::OrganizationDetails>, PersistenceError> {
+    use crate::diesel_schema::{organizations, teams};
+    organizations::table
+        .filter(organizations::organization_id.eq(id))
+        .filter(diesel::dsl::exists(teams::table.filter(
+            teams::organization_id.eq(organizations::organization_id),
+        )))
+        .select((
+            organizations::organization_id,
+            organizations::name_zh,
+            organizations::name_en,
+            organizations::country,
+        ))
+        .first::<(i64, String, String, String)>(transaction.connection())
+        .optional()
+        .map(|row| {
+            row.map(
+                |(organization_id, name_zh, name_en, country)| super::OrganizationDetails {
+                    organization_id,
+                    name_zh,
+                    name_en,
+                    country,
+                },
+            )
+        })
+        .map_err(PersistenceError::from)
 }
 
 pub(super) fn list_organizations(

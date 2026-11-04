@@ -1,0 +1,6 @@
+devices = 600
+ramp = "60s"
+duration = "10m"
+operators = 5
+poll_interval = "10s"
+session_interval = "30s"

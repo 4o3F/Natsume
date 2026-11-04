@@ -14,6 +14,15 @@ use natsume_photo_protocol::{
 use std::{error::Error as _, io::Cursor};
 use zip::CompressionMethod;
 
+#[test]
+fn result_decision_accepts_the_reject_action_contract() -> TestResult {
+    let _: crate::component::photo::PhotoDecision = serde_json::from_value(json!({
+        "submission_id":SubmissionId::generate(), "expected_submission_revision":1,
+        "action":{"action":"reject"}
+    }))?;
+    Ok(())
+}
+
 pub(super) async fn call(
     f: &Fixture,
     cookie: &str,
@@ -173,7 +182,7 @@ async fn retake_requires_revision_checked_replacement_and_rejection_keeps_curren
         initial["entries"][0]["current"]
     );
     let team = &retake.manifest.results[0];
-    let mut request = json!({"submission_id": team.submission_id, "expected_submission_revision":1,"decision":{"action":"activate", "account_id":team.account_id,"expected_current":null}});
+    let mut request = json!({"submission_id": team.submission_id, "expected_submission_revision":1,"action":{"action":"activate", "account_id":team.account_id,"expected_current":null}});
     assert_eq!(
         call(
             &f,
@@ -187,7 +196,7 @@ async fn retake_requires_revision_checked_replacement_and_rejection_keeps_curren
         StatusCode::CONFLICT
     );
     let old = &initial["entries"][0]["current"];
-    request["decision"]["expected_current"] =
+    request["action"]["expected_current"] =
         json!({"source_id":old["source_id"],"submission_id":old["submission_id"]});
     let updated = value(
         call(
@@ -227,7 +236,7 @@ async fn retake_requires_revision_checked_replacement_and_rejection_keeps_curren
     let (third, image) = different(&signed, 130)?;
     let third_id = ready(&f, &cookie, &third, &image).await?;
     commit(&f, &cookie, third_id).await?;
-    let rejected = value(call(&f, &cookie, Method::POST, &format!("{third_id}/decisions"), json!({"submission_id":third.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"reject"}})).await?)?;
+    let rejected = value(call(&f, &cookie, Method::POST, &format!("{third_id}/decisions"), json!({"submission_id":third.manifest.results[0].submission_id,"expected_submission_revision":1,"action":{"action":"reject"}})).await?)?;
     assert_eq!(rejected["entries"][0]["state"], "rejected");
     assert_eq!(
         rejected["entries"][0]["current"],
@@ -255,7 +264,7 @@ async fn removed_roster_identity_requires_explicit_association_and_preserves_ori
         .await?;
     let pending = commit(&f, &cookie, id).await?;
     assert_eq!(pending["entries"][0]["state"], "needs_association");
-    let request = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-b","expected_current":null}});
+    let request = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"action":{"action":"activate","account_id":"account-b","expected_current":null}});
     let associated = value(
         call(
             &f,
@@ -285,6 +294,18 @@ async fn revoked_sources_and_reused_identities_cannot_change_current_photos() ->
         .component()
         .set_state(source.clone(), SourceState::Disabled)
         .await?;
+    assert_eq!(
+        call(
+            &f,
+            &cookie,
+            Method::GET,
+            &format!("{id}/preview"),
+            Value::Null
+        )
+        .await?
+        .status,
+        StatusCode::OK
+    );
     assert_eq!(
         call(
             &f,
@@ -331,6 +352,70 @@ async fn revoked_sources_and_reused_identities_cannot_change_current_photos() ->
         .await?
         .status,
         StatusCode::CONFLICT
+    );
+    assert_eq!(
+        value(
+            call(
+                &f,
+                &cookie,
+                Method::GET,
+                &format!("{id}/preview"),
+                Value::Null
+            )
+            .await?
+        )?,
+        accepted
+    );
+    running.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_sources_allow_preview_but_not_decisions() -> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let (mut f, cookie) = admin().await?;
+    let (signed, image) = fixture_package(&f).await?;
+    let running = background(&mut f).await?;
+    let id = ready(&f, &cookie, &signed, &image).await?;
+    let accepted = commit(&f, &cookie, id).await?;
+    let (retake, image) = different(&signed, 175)?;
+    let retake_id = ready(&f, &cookie, &retake, &image).await?;
+    let pending = commit(&f, &cookie, retake_id).await?;
+    f.photo
+        .component()
+        .set_state(
+            signed.manifest.context.source_id.clone(),
+            SourceState::Revoked,
+        )
+        .await?;
+    assert_eq!(
+        value(
+            call(
+                &f,
+                &cookie,
+                Method::GET,
+                &format!("{retake_id}/preview"),
+                Value::Null
+            )
+            .await?
+        )?,
+        pending
+    );
+    assert_eq!(
+        call(
+            &f,
+            &cookie,
+            Method::POST,
+            &format!("{retake_id}/decisions"),
+            json!({
+                "submission_id":retake.manifest.results[0].submission_id,
+                "expected_submission_revision":1,
+                "action":{"action":"reject"}
+            })
+        )
+        .await?
+        .status,
+        StatusCode::FORBIDDEN
     );
     assert_eq!(
         value(
@@ -525,7 +610,7 @@ async fn pending_list_is_bounded_and_resumes_by_stable_identity_after_a_decision
     assert_eq!(page1["entries"].as_array().map(Vec::len), Some(1));
     assert!(!page1["next"].is_null());
     let entry = &page1["entries"][0];
-    value(call(&f, &cookie, Method::POST, &format!("{id}/decisions"), json!({"submission_id":entry["submission_id"],"expected_submission_revision":entry["revision"],"decision":{"action":"reject"}})).await?)?;
+    value(call(&f, &cookie, Method::POST, &format!("{id}/decisions"), json!({"submission_id":entry["submission_id"],"expected_submission_revision":entry["revision"],"action":{"action":"reject"}})).await?)?;
     let source = page1["next"]["after_source_id"]
         .as_str()
         .ok_or(TestError::missing("source cursor"))?;
@@ -581,7 +666,7 @@ async fn mixed_package_accepts_valid_team_and_explicit_reassociation_can_target_
     assert_eq!(accepted["entries"][0]["state"], "needs_association");
     assert_eq!(accepted["entries"][1]["state"], "active");
     let current = &accepted["entries"][1]["current"];
-    let decision = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-b","expected_current":{"source_id":current["source_id"],"submission_id":current["submission_id"]}}});
+    let decision = json!({"submission_id":signed.manifest.results[0].submission_id,"expected_submission_revision":1,"action":{"action":"activate","account_id":"account-b","expected_current":{"source_id":current["source_id"],"submission_id":current["submission_id"]}}});
     let replaced = value(
         call(
             &f,
@@ -661,12 +746,12 @@ async fn acceptance_routes_require_admin_and_canonical_ids_and_closed_decision_b
         .status,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(call(&f, &cookie, Method::POST, &format!("{id}/decisions"), json!({"submission_id":"x","expected_submission_revision":1,"decision":{"action":"reject","unexpected":true}})).await?.status, StatusCode::BAD_REQUEST);
+    assert_eq!(call(&f, &cookie, Method::POST, &format!("{id}/decisions"), json!({"submission_id":"x","expected_submission_revision":1,"action":{"action":"reject","unexpected":true}})).await?.status, StatusCode::BAD_REQUEST);
     let submission = SubmissionId::generate();
     for body in [
-        json!({"submission_id":"invalid", "expected_submission_revision":1,"decision":{"action":"reject"}}),
-        json!({"submission_id":"550e8400-e29b-41d4-a716-446655440000", "expected_submission_revision":1,"decision":{"action":"reject"}}),
-        json!({"submission_id":submission, "expected_submission_revision":1,"decision":{"action":"activate","account_id":"account-a","expected_current":{"source_id":"invalid","submission_id":submission}}}),
+        json!({"submission_id":"invalid", "expected_submission_revision":1,"action":{"action":"reject"}}),
+        json!({"submission_id":"550e8400-e29b-41d4-a716-446655440000", "expected_submission_revision":1,"action":{"action":"reject"}}),
+        json!({"submission_id":submission, "expected_submission_revision":1,"action":{"action":"activate","account_id":"account-a","expected_current":{"source_id":"invalid","submission_id":submission}}}),
     ] {
         let response = call(&f, &cookie, Method::POST, &format!("{id}/decisions"), body).await?;
         assert_eq!(response.status, StatusCode::BAD_REQUEST);
@@ -725,7 +810,7 @@ async fn upload_and_startup_worker_errors_do_not_include_panic_payload() -> Test
         .err()
         .ok_or_else(|| TestError::missing("panic join error"))?;
     let source = crate::task::TaskFailure::from(source);
-    let upload = crate::component::photo::ImportError::Worker { source };
+    let upload = crate::component::photo::ResultImportError::Worker { source };
     let startup = crate::component::photo::PhotoStorageError::Worker { source };
     for report in [
         snafu::Report::from_error(upload).to_string(),

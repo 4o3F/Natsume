@@ -195,7 +195,13 @@ async fn bad_signature_extra_paths_corrupt_images_and_manifest_reuse_do_not_publ
     damaged.results[0].image_bytes = 33;
     damaged.results[0].image_sha256 = Sha256Digest::of(truncated);
     let damaged = damaged.sign(&ed25519_dalek::SigningKey::from_bytes(&[17; 32]))?;
+    let mut invalid_signature = signed.clone();
+    invalid_signature.signature = "00".repeat(64).try_into()?;
     let cases = [
+        (
+            package(&invalid_signature, &image, CompressionMethod::Stored, None)?,
+            "signature",
+        ),
         (
             package(
                 &foreign.sign(&key)?,
@@ -203,7 +209,7 @@ async fn bad_signature_extra_paths_corrupt_images_and_manifest_reuse_do_not_publ
                 CompressionMethod::Stored,
                 None,
             )?,
-            "signature",
+            "authorization",
         ),
         (
             package(

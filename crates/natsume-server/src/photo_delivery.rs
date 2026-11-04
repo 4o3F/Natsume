@@ -4,7 +4,7 @@ use crate::{
         contest::{ContestComponent, ContestError},
         photo::{DeliveryError, PhotoComponent, PhotoRecord, PhotoRoster, PreparedDownload},
     },
-    db::{Database, TransactionError},
+    db::{Database, Transaction, TransactionError},
     lifecycle::{Admission, ServerLifecycle},
 };
 use snafu::{OptionExt as _, ResultExt as _, Snafu};
@@ -50,9 +50,7 @@ impl DeliverPhotoResults {
     pub(crate) async fn list(&self) -> Result<Vec<PhotoRecord>, Error> {
         self.database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx)
-                    .context(RosterSnafu)?
-                    .into();
+                let roster = load_roster(tx)?;
                 PhotoComponent::photos_in(tx, &roster).context(PhotoSnafu)
             })
             .await
@@ -63,9 +61,7 @@ impl DeliverPhotoResults {
         let record = self
             .database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx)
-                    .context(RosterSnafu)?
-                    .into();
+                let roster = load_roster(tx)?;
                 PhotoComponent::photo_in(tx, &id, &roster).context(PhotoSnafu)
             })
             .await
@@ -83,9 +79,7 @@ impl DeliverPhotoResults {
         let snapshot = self
             .database
             .read(move |tx| {
-                let roster = ContestComponent::photo_roster_in(tx)
-                    .context(RosterSnafu)?
-                    .into();
+                let roster = load_roster(tx)?;
                 PhotoComponent::export_snapshot_in(tx, &roster).context(PhotoSnafu)
             })
             .await
@@ -123,4 +117,10 @@ impl DeliverPhotoResults {
             .context(PhotoSnafu)?;
         Ok((ready, admission))
     }
+}
+
+fn load_roster(tx: &mut Transaction<'_>) -> Result<PhotoRoster, Error> {
+    ContestComponent::photo_roster_in(tx)
+        .context(RosterSnafu)
+        .map(PhotoRoster::from)
 }

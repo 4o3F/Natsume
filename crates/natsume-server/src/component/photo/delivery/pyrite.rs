@@ -11,13 +11,13 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 const CONFIG: &[u8] = b"[presentation]\nlogo_extension = \"png\"\nteam_photo_extension = \"jpg\"\n";
 
 #[derive(serde::Serialize)]
-struct Roster {
+struct PyriteRoster {
     format_version: u8,
-    teams: Vec<RosterEntry>,
+    teams: Vec<PyriteRosterEntry>,
 }
 
 #[derive(serde::Serialize)]
-struct RosterEntry {
+struct PyriteRosterEntry {
     id: String,
     organization_id: String,
     school_name_zh: String,
@@ -40,7 +40,7 @@ impl PhotoComponent {
         let store = self.results.clone();
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
-            let deadline = started + Duration::from_mins(15);
+            let deadline = started + super::super::limits::OPERATION_TIMEOUT;
             let photo_count = entries.len();
             let mut writer =
                 ZipWriter::new(BoundedFile(store.export_file().context(StorageSnafu)?));
@@ -50,71 +50,45 @@ impl PhotoComponent {
                     .add_directory(directory, SimpleFileOptions::default())
                     .context(ZipSnafu)?;
             }
-            let mut roster =
-                write_photos(&mut writer, &store, teams, entries, &admission, deadline)?;
-            let photos_time = started.elapsed();
-            let logos_started = Instant::now();
+            let mut roster = build_roster_with_photos(
+                &mut writer,
+                &store,
+                teams,
+                entries,
+                &admission,
+                deadline,
+            )?;
+
             let logo_count = write_logos(&mut writer, &mut roster, &logos, &admission, deadline)?;
             drop(logos);
-            let logos_time = logos_started.elapsed();
-            let finish_started = Instant::now();
-            start(&mut writer, "config.toml", &admission, deadline)?;
+
+            start_entry(&mut writer, "config.toml", &admission, deadline)?;
             writer.write_all(CONFIG).context(IoSnafu)?;
-            start(&mut writer, "roster.json", &admission, deadline)?;
+            start_entry(&mut writer, "roster.json", &admission, deadline)?;
             serde_json::to_writer(&mut writer, &roster).context(JsonSnafu)?;
-            let mut file = writer.finish().context(ZipSnafu)?.0;
-            file.sync_all().context(IoSnafu)?;
-            let length = file.metadata().context(IoSnafu)?.len();
-            ensure!(length <= PACKAGE_LIMIT, LimitSnafu);
-            file.rewind().context(IoSnafu)?;
-            check(&admission, deadline)?;
+            let ready = finish_export(writer, permit, &admission, deadline)?;
             tracing::info!(
                 photo_count,
                 logo_count,
-                bytes = length,
-                photos_ms = photos_time.as_secs_f64() * 1000.0,
-                logos_ms = logos_time.as_secs_f64() * 1000.0,
-                finish_ms = finish_started.elapsed().as_secs_f64() * 1000.0,
+                bytes = ready.length,
                 total_ms = started.elapsed().as_secs_f64() * 1000.0,
                 "Pyrite export prepared"
             );
-            Ok(PreparedDownload {
-                file,
-                length,
-                content_type: "application/zip",
-                permit,
-            })
+            Ok(ready)
         })
         .await
         .context(WorkerSnafu)?
     }
 }
 
-fn start(
-    writer: &mut ZipWriter<BoundedFile>,
-    path: &str,
-    admission: &Admission,
-    deadline: Instant,
-) -> Result<()> {
-    check(admission, deadline)?;
-    writer
-        .start_file(
-            path,
-            SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored)
-                .large_file(true),
-        )
-        .context(ZipSnafu)
-}
-
-fn write_photos(
+fn build_roster_with_photos(
     writer: &mut ZipWriter<BoundedFile>,
     store: &results_storage::ResultsStore,
     teams: Vec<PhotoTeam>,
     entries: Vec<PhotoRecord>,
     admission: &Admission,
     deadline: Instant,
-) -> Result<Roster> {
+) -> Result<PyriteRoster> {
     ensure!(
         teams.len() <= natsume_photo_protocol::TEAM_LIMIT,
         LimitSnafu
@@ -129,7 +103,7 @@ fn write_photos(
             .ok_or_else(|| LimitSnafu.build())
     })?;
     ensure!(total <= RESULT_IMAGES_LIMIT, LimitSnafu);
-    let mut roster = Roster {
+    let mut roster = PyriteRoster {
         format_version: 1,
         teams: Vec::with_capacity(teams.len()),
     };
@@ -141,7 +115,7 @@ fn write_photos(
         let photo_path = if let Some(entry) = entries.remove(&team.account_id) {
             let path = format!("teams/{name}");
             let mut file = store.open_object(&entry).context(StorageSnafu)?;
-            start(writer, &path, admission, deadline)?;
+            start_entry(writer, &path, admission, deadline)?;
             match entry.image_format {
                 PhotoFormat::Jpeg => copy(&mut file, writer, &entry, admission, deadline)?,
                 PhotoFormat::Png => {
@@ -153,7 +127,7 @@ fn write_photos(
         } else {
             None
         };
-        roster.teams.push(RosterEntry {
+        roster.teams.push(PyriteRosterEntry {
             id: team.account,
             organization_id: format!("INST-{:03}", team.organization_id),
             school_name_zh: team.school_name_zh,
@@ -170,7 +144,7 @@ fn write_photos(
 
 fn write_logos(
     writer: &mut ZipWriter<BoundedFile>,
-    roster: &mut Roster,
+    roster: &mut PyriteRoster,
     logos: &PhotoLogos,
     admission: &Admission,
     deadline: Instant,
@@ -189,7 +163,7 @@ fn write_logos(
     for (id, (zh, en)) in schools {
         check(admission, deadline)?;
         if let Some(bytes) = logos.png(zh, en).context(LogoSnafu)? {
-            start(
+            start_entry(
                 writer,
                 &format!("affiliations/{id}.png"),
                 admission,
@@ -211,13 +185,13 @@ fn encode_jpeg(file: &mut File, writer: &mut impl std::io::Write) -> Result<()> 
     file.rewind().context(IoSnafu)?;
     let mut reader = ImageReader::with_format(BufReader::new(file), image::ImageFormat::Png);
     let mut limits = Limits::default();
-    limits.max_alloc = Some(320 * 1024 * 1024);
+    limits.max_alloc = Some(crate::component::photo::limits::IMAGE_DECODE_BYTES);
     reader.limits(limits);
     let decoder = reader.into_decoder().context(ImageSnafu)?;
     let (width, height) = decoder.dimensions();
     ensure!(
         u64::from(width) * u64::from(height) <= natsume_photo_protocol::results::RESULT_PIXEL_LIMIT
-            && decoder.total_bytes() <= 320 * 1024 * 1024,
+            && decoder.total_bytes() <= crate::component::photo::limits::IMAGE_DECODE_BYTES,
         LimitSnafu
     );
     let rgba = image::DynamicImage::from_decoder(decoder)

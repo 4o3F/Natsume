@@ -74,6 +74,7 @@ impl ContestComponent {
         })?
     }
 
+    /// Read Photo facts inside the caller's transaction, without starting another one.
     pub(crate) fn photo_roster_in(
         tx: &mut crate::db::Transaction<'_>,
     ) -> Result<Vec<PhotoTeam>, ContestError> {

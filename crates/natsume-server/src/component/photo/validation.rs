@@ -2,7 +2,7 @@
 mod archive;
 mod directory;
 mod worker;
-pub(super) use worker::trusted;
+pub(super) use worker::verify_source_authorization;
 
 use super::{db, results_storage};
 use snafu::Snafu;
@@ -66,3 +66,41 @@ impl From<crate::db::PersistenceError> for ValidationError {
 }
 
 type Result<T> = std::result::Result<T, ValidationError>;
+
+impl ValidationError {
+    fn failure_code(&self) -> Option<super::imports::ResultImportFailure> {
+        use super::imports::ResultImportFailure as Code;
+        Some(match self {
+            Self::Archive | Self::Zip { .. } | Self::Json { .. } => Code::Archive,
+            Self::Io { source }
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::InvalidData
+                        | std::io::ErrorKind::InvalidInput
+                ) =>
+            {
+                Code::Archive
+            }
+            Self::Signature { .. } => Code::Signature,
+            Self::Authorization => Code::Authorization,
+            Self::Integrity | Self::Image { .. } | Self::Allocation { .. } => Code::Image,
+            Self::Conflict => Code::Conflict,
+            Self::Storage {
+                source: results_storage::ResultsStorageError::Io { source },
+            } if source.kind() == std::io::ErrorKind::NotFound => Code::Storage,
+            _ => return None,
+        })
+    }
+}
+
+impl From<super::transfer::TransferError> for ValidationError {
+    fn from(error: super::transfer::TransferError) -> Self {
+        use super::transfer::TransferError as Error;
+        match error {
+            Error::Read { source } | Error::Write { source } => Self::Io { source },
+            Error::Limit | Error::Integrity => Self::Integrity,
+            Error::Interrupted => Self::Interrupted,
+        }
+    }
+}

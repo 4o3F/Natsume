@@ -9,13 +9,12 @@ use natsume_photo_protocol::{
     MANIFEST_LIMIT,
     results::{PACKAGE_LIMIT, RESULT_PIXEL_LIMIT, SignedResults, TeamResult, ZIP_METADATA_LIMIT},
 };
-use sha2::{Digest as _, Sha256};
 use snafu::{OptionExt as _, ResultExt as _, ensure};
 use std::{
     cell::Cell,
     collections::BTreeMap,
     fs::File,
-    io::{self, BufReader, Read as _, Seek as _, Write as _},
+    io::{self, BufReader, Read as _, Seek as _},
     rc::Rc,
 };
 use tokio_util::sync::CancellationToken;
@@ -52,7 +51,7 @@ impl io::Read for MetadataReader {
             .len()
             .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
         let count = self.file.read(&mut buffer[..capacity])?;
-        self.remaining -= u64::try_from(count).map_err(io::Error::other)?;
+        self.remaining -= count as u64;
         Ok(count)
     }
 }
@@ -70,8 +69,8 @@ impl Package {
         let reader = MetadataReader {
             file,
             parsing: parsing.clone(),
-            remaining: u64::try_from(ZIP_METADATA_LIMIT * 2 + 131_114)
-                .map_err(|_| ArchiveSnafu.build())?,
+            remaining: (ZIP_METADATA_LIMIT as u64) * 2
+                + super::super::limits::ZIP_EOCD_SCAN_BYTES * 2,
         };
         let mut zip = ZipArchive::new(reader).context(ZipSnafu)?;
         parsing.set(false);
@@ -121,9 +120,7 @@ impl Package {
                 .context(ArchiveSnafu)?;
             unpacked = unpacked.checked_add(entry.size()).context(ArchiveSnafu)?;
             ensure!(
-                metadata_bytes
-                    <= u64::try_from(ZIP_METADATA_LIMIT).map_err(|_| ArchiveSnafu.build())?
-                    && unpacked <= PACKAGE_LIMIT,
+                metadata_bytes <= (ZIP_METADATA_LIMIT as u64) && unpacked <= PACKAGE_LIMIT,
                 ArchiveSnafu
             );
             let name = entry.name().context(ZipSnafu)?.into_owned();
@@ -136,21 +133,15 @@ impl Package {
                 ZipReadOptions::new().enforce_header_consistency(true),
             )
             .context(ZipSnafu)?;
-        ensure!(
-            entry.size() <= u64::try_from(MANIFEST_LIMIT).map_err(|_| ArchiveSnafu.build())?,
-            ArchiveSnafu
-        );
+        ensure!(entry.size() <= (MANIFEST_LIMIT as u64), ArchiveSnafu);
         let expected = entry.size();
         let mut raw = Vec::new();
         entry
             .by_ref()
-            .take(u64::try_from(MANIFEST_LIMIT).map_err(|_| ArchiveSnafu.build())? + 1)
+            .take((MANIFEST_LIMIT as u64) + 1)
             .read_to_end(&mut raw)
             .context(IoSnafu)?;
-        ensure!(
-            u64::try_from(raw.len()).map_err(|_| ArchiveSnafu.build())? == expected,
-            ArchiveSnafu
-        );
+        ensure!(raw.len() as u64 == expected, ArchiveSnafu);
         let signed = std::sync::Arc::new(serde_json::from_slice(&raw).context(JsonSnafu)?);
         drop(entry);
         Ok(Self { zip, names, signed })
@@ -187,27 +178,17 @@ impl Package {
                 .context(ZipSnafu)?;
             ensure!(source.size() == expected.image_bytes, IntegritySnafu);
             let mut target = stage.create(expected).context(StorageSnafu)?;
-            let mut total = 0_u64;
-            let mut digest = Sha256::new();
-            let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-            loop {
-                ensure!(!stop.is_cancelled(), InterruptedSnafu);
-                let count = source.read(&mut buffer).context(IoSnafu)?;
-                if count == 0 {
-                    break;
-                }
-                total = total
-                    .checked_add(u64::try_from(count).map_err(|_| ArchiveSnafu.build())?)
-                    .context(ArchiveSnafu)?;
-                ensure!(total <= expected.image_bytes, IntegritySnafu);
-                digest.update(&buffer[..count]);
-                target.write_all(&buffer[..count]).context(IoSnafu)?;
-            }
-            ensure!(
-                total == expected.image_bytes
-                    && hex::encode(digest.finalize()) == expected.image_sha256.as_str(),
-                IntegritySnafu
-            );
+            let mut total = 0;
+            super::super::transfer::copy_verified(
+                &mut source,
+                &mut target,
+                super::super::transfer::Expectation::Image {
+                    bytes: expected.image_bytes,
+                    sha256: &expected.image_sha256,
+                },
+                &mut total,
+                || !stop.is_cancelled(),
+            )?;
             target.sync_all().context(IoSnafu)?;
             decode(&mut target, expected)?;
         }
@@ -226,13 +207,13 @@ fn decode(file: &mut File, expected: &TeamResult) -> Result<()> {
     };
     ensure!(reader.format() == Some(format), IntegritySnafu);
     let mut limits = Limits::default();
-    limits.max_alloc = Some(320 * 1024 * 1024);
+    limits.max_alloc = Some(crate::component::photo::limits::IMAGE_DECODE_BYTES);
     reader.limits(limits);
     let decoder = reader.into_decoder().context(ImageSnafu)?;
     ensure!(
         decoder.dimensions() == (expected.width, expected.height)
             && u64::from(expected.width) * u64::from(expected.height) <= RESULT_PIXEL_LIMIT
-            && decoder.total_bytes() <= 320 * 1024 * 1024,
+            && decoder.total_bytes() <= crate::component::photo::limits::IMAGE_DECODE_BYTES,
         IntegritySnafu
     );
     let count = usize::try_from(decoder.total_bytes()).map_err(|_| IntegritySnafu.build())?;

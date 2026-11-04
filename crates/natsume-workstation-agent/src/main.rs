@@ -13,7 +13,6 @@ fn main() -> std::process::ExitCode {
 }
 
 #[cfg(target_os = "linux")]
-#[path = "."]
 mod application {
     use std::{
         env,
@@ -630,7 +629,7 @@ mod application {
             assert_eq!(offline.logo_path, previous.logo_path);
             assert!(offline.negotiation_id.is_none());
             assert!(offline.submission_epoch.is_none());
-            assert!(offline.agent_lease_id.is_empty());
+            assert_eq!(offline.agent_lease_id, "");
             assert_eq!(offline.ui_revision, 0);
         }
 

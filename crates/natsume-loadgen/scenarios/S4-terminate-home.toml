@@ -1,0 +1,9 @@
+devices = 600
+ramp = "60s"
+duration = "5m"
+[[events]]
+at = "120s"
+action = "terminate"
+[[events]]
+at = "180s"
+action = "reset_home"

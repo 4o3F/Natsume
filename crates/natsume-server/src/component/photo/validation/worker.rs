@@ -4,7 +4,7 @@ use super::{
     ValidationError, WorkerSnafu, archive::Package,
 };
 use crate::{
-    component::photo::{PhotoComponent, SourceState, db},
+    component::photo::{PhotoComponent, db},
     db::TransactionError,
 };
 use natsume_photo_protocol::{
@@ -30,7 +30,7 @@ impl PhotoComponent {
             .context(StorageSnafu)?;
         let interrupted = self
             .database
-            .read(db::validation::uploading)
+            .read(db::jobs::interrupted_uploads)
             .await
             .map_err(TransactionError::into_error)
             .context(PersistenceSnafu)?;
@@ -41,10 +41,14 @@ impl PhotoComponent {
                 let _lease = ownership;
                 this.discard_upload(id)?;
                 tokio::runtime::Handle::current()
-                    .block_on(
-                        this.database
-                            .write(move |tx| db::validation::fail(tx, id, "interrupted")),
-                    )
+                    .block_on(this.database.write(move |tx| {
+                        db::jobs::mark_failed(
+                            tx,
+                            id,
+                            super::super::imports::ResultImportFailure::Interrupted,
+                            None,
+                        )
+                    }))
                     .map_err(TransactionError::into_error)
                     .context(PersistenceSnafu)
             })
@@ -58,7 +62,7 @@ impl PhotoComponent {
             }
             let pending = self
                 .database
-                .read(db::validation::pending)
+                .read(db::jobs::next_processing)
                 .await
                 .map_err(TransactionError::into_error)
                 .context(PersistenceSnafu)?;
@@ -68,7 +72,7 @@ impl PhotoComponent {
                 let ownership = lease.clone();
                 tokio::task::spawn_blocking(move || {
                     let _lease = ownership;
-                    this.process(id, bytes, &owned_stop)
+                    this.validate_and_record(id, bytes, &owned_stop)
                 })
                 .await
                 .context(WorkerSnafu)??;
@@ -93,43 +97,21 @@ impl PhotoComponent {
         }
     }
 
-    fn process(&self, id: Uuid, bytes: u64, stop: &CancellationToken) -> Result<()> {
+    fn validate_and_record(&self, id: Uuid, bytes: u64, stop: &CancellationToken) -> Result<()> {
         let result = self.validate(id, bytes, stop);
         if matches!(result, Err(ValidationError::Interrupted)) {
             return Ok(());
         }
         if let Err(error) = result {
-            let code = match &error {
-                ValidationError::Archive
-                | ValidationError::Zip { .. }
-                | ValidationError::Json { .. } => "archive",
-                ValidationError::Io { source }
-                    if matches!(
-                        source.kind(),
-                        std::io::ErrorKind::UnexpectedEof
-                            | std::io::ErrorKind::InvalidData
-                            | std::io::ErrorKind::InvalidInput
-                    ) =>
-                {
-                    "archive"
-                }
-                ValidationError::Signature { .. } => "signature",
-                ValidationError::Storage {
-                    source: super::super::results_storage::ResultsStorageError::Io { source },
-                } if source.kind() == std::io::ErrorKind::NotFound => "storage",
-                ValidationError::Authorization => "authorization",
-                ValidationError::Integrity
-                | ValidationError::Image { .. }
-                | ValidationError::Allocation { .. } => "image",
-                ValidationError::Conflict => "conflict",
-                _ => return Err(error),
+            let Some(code) = error.failure_code() else {
+                return Err(error);
             };
             tracing::warn!(%id, %error, "Photo result package rejected");
             self.discard_upload(id)?;
             tokio::runtime::Handle::current()
                 .block_on(
                     self.database
-                        .write(move |tx| db::validation::fail(tx, id, code)),
+                        .write(move |tx| db::jobs::mark_failed(tx, id, code, None)),
                 )
                 .map_err(TransactionError::into_error)
                 .context(PersistenceSnafu)?;
@@ -147,7 +129,10 @@ impl PhotoComponent {
         let runtime = tokio::runtime::Handle::current();
         let authorization = signed.clone();
         runtime
-            .block_on(self.database.read(move |tx| trusted(tx, &authorization)))
+            .block_on(
+                self.database
+                    .read(move |tx| verify_package_signature(tx, &authorization)),
+            )
             .map_err(TransactionError::into_error)?;
         let mut stage = self.results.stage().context(StorageSnafu)?;
         let verification = package.images(&mut stage, stop);
@@ -176,41 +161,27 @@ impl PhotoComponent {
         );
         runtime
             .block_on(self.database.write(move |tx| {
-                trusted(tx, &signed)?;
+                verify_source_authorization(tx, &signed)?;
                 ensure!(
-                    !db::validation::manifest_conflicts(tx, &signed, &hash)
-                        .context(PersistenceSnafu)?,
+                    !db::jobs::manifest_conflicts(tx, &signed, &hash).context(PersistenceSnafu)?,
                     ConflictSnafu
                 );
-                db::validation::ready(tx, id, &signed, &json, &hash, images.len())
+                db::jobs::mark_ready(tx, id, &signed, &json, &hash, images.len())
                     .context(PersistenceSnafu)
             }))
             .map_err(TransactionError::into_error)
     }
 }
 
-pub(in crate::component::photo) fn trusted(
+fn verify_package_signature(
     tx: &mut crate::db::Transaction<'_>,
     signed: &SignedResults,
 ) -> Result<()> {
     let context = &signed.manifest.context;
-    let source = db::source(tx, &context.source_id)
-        .context(PersistenceSnafu)?
-        .context(AuthorizationSnafu)?;
-    ensure!(
-        source.state == SourceState::Enabled && source.confirmed,
-        AuthorizationSnafu
-    );
-    let key = source.public_key.context(AuthorizationSnafu)?;
+    verify_source_authorization(tx, signed)?;
     let snapshot = db::initialization(tx, &context.source_id)
         .context(PersistenceSnafu)?
         .context(AuthorizationSnafu)?;
-    ensure!(
-        snapshot.completed_at.is_some()
-            && snapshot.id == context.initialization_id
-            && snapshot.hash == context.initialization_sha256,
-        AuthorizationSnafu
-    );
     ensure!(
         Sha256Digest::of(snapshot.json.as_bytes()) == snapshot.hash,
         CorruptSnafu
@@ -226,7 +197,9 @@ pub(in crate::component::photo) fn trusted(
         initialization_id: snapshot.id,
         initialization_sha256: snapshot.hash,
     };
-    signed.verify(&expected, &key).context(SignatureSnafu)?;
+    signed
+        .verify(&expected, &signed.manifest.signing_public_key)
+        .context(SignatureSnafu)?;
     let teams: BTreeMap<_, _> = initialization
         .teams
         .into_iter()
@@ -238,6 +211,17 @@ pub(in crate::component::photo) fn trusted(
             .results
             .iter()
             .all(|result| teams.get(&result.account_id) == Some(&result.account)),
+        AuthorizationSnafu
+    );
+    Ok(())
+}
+
+pub(in crate::component::photo) fn verify_source_authorization(
+    tx: &mut crate::db::Transaction<'_>,
+    signed: &SignedResults,
+) -> Result<()> {
+    ensure!(
+        db::result_source_authorized(tx, signed).context(PersistenceSnafu)?,
         AuthorizationSnafu
     );
     Ok(())

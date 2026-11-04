@@ -35,7 +35,10 @@ fn print_migrations_create_and_remove_all_print_tables_together() {
         must(sql::<BigInt>(print_tables).get_result::<i64>(&mut connection)),
         7
     );
-    assert!(must(connection.run_pending_migrations(must(migrations()))).is_empty());
+    assert_eq!(
+        must(connection.run_pending_migrations(must(migrations()))),
+        [] as [diesel::migration::MigrationVersion<'_>; 0]
+    );
     // Remove later migrations before the two Print migrations.
     while must(connection.applied_migrations())
         .iter()

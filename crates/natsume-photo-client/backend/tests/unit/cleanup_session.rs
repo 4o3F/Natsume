@@ -37,7 +37,7 @@ async fn finishing_a_new_team_does_not_open_or_hash_an_unrelated_teams_final() -
         .context(HotFolderSnafu)?;
     let report = folder.finish_group(group).await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
-    assert!(report.pending_paths.is_empty());
+    assert_eq!(report.pending_paths, [] as [std::path::PathBuf; 0]);
     drop(writing);
     assert_eq!(
         fixture
@@ -54,6 +54,7 @@ async fn finishing_a_new_team_does_not_open_or_hash_an_unrelated_teams_final() -
 
 #[tokio::test]
 async fn pending_ingestion_blocks_retirement_until_the_confirmed_group_drains() -> Result {
+    use image::ImageEncoder as _;
     use std::os::windows::fs::OpenOptionsExt as _;
     let fixture = fixture().await?;
     let (folder, group) = prepare_team(&fixture).await?;
@@ -63,13 +64,16 @@ async fn pending_ingestion_blocks_retirement_until_the_confirmed_group_drains() 
         .confirm_photo(confirm)
         .await
         .context(HotFolderSnafu)?;
-    let late = fixture.hot.join("late.png");
-    write_timed_png(&late, b"2026:10:31 10:00:02")?;
+    // Acquire the exclusive handle before the monitor can open the new source.
     let writing = fs::OpenOptions::new()
         .write(true)
+        .create_new(true)
         .share_mode(0)
-        .open(&late)
+        .open(fixture.hot.join("late.png"))
         .context(IoSnafu)?;
+    image::codecs::png::PngEncoder::new(&writing)
+        .write_image(&[30; 8 * 6 * 3], 8, 6, image::ExtendedColorType::Rgb8)
+        .context(ImageSnafu)?;
     wait(&folder, |s| s.pending_tasks > 0).await?;
     assert!(matches!(
         folder.finish_group(group).await,
@@ -207,7 +211,7 @@ async fn queued_source_deletion_rechecks_references_when_the_next_team_reuses_th
         .context(HotFolderSnafu)?;
     let report = folder.finish_group(b).await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
-    assert!(report.pending_paths.is_empty());
+    assert_eq!(report.pending_paths, [] as [std::path::PathBuf; 0]);
     assert!(!archive.exists());
     folder.shutdown().await.context(HotFolderSnafu)?;
     Ok(())
@@ -248,7 +252,7 @@ async fn finishing_removes_group_copies_but_preserves_originals_finals_and_forei
     fs::write(&foreign, b"leave this alone").context(IoSnafu)?;
     let report = folder.finish_group(group).await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
-    assert!(report.pending_paths.is_empty());
+    assert_eq!(report.pending_paths, [] as [std::path::PathBuf; 0]);
     let unique_files = paths
         .iter()
         .collect::<std::collections::BTreeSet<_>>()
@@ -315,7 +319,7 @@ async fn a_preview_lease_defers_deletion_without_undoing_confirmation_or_blockin
     drop(lease);
     let report = folder.retry_cleanup().await.context(HotFolderSnafu)?;
     assert!(report.failures.is_empty(), "{report:?}");
-    assert!(report.pending_paths.is_empty());
+    assert_eq!(report.pending_paths, [] as [std::path::PathBuf; 0]);
     assert!(!path.exists());
     folder.abandon_group(b).await.context(HotFolderSnafu)?;
     folder.shutdown().await.context(HotFolderSnafu)?;

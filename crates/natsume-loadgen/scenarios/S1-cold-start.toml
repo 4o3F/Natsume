@@ -1,0 +1,7 @@
+devices = 600
+arrival = "uniform"
+ramp = "60s"
+duration = "5m"
+logo_bytes = 120832
+logo_dimension = 256
+logo_interval = "60s"

@@ -31,7 +31,7 @@ token_file = "/nonexistent/source.token"
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("ERROR"), "{stdout}");
     assert!(stdout.contains("打印参数或 UTF-8 源文件无效"), "{stdout}");
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     assert!(!stdout.contains('\u{1b}'));
     Ok(())
 }
@@ -56,7 +56,7 @@ fn configuration_failures_use_tracing_stdout() -> Result<(), Box<dyn std::error:
         stdout.contains("源文件或部署文件不安全、过大或不可读"),
         "{stdout}"
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     Ok(())
 }
 
@@ -70,7 +70,7 @@ fn cli_help_and_errors_use_tracing_stdout() -> Result<(), Box<dyn std::error::Er
         let stdout = String::from_utf8(output.stdout)?;
         assert!(stdout.contains(level), "{stdout}");
         assert!(stdout.contains("Usage:"), "{stdout}");
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, [] as [u8; 0]);
         assert!(!stdout.contains('\u{1b}'));
     }
     Ok(())

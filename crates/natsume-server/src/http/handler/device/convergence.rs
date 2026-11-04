@@ -3,7 +3,6 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{Path, State},
-    response::{IntoResponse, Response},
     routing::get,
 };
 
@@ -23,10 +22,12 @@ mod home;
 mod runtime;
 mod session;
 
+#[cfg(test)]
+mod tests;
+
 use super::super::super::error::ApiError;
 use super::{
-    DevicePath, binding::binding_error, home::home_error, invalid_device_id, parse_device_id,
-    session::session_error,
+    DevicePath, binding::binding_error, home::home_error, parse_device_id, session::session_error,
 };
 
 use binding::BindingConvergenceResponse;
@@ -111,16 +112,17 @@ pub(crate) fn operator_routes() -> Routes<Arc<DeviceControl>> {
     )]
 }
 
-pub(crate) async fn get_device_convergence(
+async fn get_device_convergence(
     State(state): State<Arc<DeviceControl>>,
     Path(path): Path<DevicePath>,
-) -> Result<Json<DeviceConvergenceResponse>, Response> {
-    let device_id = parse_device_id(&path).ok_or_else(invalid_device_id)?;
+) -> Result<Json<DeviceConvergenceResponse>, ApiError> {
+    let device_id = parse_device_id(&path)
+        .ok_or_else(|| ApiError::invalid_request("device_id_not_canonical_uuid_v7"))?;
     let convergence = state
         .read_device_status(device_id)
         .await
-        .map_err(|error| convergence_error(error).into_response())?
-        .ok_or_else(|| ApiError::not_found("device_not_found").into_response())?;
+        .map_err(convergence_error)?
+        .ok_or_else(|| ApiError::not_found("device_not_found"))?;
     Ok(Json(convergence.convergence.into()))
 }
 

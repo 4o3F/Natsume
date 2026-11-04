@@ -779,7 +779,7 @@ async fn every_principal_and_admin_boundary_is_enforced() -> TestResult {
             "logged-out-only method fallback: {}",
             route.path
         );
-        assert!(response.body.is_empty());
+        assert_eq!(response.body, [] as [u8; 0]);
     }
 
     Ok(())
@@ -928,7 +928,7 @@ async fn shared_session_path_keeps_public_methods_and_allow_header() -> TestResu
         assert_eq!(response.status, expected, "session method: {method}");
         if method == Method::PUT {
             assert_eq!(response.headers[header::ALLOW], "POST,DELETE,GET,HEAD");
-            assert!(response.body.is_empty());
+            assert_eq!(response.body, [] as [u8; 0]);
         }
     }
     Ok(())
@@ -992,7 +992,7 @@ async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication
             )
             .await?;
             assert_eq!(response.status, StatusCode::NOT_FOUND);
-            assert!(response.body.is_empty());
+            assert_eq!(response.body, [] as [u8; 0]);
         }
     }
     for path in [

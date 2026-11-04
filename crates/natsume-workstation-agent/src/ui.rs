@@ -514,7 +514,7 @@ mod tests {
             "FUTURE_ERROR",
         ] {
             let text = binding_error_text(Some(code));
-            assert!(!text.is_empty());
+            assert_ne!(text, "");
             assert!(!text.contains(code));
             assert!(!text.contains("工位"));
         }

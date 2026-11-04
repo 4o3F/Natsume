@@ -262,7 +262,7 @@ async fn executable_reports_ready_result_through_tracing_stdout() -> TestResult 
     assert!(stdout.contains("INFO"), "{stdout}");
     assert!(stdout.contains("已入队，尚未打印完成"), "{stdout}");
     assert!(stdout.contains(ID), "{stdout}");
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     assert!(!stdout.contains('\u{1b}'));
     assert!(!fixture.marker.exists());
     Ok(())

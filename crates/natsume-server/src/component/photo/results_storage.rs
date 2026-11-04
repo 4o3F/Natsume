@@ -16,7 +16,11 @@ const DIRECTORY: OFlags = OFlags::RDONLY
 #[derive(Debug, Snafu)]
 pub(crate) enum ResultsStorageError {
     #[snafu(display("Photo results storage directory is unsafe"))]
-    Corrupt,
+    UnsafeDirectory,
+    #[snafu(display("Photo result file ownership or mode is unsafe"))]
+    UnsafeFile,
+    #[snafu(display("Photo result object length or hash disagrees"))]
+    ObjectMismatch,
     #[snafu(display("Photo results storage operation failed"))]
     Io { source: std::io::Error },
 }
@@ -32,7 +36,7 @@ pub(super) struct UploadFile {
 }
 
 pub(super) fn prepare(directory: &Path) -> Result<ResultsStore, ResultsStorageError> {
-    ensure!(directory.is_absolute(), CorruptSnafu);
+    ensure!(directory.is_absolute(), UnsafeDirectorySnafu);
     match DirBuilder::new().mode(0o700).create(directory) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -48,19 +52,17 @@ pub(super) fn prepare(directory: &Path) -> Result<ResultsStore, ResultsStorageEr
             Ok(()) | Err(rustix::io::Errno::EXIST) => {}
             Err(source) => return Err(std::io::Error::from(source)).context(IoSnafu),
         }
-        checked_directory(File::from(
-            openat(&root, name, DIRECTORY, Mode::empty())
-                .map_err(std::io::Error::from)
-                .context(IoSnafu)?,
-        ))?
-        .sync_all()
-        .context(IoSnafu)?;
+        open_dir(&root, name)?.sync_all().context(IoSnafu)?;
     }
     root.sync_all().context(IoSnafu)?;
-    File::open(directory.parent().ok_or_else(|| CorruptSnafu.build())?)
-        .context(IoSnafu)?
-        .sync_all()
-        .context(IoSnafu)?;
+    File::open(
+        directory
+            .parent()
+            .ok_or_else(|| UnsafeDirectorySnafu.build())?,
+    )
+    .context(IoSnafu)?
+    .sync_all()
+    .context(IoSnafu)?;
     Ok(ResultsStore {
         root: Arc::new(root),
     })
@@ -73,7 +75,7 @@ impl ResultsStore {
     ) -> Result<File, ResultsStorageError> {
         private_file(
             &self.directory("objects")?,
-            &format!("{}.{}", photo.image_sha256, photo.image_format.extension()),
+            &object_name(&photo.image_sha256, photo.image_format),
         )
     }
 
@@ -94,11 +96,7 @@ impl ResultsStore {
         Ok(file)
     }
     pub(super) fn worker_lease(&self) -> Result<Arc<File>, ResultsStorageError> {
-        let file = checked_directory(File::from(
-            openat(self.root.as_ref(), ".", DIRECTORY, Mode::empty())
-                .map_err(std::io::Error::from)
-                .context(IoSnafu)?,
-        ))?;
+        let file = open_dir(self.root.as_ref(), ".")?;
         rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
             .map_err(std::io::Error::from)
             .context(IoSnafu)?;
@@ -111,11 +109,7 @@ impl ResultsStore {
     }
 
     fn directory(&self, name: &str) -> Result<File, ResultsStorageError> {
-        checked_directory(File::from(
-            openat(self.root.as_ref(), name, DIRECTORY, Mode::empty())
-                .map_err(std::io::Error::from)
-                .context(IoSnafu)?,
-        ))
+        open_dir(self.root.as_ref(), name)
     }
 
     pub(super) fn stage(&self) -> Result<Staging, ResultsStorageError> {
@@ -124,11 +118,7 @@ impl ResultsStore {
         mkdirat(&parent, name.as_str(), Mode::RUSR | Mode::WUSR | Mode::XUSR)
             .map_err(std::io::Error::from)
             .context(IoSnafu)?;
-        let directory = checked_directory(File::from(
-            openat(&parent, name.as_str(), DIRECTORY, Mode::empty())
-                .map_err(std::io::Error::from)
-                .context(IoSnafu)?,
-        ))?;
+        let directory = open_dir(&parent, &name)?;
         parent.sync_all().context(IoSnafu)?;
         Ok(Staging {
             parent,
@@ -144,10 +134,8 @@ impl ResultsStore {
         stage: &Staging,
         image: &natsume_photo_protocol::results::TeamResult,
     ) -> Result<(), ResultsStorageError> {
-        use sha2::Digest as _;
-        use std::io::Read as _;
         let objects = self.directory("objects")?;
-        let name = object_name(image);
+        let name = object_name(&image.image_sha256, image.image_format);
         match rustix::fs::linkat(
             &stage.directory,
             name.as_str(),
@@ -158,25 +146,17 @@ impl ResultsStore {
             Ok(()) => {}
             Err(rustix::io::Errno::EXIST) => {
                 let mut file = private_file(&objects, &name)?;
-                ensure!(
-                    file.metadata().context(IoSnafu)?.len() == image.image_bytes,
-                    CorruptSnafu
-                );
-                let mut hash = sha2::Sha256::new();
-                let mut buffer = vec![0; 64 * 1024];
-                let mut remaining = image.image_bytes;
-                while remaining != 0 {
-                    let count = file.read(&mut buffer).context(IoSnafu)?;
-                    ensure!(count != 0, CorruptSnafu);
-                    remaining = remaining
-                        .checked_sub(u64::try_from(count).map_err(|_| CorruptSnafu.build())?)
-                        .ok_or_else(|| CorruptSnafu.build())?;
-                    hash.update(&buffer[..count]);
-                }
-                ensure!(
-                    hex::encode(hash.finalize()) == image.image_sha256.as_str(),
-                    CorruptSnafu
-                );
+                let mut copied = 0;
+                super::transfer::copy_verified(
+                    &mut file,
+                    &mut std::io::sink(),
+                    super::transfer::Expectation::Image {
+                        bytes: image.image_bytes,
+                        sha256: &image.image_sha256,
+                    },
+                    &mut copied,
+                    || true,
+                )?;
             }
             Err(source) => return Err(std::io::Error::from(source)).context(IoSnafu),
         }
@@ -187,11 +167,7 @@ impl ResultsStore {
         self.directory("objects")?.sync_all().context(IoSnafu)
     }
     pub(super) fn create_upload(&self, id: uuid::Uuid) -> Result<UploadFile, ResultsStorageError> {
-        let directory = checked_directory(File::from(
-            openat(self.root.as_ref(), "uploads", DIRECTORY, Mode::empty())
-                .map_err(std::io::Error::from)
-                .context(IoSnafu)?,
-        ))?;
+        let directory = self.directory("uploads")?;
         let file = File::from(
             openat(
                 &directory,
@@ -206,11 +182,7 @@ impl ResultsStore {
     }
 
     pub(super) fn remove_upload(&self, id: uuid::Uuid) -> Result<(), ResultsStorageError> {
-        let directory = checked_directory(File::from(
-            openat(self.root.as_ref(), "uploads", DIRECTORY, Mode::empty())
-                .map_err(std::io::Error::from)
-                .context(IoSnafu)?,
-        ))?;
+        let directory = self.directory("uploads")?;
         // A persisted task ID is not sufficient authority to unlink a substituted entry.
         let _file = private_file(&directory, &format!("{id}.zip"))?;
         rustix::fs::unlinkat(
@@ -237,17 +209,17 @@ fn private_file(directory: &File, name: &str) -> Result<File, ResultsStorageErro
     );
     let metadata = file.metadata().context(IoSnafu)?;
     ensure!(
-        metadata.is_file()
-            && metadata.uid() == rustix::process::geteuid().as_raw()
-            && Mode::from_raw_mode(metadata.mode()).intersection(Mode::from_raw_mode(0o777))
-                == Mode::RUSR | Mode::WUSR,
-        CorruptSnafu
+        metadata.is_file() && has_private_mode(&metadata, Mode::RUSR | Mode::WUSR),
+        UnsafeFileSnafu
     );
     Ok(file)
 }
 
-fn object_name(image: &natsume_photo_protocol::results::TeamResult) -> String {
-    format!("{}.{}", image.image_sha256, image.image_format.extension())
+fn object_name(
+    hash: &natsume_photo_protocol::Sha256Digest,
+    format: natsume_photo_protocol::results::PhotoFormat,
+) -> String {
+    format!("{hash}.{}", format.extension())
 }
 
 pub(super) struct Staging {
@@ -263,7 +235,7 @@ impl Staging {
         &mut self,
         image: &natsume_photo_protocol::results::TeamResult,
     ) -> Result<File, ResultsStorageError> {
-        let name = object_name(image);
+        let name = object_name(&image.image_sha256, image.image_format);
         let file = File::from(
             openat(
                 &self.directory,
@@ -314,13 +286,33 @@ impl Drop for Staging {
 fn checked_directory(file: File) -> Result<File, ResultsStorageError> {
     let metadata = file.metadata().context(IoSnafu)?;
     ensure!(
-        metadata.is_dir()
-            && metadata.uid() == rustix::process::geteuid().as_raw()
-            && Mode::from_raw_mode(metadata.mode()).intersection(Mode::from_raw_mode(0o777))
-                == Mode::RUSR | Mode::WUSR | Mode::XUSR,
-        CorruptSnafu
+        metadata.is_dir() && has_private_mode(&metadata, Mode::RUSR | Mode::WUSR | Mode::XUSR),
+        UnsafeDirectorySnafu
     );
     Ok(file)
+}
+
+fn has_private_mode(metadata: &std::fs::Metadata, mode: Mode) -> bool {
+    metadata.uid() == rustix::process::geteuid().as_raw()
+        && Mode::from_raw_mode(metadata.mode()).intersection(Mode::from_raw_mode(0o777)) == mode
+}
+
+fn open_dir(parent: &File, name: &str) -> Result<File, ResultsStorageError> {
+    checked_directory(File::from(
+        openat(parent, name, DIRECTORY, Mode::empty())
+            .map_err(std::io::Error::from)
+            .context(IoSnafu)?,
+    ))
+}
+
+impl From<super::transfer::TransferError> for ResultsStorageError {
+    fn from(error: super::transfer::TransferError) -> Self {
+        match error {
+            super::transfer::TransferError::Read { source }
+            | super::transfer::TransferError::Write { source } => Self::Io { source },
+            _ => Self::ObjectMismatch,
+        }
+    }
 }
 
 #[cfg(test)]
