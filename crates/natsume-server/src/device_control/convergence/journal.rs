@@ -11,6 +11,9 @@ use crate::journal::{
     },
 };
 use natsume_workstation_protocol::generated::PowerState;
+use std::time::Duration;
+
+use crate::{component::device::DeviceId, device_control::duration_micros};
 
 struct ActualSummary {
     /// Closed gateway state from the validated observation.
@@ -95,16 +98,60 @@ impl From<&ObservedActualState> for ActualSummary {
 }
 
 impl ObservedActualState {
+    pub(in crate::device_control) fn trace_received(
+        &self,
+        device_id: DeviceId,
+        changed: bool,
+        reconcile: Duration,
+    ) {
+        let session_foreground = match self.session_control.foreground {
+            SessionForeground::Unknown => "unknown",
+            SessionForeground::Waiting => "waiting",
+            SessionForeground::Contest => "contest",
+            SessionForeground::Greeter => "greeter",
+            SessionForeground::Other => "other",
+            SessionForeground::None => "none",
+        };
+        let session_state = match self.session_control.session_state {
+            SessionState::None => "none",
+            SessionState::Starting => "starting",
+            SessionState::Running => "running",
+            SessionState::Terminating => "terminating",
+            SessionState::Ambiguous => "ambiguous",
+            SessionState::Error => "error",
+        };
+        let home_state = match self.home.state {
+            HomeState::Steady => "steady",
+            HomeState::Resetting => "resetting",
+            HomeState::RecoveryRequired => "recovery_required",
+        };
+        tracing::info!(
+            device_id = %device_id.as_text(),
+            session_foreground,
+            session_state,
+            waiting_ready = self.session_control.waiting_ready,
+            contest_ready = self.session_control.contest_ready,
+            completed_terminate_epoch = self.session_control.completed_terminate_epoch,
+            completed_reset_epoch = self.home.completed_reset_epoch,
+            home_state,
+            changed,
+            reconcile_us = duration_micros(reconcile),
+            "actual received"
+        );
+    }
+
     pub(in crate::device_control) fn emit_journal_changes(
         &self,
         previous: Option<&Self>,
         journal: &Journal,
         context: &JournalContext,
-    ) {
+    ) -> bool {
         let next = ActualSummary::from(self);
         let previous = previous.map(ActualSummary::from);
-        let emit = |resource, from: Option<&ActualState>, to: ActualState| {
+        let mut changed = false;
+        let mut emit = |resource, from: Option<&ActualState>, to: ActualState| {
             if from != Some(&to) {
+                changed = true;
                 journal.emit(
                     Event::ActualChanged(ActualChanged {
                         resource,
@@ -150,5 +197,6 @@ impl ObservedActualState {
             previous.as_ref().map(|state| &state.power),
             next.power,
         );
+        changed
     }
 }

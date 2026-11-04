@@ -1,4 +1,5 @@
 mod journal;
+mod observability;
 mod resource_usage;
 
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
@@ -1086,7 +1087,13 @@ async fn failure_transient_refresh_retries_without_a_pending_client_snapshot() {
     .await
     .unwrap_or_else(|_| panic!("refresh was not retried"))
     .unwrap_or_else(|| panic!("refresh failure closed the lease"));
-    let Some(server_active_envelope::Body::ServerState(ref snapshot)) = envelope.body else {
+    assert!(matches!(
+        envelope.metadata.cause,
+        super::DispatchCause::Retry
+    ));
+    assert!(envelope.metadata.queued.is_none());
+    let Some(server_active_envelope::Body::ServerState(ref snapshot)) = envelope.envelope.body
+    else {
         panic!("retry must return ServerState");
     };
     assert_eq!(
@@ -1261,8 +1268,8 @@ async fn cancelled_http_mutation_commits_and_publishes_the_complete_target()
         .ok_or(crate::test_error::TestError::missing(
             "post-commit snapshot",
         ))?;
-    assert_complete_target(envelope.clone());
-    let Some(server_active_envelope::Body::ServerState(snapshot)) = envelope.body else {
+    assert_complete_target(envelope.envelope.clone());
+    let Some(server_active_envelope::Body::ServerState(snapshot)) = envelope.envelope.body else {
         panic!("snapshot absent");
     };
     assert_eq!(
@@ -1364,7 +1371,12 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
         .await
         .unwrap_or_else(|_| panic!("Dirty did not refresh the target"))
         .unwrap_or_else(|| panic!("Dirty closed the active lease"));
-    let Some(server_active_envelope::Body::ServerState(snapshot)) = refreshed.body else {
+    assert!(matches!(
+        refreshed.metadata.cause,
+        super::DispatchCause::Dirty
+    ));
+    assert!(refreshed.metadata.queued.is_some());
+    let Some(server_active_envelope::Body::ServerState(snapshot)) = refreshed.envelope.body else {
         panic!("Dirty did not emit ServerState");
     };
     assert_eq!(
@@ -1409,7 +1421,12 @@ async fn periodic_refresh_recovers_the_current_target_without_dirty() {
         .await
         .unwrap_or_else(|_| panic!("periodic refresh did not emit the current target"))
         .unwrap_or_else(|| panic!("periodic refresh closed the active lease"));
-    let Some(server_active_envelope::Body::ServerState(snapshot)) = refreshed.body else {
+    assert!(matches!(
+        refreshed.metadata.cause,
+        super::DispatchCause::Refresh
+    ));
+    assert!(refreshed.metadata.queued.is_none());
+    let Some(server_active_envelope::Body::ServerState(snapshot)) = refreshed.envelope.body else {
         panic!("periodic refresh did not emit ServerState");
     };
     assert_eq!(
@@ -2925,7 +2942,7 @@ async fn submit_enrollment_proof(socket: &mut TestSocket) {
 async fn replace_current_lease(
     control: &Arc<DeviceControl>,
     device_id: DeviceId,
-    outbound: mpsc::Sender<ServerActiveEnvelope>,
+    outbound: mpsc::Sender<super::OutboundSnapshot>,
 ) -> (Uuid, DeviceHandle) {
     let handle = control
         .registry
@@ -2982,7 +2999,14 @@ fn valid_snapshot() -> ClientStateSnapshot {
     }
 }
 
-fn assert_complete_target(envelope: ServerActiveEnvelope) {
+impl From<super::OutboundSnapshot> for ServerActiveEnvelope {
+    fn from(snapshot: super::OutboundSnapshot) -> Self {
+        snapshot.envelope
+    }
+}
+
+fn assert_complete_target(envelope: impl Into<ServerActiveEnvelope>) {
+    let envelope = envelope.into();
     let Some(server_active_envelope::Body::ServerState(snapshot)) = envelope.body else {
         panic!("the Actor did not emit ServerState");
     };
