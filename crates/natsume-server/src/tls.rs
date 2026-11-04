@@ -134,6 +134,9 @@ impl Listener for TlsListener {
                 accepted = self.tcp_listener.accept() => {
                     match accepted {
                         Ok((tcp_stream, remote_address)) => {
+                            if let Err(error) = tcp_stream.set_nodelay(true) {
+                                tracing::warn!(error = %snafu::Report::from_error(error), "TCP_NODELAY could not be enabled");
+                            }
                             if self.handshakes.len() >= MAX_HANDSHAKES {
                                 continue;
                             }
@@ -462,6 +465,38 @@ pub(crate) mod tests {
     const TEST_TIMEOUT: Duration = Duration::from_secs(2);
     const HEALTH_REQUEST: &[u8] =
         b"GET /api/v2/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+
+    #[tokio::test]
+    async fn accepted_connection_has_nodelay() -> Result<(), TestFailure> {
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let mut listener = bind_identity(&identity).await?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let versions = [&rustls::version::TLS13];
+        let client = connect_client(
+            address,
+            identity.ca_certificate(),
+            IpAddr::V4(LOCALHOST),
+            &versions,
+            vec![b"http/1.1".to_vec()],
+        );
+        let (accepted, client) = timeout(TEST_TIMEOUT, async {
+            tokio::join!(Listener::accept(&mut listener), client)
+        })
+        .await
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let _client = client?;
+        let enabled = accepted
+            .0
+            .get_ref()
+            .0
+            .stream
+            .nodelay()
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        assert!(enabled, "accepted server socket must disable Nagle");
+        Ok(())
+    }
 
     #[tokio::test]
     async fn health_uses_http1_tls13_and_shuts_down_gracefully() -> Result<(), TestFailure> {
