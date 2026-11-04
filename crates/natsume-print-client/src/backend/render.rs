@@ -120,7 +120,7 @@ impl Pdf {
             .fail();
         }
         // Grayscale pixels also protect monochrome output when a driver ignores dmColor.
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             let weighted =
                 u32::from(pixel[0]) * 29 + u32::from(pixel[1]) * 150 + u32::from(pixel[2]) * 77;
             // The weights sum to 256, so the shifted value always fits in one byte.
