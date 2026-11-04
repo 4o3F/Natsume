@@ -1258,6 +1258,7 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     assert_eq!(candidate_image.status, StatusCode::OK);
     assert_eq!(candidate_image.headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(candidate_image.headers[header::CONTENT_TYPE], "image/png");
+    assert!(!candidate_image.headers.contains_key(header::CONNECTION));
     for condition in [
         "*".to_owned(),
         format!(
@@ -1303,6 +1304,7 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     assert_eq!(image.status, StatusCode::OK);
     assert_eq!(image.body, candidate_image.body);
     assert_eq!(image.headers[header::CACHE_CONTROL], "public, no-cache");
+    assert_eq!(image.headers[header::CONNECTION], "close");
     let etag = header_text(&image.headers, &header::ETAG)?;
     let mut conditional = request(Method::GET, public_logo, "")?;
     conditional
@@ -1310,6 +1312,7 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
         .insert(header::IF_NONE_MATCH, format!("\"old\", W/{etag}").parse()?);
     let unchanged = drive(&application, conditional).await?;
     assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(unchanged.headers[header::CONNECTION], "close");
     assert_eq!(unchanged.body, [] as [u8; 0]);
     assert_eq!(unchanged.headers[header::ETAG], image.headers[header::ETAG]);
     assert_eq!(unchanged.headers[header::CACHE_CONTROL], "public, no-cache");

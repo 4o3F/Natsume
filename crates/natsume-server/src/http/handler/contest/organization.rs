@@ -54,8 +54,16 @@ pub(crate) fn import_candidate_routes() -> Routes<ImportCandidateState> {
 pub(super) fn public_routes() -> Routes<Arc<ContestComponent>> {
     vec![(
         "/organizations/{organization_id}/logo",
-        get(organization_logo),
+        get(organization_logo).layer(axum::middleware::map_response(close_logo_connection)),
     )]
+}
+
+async fn close_logo_connection(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::CONNECTION,
+        axum::http::HeaderValue::from_static("close"),
+    );
+    response
 }
 
 #[derive(Serialize, specta::Type)]

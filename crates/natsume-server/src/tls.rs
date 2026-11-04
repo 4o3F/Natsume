@@ -28,7 +28,7 @@ use zeroize::Zeroize;
 
 const ALPN_HTTP_1_1: &[u8] = b"http/1.1";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_CONNECTIONS: usize = 1024;
+const MAX_CONNECTIONS: usize = 2048;
 const MAX_HANDSHAKES: usize = 64;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 const PRIVATE_FILE_FORBIDDEN_BITS: u32 = 0o177;
@@ -134,6 +134,9 @@ impl Listener for TlsListener {
                 accepted = self.tcp_listener.accept() => {
                     match accepted {
                         Ok((tcp_stream, remote_address)) => {
+                            if let Err(error) = tcp_stream.set_nodelay(true) {
+                                tracing::warn!(error = %snafu::Report::from_error(error), "TCP_NODELAY could not be enabled");
+                            }
                             if self.handshakes.len() >= MAX_HANDSHAKES {
                                 continue;
                             }
@@ -273,7 +276,7 @@ pub(crate) mod tests {
     };
     use rustls::{ClientConfig, ProtocolVersion, RootCertStore};
     use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
-    use snafu::Snafu;
+    use snafu::{ResultExt, Snafu};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpStream,
@@ -462,6 +465,38 @@ pub(crate) mod tests {
     const TEST_TIMEOUT: Duration = Duration::from_secs(2);
     const HEALTH_REQUEST: &[u8] =
         b"GET /api/v2/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+
+    #[tokio::test]
+    async fn accepted_connection_has_nodelay() -> Result<(), TestFailure> {
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let mut listener = bind_identity(&identity).await?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let versions = [&rustls::version::TLS13];
+        let client = connect_client(
+            address,
+            identity.ca_certificate(),
+            IpAddr::V4(LOCALHOST),
+            &versions,
+            vec![b"http/1.1".to_vec()],
+        );
+        let (accepted, client) = timeout(TEST_TIMEOUT, async {
+            tokio::join!(Listener::accept(&mut listener), client)
+        })
+        .await
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let _client = client?;
+        let enabled = accepted
+            .0
+            .get_ref()
+            .0
+            .stream
+            .nodelay()
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        assert!(enabled, "accepted server socket must disable Nagle");
+        Ok(())
+    }
 
     #[tokio::test]
     async fn health_uses_http1_tls13_and_shuts_down_gracefully() -> Result<(), TestFailure> {
@@ -1123,6 +1158,107 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn public_logo_closes_tls_after_200_304_and_errors()
+    -> Result<(), crate::test_error::TestError> {
+        let directory = tempfile::tempdir()?;
+        let database = crate::db::Database::connect_and_migrate(&crate::db::DatabaseConfig::new(
+            directory.path().join("business.sqlite3"),
+            true,
+        ))
+        .await?;
+        let logos = directory.path().join("logos");
+        fs::create_dir(&logos)?;
+        fs::write(
+            logos.join("示例大学.svg"),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"/>"#,
+        )?;
+        let features =
+            crate::feature::tests::ServerFixture::new(database, directory.path().join("documents"))
+                .logos(logos)
+                .build_with_features()?;
+        let xlsx = include_bytes!("component/import/examples/roster.xlsx");
+        let preview = features
+            .import
+            .component()
+            .try_begin()?
+            .create_candidate(xlsx)
+            .await?;
+        let _change = features
+            .import
+            .component()
+            .try_begin()?
+            .commit(preview.candidate_id(), preview.preview_token_bytes(), xlsx)
+            .await?;
+        let fixture = HttpFixture::start(
+            2,
+            features.loaded.http_router(http::tests::unused_web_root()),
+        )
+        .await?;
+        let mut etag = String::new();
+        for (path, status) in [
+            ("INST-001", "200 OK"),
+            ("INST-001", "304 Not Modified"),
+            ("INST-999", "404 Not Found"),
+            ("INST-%FF", "400 Bad Request"),
+        ] {
+            let mut client = fixture.connect().await?;
+            let conditional = if status.starts_with("304") {
+                format!("If-None-Match: {etag}\r\n")
+            } else {
+                String::new()
+            };
+            client.write_all(format!(
+                "GET /api/v2/organizations/{path}/logo HTTP/1.1\r\nHost: localhost\r\n{conditional}\r\n"
+            ).as_bytes()).await?;
+            let head = read_head(&mut client).await?;
+            assert!(
+                head.starts_with(&format!("HTTP/1.1 {status}\r\n")),
+                "unexpected response: {head}"
+            );
+            let headers: Vec<_> = head
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .collect();
+            assert!(
+                headers
+                    .iter()
+                    .any(|(name, value)| name.eq_ignore_ascii_case("connection")
+                        && value.trim() == "close"),
+                "missing connection close: {head}"
+            );
+            if status.starts_with("200") {
+                etag = headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("etag"))
+                    .map(|(_, value)| value.trim().to_owned())
+                    .ok_or(crate::test_error::TestError::missing("logo ETag"))?;
+            }
+            let length = headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .map(|(_, value)| value.trim().parse::<usize>().context(ContentLengthSnafu))
+                .transpose()?
+                .unwrap_or(0);
+            let mut body = vec![0; length];
+            timeout(TEST_TIMEOUT, client.read_exact(&mut body)).await??;
+            if status.starts_with("200") {
+                assert!(!body.is_empty(), "200 logo body must be complete");
+            }
+            assert_http_closed(&mut client).await?;
+            wait_for_permits(&fixture.capacity, 2).await?;
+        }
+        let mut health = fixture.connect().await?;
+        keep_alive_health(&mut health).await?;
+        keep_alive_health(&mut health).await?;
+        assert_eq!(
+            fixture.capacity.available_permits(),
+            1,
+            "health must keep its connection"
+        );
+        fixture.finish().await
+    }
+
+    #[tokio::test]
     async fn idle_http_keep_alive_closes_and_returns_all_permits()
     -> Result<(), crate::test_error::TestError> {
         let fixture =
@@ -1473,6 +1609,8 @@ pub(crate) mod tests {
         UnexpectedProtocolVersion,
         #[snafu(display("the HTTP health response was invalid"))]
         InvalidResponse,
+        #[snafu(display("response content length is invalid"))]
+        ContentLength { source: std::num::ParseIntError },
         #[snafu(display("the TLS handshake should have failed"))]
         HandshakeShouldHaveFailed,
         #[snafu(display("a TLS bind failure was expected"))]
