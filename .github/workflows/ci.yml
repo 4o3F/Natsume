@@ -102,9 +102,9 @@ jobs:
       - name: Check Server-generated TypeScript bindings
         if: matrix.module == 'server'
         run: deno task api --check
-      - name: Install pinned Server schema tool
+      - name: Install Server schema tool
         if: matrix.module == 'server'
-        run: cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled
+        run: cargo install diesel_cli --locked --no-default-features --features sqlite-bundled
       - name: Check the Server Diesel schema
         if: matrix.module == 'server'
         run: deno task schema:check
