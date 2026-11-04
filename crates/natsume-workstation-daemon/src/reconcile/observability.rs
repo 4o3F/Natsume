@@ -218,3 +218,95 @@ impl SnapshotSource<'_> {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+pub(super) async fn session_call<T>(
+    context: Option<&PlanContext>,
+    operation: &'static str,
+    role: natsume_workstation_ipc::SessionRole,
+    call: impl std::future::Future<Output = Result<T, natsume_workstation_ipc::ResourceControlError>>,
+) -> Result<T, natsume_workstation_ipc::ResourceControlError> {
+    let started = Instant::now();
+    let result = call.await;
+    let elapsed = started.elapsed();
+    trace_session_call(context, operation, role, elapsed, &result);
+    result
+}
+
+pub(super) fn trace_session_call<T>(
+    context: Option<&PlanContext>,
+    operation: &'static str,
+    role: natsume_workstation_ipc::SessionRole,
+    elapsed: Duration,
+    result: &Result<T, natsume_workstation_ipc::ResourceControlError>,
+) {
+    let role = match role {
+        natsume_workstation_ipc::SessionRole::Waiting => "waiting",
+        natsume_workstation_ipc::SessionRole::Contest => "contest",
+    };
+    tracing::info!(
+        plan = context.map(|context| context.plan),
+        target_digest = context.map(|context| context.target.target_digest.as_str()),
+        operation,
+        role,
+        helper_call_us = micros(elapsed),
+        result = call_result(result),
+        "session step completed"
+    );
+}
+
+pub(super) async fn home_call<T>(
+    context: Option<&PlanContext>,
+    operation: &'static str,
+    reset_epoch: Option<u64>,
+    call: impl std::future::Future<Output = Result<T, natsume_workstation_ipc::ResourceControlError>>,
+) -> Result<T, natsume_workstation_ipc::ResourceControlError> {
+    let started = Instant::now();
+    let result = call.await;
+    let elapsed = started.elapsed();
+    trace_home_call(context, operation, reset_epoch, elapsed, &result);
+    result
+}
+
+pub(super) fn trace_home_call<T>(
+    context: Option<&PlanContext>,
+    operation: &'static str,
+    reset_epoch: Option<u64>,
+    elapsed: Duration,
+    result: &Result<T, natsume_workstation_ipc::ResourceControlError>,
+) {
+    tracing::info!(
+        plan = context.map(|context| context.plan),
+        target_digest = context.map(|context| context.target.target_digest.as_str()),
+        operation,
+        reset_epoch,
+        helper_call_us = micros(elapsed),
+        result = call_result(result),
+        "home step completed"
+    );
+}
+
+fn call_result<T>(
+    result: &Result<T, natsume_workstation_ipc::ResourceControlError>,
+) -> &'static str {
+    use natsume_workstation_ipc::ResourceControlError;
+    match result {
+        Ok(_) => "ok",
+        Err(ResourceControlError::Unavailable(_)) => "unavailable",
+        Err(ResourceControlError::Rejected(_)) => "rejected",
+        Err(ResourceControlError::ZBus(_)) => "rpc_error",
+    }
+}
+
+pub(super) fn trace_eligibility(
+    context: Option<&PlanContext>,
+    eligible: bool,
+    reason: &'static str,
+) {
+    tracing::info!(
+        plan = context.map(|context| context.plan),
+        target_digest = context.map(|context| context.target.target_digest.as_str()),
+        eligible,
+        reason,
+        "binding eligibility changed"
+    );
+}

@@ -304,7 +304,7 @@ pub(crate) async fn run(
 ) -> Result<(), ControlLoopError> {
     let snapshots = Arc::new(snapshots);
     snapshots
-        .deactivate()
+        .deactivate(None)
         .await
         .map_err(|_| ControlLoopError::LocalDeactivation)?;
     diagnostics.set_stage(
@@ -407,7 +407,7 @@ pub(crate) async fn run(
                 )
                 .await;
                 snapshots
-                    .deactivate()
+                    .deactivate(None)
                     .await
                     .map_err(|_| ControlLoopError::LocalDeactivation)?;
                 // Evidence I/O follows the safety barrier, never precedes it.
@@ -804,6 +804,7 @@ fn start_plan(
         plan: *next_plan,
         target: target.metadata.clone(),
     };
+    snapshots.annotate_plan(&fence, &context);
     let task_context = context.clone();
     let task_target = Arc::clone(&target.state);
     let task = tokio::spawn(

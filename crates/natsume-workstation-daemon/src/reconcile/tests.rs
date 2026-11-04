@@ -51,6 +51,8 @@ pub(crate) struct HelperState {
     pub(crate) activation_calls: Vec<(natsume_workstation_ipc::SessionRole, GraphicalSession)>,
     pub(crate) preparation_calls: Vec<natsume_workstation_ipc::SessionRole>,
     pub(crate) waiting_resume_calls: usize,
+    pub(crate) waiting_resume_result: Option<Result<bool, ResourceControlError>>,
+    pub(crate) home_verify_failure: bool,
     pub(crate) waiting_recovery_calls: Vec<Option<GraphicalSession>>,
 }
 
@@ -59,12 +61,10 @@ struct FaultyHelper(Arc<Mutex<HelperState>>);
 #[zbus::interface(name = "org.natsume.Privileged1")]
 impl FaultyHelper {
     #[zbus(name = "ResumeWaitingRecovery")]
-    fn resume_waiting_recovery(&mut self) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| panic!("fixture: {e}"))
-            .waiting_resume_calls += 1;
-        false
+    fn resume_waiting_recovery(&mut self) -> Result<bool, ResourceControlError> {
+        let mut state = self.0.lock().unwrap_or_else(|e| panic!("fixture: {e}"));
+        state.waiting_resume_calls += 1;
+        state.waiting_resume_result.take().unwrap_or(Ok(false))
     }
 
     #[zbus(name = "RecoverWaitingSession")]
@@ -250,11 +250,16 @@ impl FaultyHelper {
     }
 
     #[zbus(name = "VerifyHomeReset")]
-    fn verify_home_reset(&mut self, epoch: u64) -> HomeResetProgress {
+    fn verify_home_reset(&mut self, epoch: u64) -> Result<HomeResetProgress, ResourceControlError> {
         let mut state = self
             .0
             .lock()
             .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+        if state.home_verify_failure {
+            return Err(ResourceControlError::Unavailable(
+                "verify-failure-canary".to_owned(),
+            ));
+        }
         let phase = if state.home_calls.len() > state.home_failures && !state.rejected {
             HomeResetPhase::Verified
         } else {
@@ -265,7 +270,7 @@ impl FaultyHelper {
             phase,
         };
         state.progress = Some(progress.clone());
-        progress
+        Ok(progress)
     }
 }
 
@@ -321,7 +326,7 @@ async fn disconnected_recovery_finishes_only_captured_work()
         .lock()
         .map_err(|_| "fixture lock")?
         .require_blocked = Some(fixture.directory.path().join("caddy-mode.json"));
-    fixture.snapshots.deactivate().await?;
+    fixture.snapshots.deactivate(None).await?;
     let target = session::validate_target(SessionControlTarget {
         foreground_target: ForegroundTarget::Contest.into(),
         terminate_epoch: Some(7),
@@ -332,7 +337,7 @@ async fn disconnected_recovery_finishes_only_captured_work()
         fixture
             .snapshots
             .session
-            .reconcile(&target, Some(&waiting_session()), &cancelled)
+            .reconcile(&target, Some(&waiting_session()), &cancelled, None)
             .await?
             .retry
     );
@@ -340,7 +345,7 @@ async fn disconnected_recovery_finishes_only_captured_work()
         fixture
             .snapshots
             .home
-            .reconcile(Some(8), Some(&waiting_session()), &cancelled)
+            .reconcile(Some(8), Some(&waiting_session()), &cancelled, None)
             .await?
             .retry
     );
@@ -454,14 +459,14 @@ async fn cancelled_plan_finishes_owned_home_before_refusing_a_new_epoch()
         ..HelperState::default()
     })
     .await?;
-    fixture.snapshots.deactivate().await?;
+    fixture.snapshots.deactivate(None).await?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     assert!(matches!(
         fixture
             .snapshots
             .home
-            .reconcile(Some(9), Some(&waiting_session()), &cancelled)
+            .reconcile(Some(9), Some(&waiting_session()), &cancelled, None)
             .await,
         Err(SnapshotError::Cancelled)
     ));
@@ -469,7 +474,7 @@ async fn cancelled_plan_finishes_owned_home_before_refusing_a_new_epoch()
         fixture
             .snapshots
             .home
-            .observe()
+            .observe(None)
             .await?
             .completed_reset_epoch,
         Some(8)
@@ -485,7 +490,7 @@ async fn cancelled_plan_finishes_owned_home_before_refusing_a_new_epoch()
     let older = fixture
         .snapshots
         .home
-        .reconcile(Some(7), Some(&waiting_session()), &cancelled)
+        .reconcile(Some(7), Some(&waiting_session()), &cancelled, None)
         .await?
         .actual;
     assert_eq!(older.completed_reset_epoch, Some(8));
@@ -543,12 +548,12 @@ async fn helper_owner_replacement_preserves_pending_session_and_home_work()
     let waiting = waiting_session();
 
     let pending = session
-        .reconcile(&target, Some(&waiting), &cancellation)
+        .reconcile(&target, Some(&waiting), &cancellation, None)
         .await?;
     assert!(pending.retry);
     assert_eq!(pending.actual.completed_terminate_epoch, None);
     let pending = home
-        .reconcile(Some(8), Some(&waiting), &cancellation)
+        .reconcile(Some(8), Some(&waiting), &cancellation, None)
         .await?;
     assert!(pending.retry);
     assert_eq!(pending.actual.completed_reset_epoch, None);
@@ -568,12 +573,12 @@ async fn helper_owner_replacement_preserves_pending_session_and_home_work()
     })
     .await??;
     let unavailable = session
-        .reconcile(&target, Some(&waiting), &cancellation)
+        .reconcile(&target, Some(&waiting), &cancellation, None)
         .await?;
     assert!(unavailable.retry);
     assert_eq!(unavailable.actual.completed_terminate_epoch, None);
     let unavailable = home
-        .reconcile(Some(8), Some(&waiting), &cancellation)
+        .reconcile(Some(8), Some(&waiting), &cancellation, None)
         .await?;
     assert!(unavailable.retry);
     assert_eq!(unavailable.actual.completed_reset_epoch, None);
@@ -582,7 +587,7 @@ async fn helper_owner_replacement_preserves_pending_session_and_home_work()
         i32::from(SessionState::Terminating)
     );
     assert_eq!(
-        home.observe().await?.state,
+        home.observe(None).await?.state,
         i32::from(HomeState::RecoveryRequired)
     );
     assert_eq!(std::fs::read(&session_path)?, persisted_pending);
@@ -606,17 +611,17 @@ async fn helper_owner_replacement_preserves_pending_session_and_home_work()
         "c3"
     );
     let completed = session
-        .reconcile(&target, Some(&waiting), &cancellation)
+        .reconcile(&target, Some(&waiting), &cancellation, None)
         .await?;
     assert!(!completed.retry);
     assert_eq!(completed.actual.completed_terminate_epoch, Some(7));
     let completed = home
-        .reconcile(Some(8), Some(&waiting), &cancellation)
+        .reconcile(Some(8), Some(&waiting), &cancellation, None)
         .await?;
     assert!(!completed.retry);
     assert_eq!(completed.actual.completed_reset_epoch, Some(8));
     assert_eq!(session.observe().await?.completed_terminate_epoch, Some(7));
-    assert_eq!(home.observe().await?.completed_reset_epoch, Some(8));
+    assert_eq!(home.observe(None).await?.completed_reset_epoch, Some(8));
     {
         let state = helper
             .lock()
@@ -935,7 +940,7 @@ async fn observation_preserves_binding_eligibility_while_the_replacement_frame_i
         let maintenance = fixture
             .snapshots
             .session
-            .waiting_foreground(&cancellation)
+            .waiting_foreground(&cancellation, None)
             .await?;
         assert!(maintenance.retry);
         assert!(maintenance.actual.is_none());
@@ -965,7 +970,7 @@ async fn observation_preserves_binding_eligibility_while_the_replacement_frame_i
     let maintenance = fixture
         .snapshots
         .session
-        .waiting_foreground(&cancellation)
+        .waiting_foreground(&cancellation, None)
         .await?;
     assert!(!maintenance.retry);
     assert_eq!(maintenance.actual, Some(waiting_session()));
@@ -1058,7 +1063,7 @@ async fn waiting_os_or_live_agent_loss_revokes_binding_eligibility()
             binding::tests::clear_fixture_agent(&fixture.snapshots.binding_input);
         }
         // Check the maintenance observer itself, not a later foreground guard.
-        fixture.snapshots.session.maintain_waiting().await?;
+        fixture.snapshots.session.maintain_waiting(None).await?;
         let revoked =
             binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
         assert_eq!(revoked.screen, SessionScreenKind::Waiting, "{failure}");
@@ -1107,7 +1112,7 @@ async fn waiting_agent_bus_owner_loss_revokes_pending_binding_eligibility()
     assert_eq!(binding.screen, SessionScreenKind::BindingPrompt);
     assert!(fixture.snapshots.session.binding_foreground_ready().await?);
     agent.close().await?;
-    fixture.snapshots.session.maintain_waiting().await?;
+    fixture.snapshots.session.maintain_waiting(None).await?;
     let revoked =
         binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
     assert_eq!(revoked.screen, SessionScreenKind::Waiting);
@@ -1190,7 +1195,10 @@ async fn pending_binding_frame_does_not_mask_foreground_contest_home_or_target_f
             "{failure}"
         );
         assert!(
-            !fixture.snapshots.binding_input.revoke_eligibility()?,
+            !fixture
+                .snapshots
+                .binding_input
+                .revoke_eligibility("waiting_unavailable")?,
             "{failure}"
         );
     }
@@ -1292,7 +1300,12 @@ async fn observation_cannot_reuse_a_binding_frame_after_withdrawing_input()
     // No replacement frame has been supplied. A second observation cannot
     // restore the withdrawn readiness or input just from a healthy desktop.
     assert!(!fixture.snapshots.session.observe().await?.waiting_ready);
-    assert!(!fixture.snapshots.binding_input.revoke_eligibility()?);
+    assert!(
+        !fixture
+            .snapshots
+            .binding_input
+            .revoke_eligibility("waiting_unavailable")?
+    );
     Ok(())
 }
 
@@ -1766,7 +1779,7 @@ async fn binding_keeps_waiting_until_the_operator_selects_contest()
         let outcome = fixture
             .snapshots
             .session
-            .present(&target, bound, true, &cancellation)
+            .present(&target, bound, true, &cancellation, None)
             .await?;
         assert!(!outcome.retry);
         let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
@@ -2101,4 +2114,464 @@ async fn display_updates_keep_ready_caddy_and_credentials_while_waiting_for_a_ne
     assert_eq!(state.termination_calls, []);
     assert_eq!(state.home_calls, [] as [u64; 0]);
     Ok(())
+}
+
+fn assert_resource_event_secrets(capture: &observability::tests::Capture) {
+    for message in [
+        "session step completed",
+        "home step completed",
+        "caddy load completed",
+        "binding eligibility changed",
+    ] {
+        let encoded = format!("{:?}", capture.records(message));
+        for canary in [
+            "password-canary",
+            "team-alpha",
+            "A-01",
+            "judge.example",
+            "/tmp/",
+            "caddyfile",
+        ] {
+            assert!(!encoded.contains(canary));
+        }
+    }
+}
+
+#[tokio::test]
+async fn resource_step_events_keep_rpc_order_results_and_explicit_plan() {
+    use observability::tests::{Capture, Value, assert_text, subscriber_guard};
+    use tracing::instrument::WithSubscriber as _;
+    let _guard = subscriber_guard();
+    let (fixture, mut target) = ready_fixture()
+        .await
+        .unwrap_or_else(|e| panic!("fixture: {e}"));
+    target.home_epoch = Some(7);
+    target.session_target = session::validate_target(SessionControlTarget {
+        foreground_target: ForegroundTarget::Contest.into(),
+        terminate_epoch: Some(8),
+    })
+    .unwrap_or_else(|| panic!("target"));
+    {
+        let mut helper = fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|e| panic!("helper: {e}"));
+        helper.terminate_failures = 1;
+        helper.home_failures = 1;
+    }
+    let capture = Capture::default();
+    async {
+        let mut context = plan_context();
+        context.plan = 17;
+        for _ in 0..3 {
+            let fence = CancellationToken::new();
+            fixture
+                .snapshots
+                .begin_plan(&fence)
+                .unwrap_or_else(|e| panic!("begin: {e}"));
+            fixture.snapshots.annotate_plan(&fence, &context);
+            if !fixture
+                .snapshots
+                .reconcile(&target, fence, &context)
+                .await
+                .unwrap_or_else(|e| panic!("reconcile: {e}"))
+                .retry
+            {
+                break;
+            }
+        }
+        let sessions = capture.records("session step completed");
+        let homes = capture.records("home step completed");
+        for record in sessions.iter().chain(&homes) {
+            assert_eq!(record.fields.get("plan"), Some(&Value::Unsigned(17)));
+            assert_text(record, "target_digest", &context.target.target_digest);
+            assert!(matches!(
+                record.fields.get("helper_call_us"),
+                Some(Value::Unsigned(_))
+            ));
+        }
+        for operation in ["terminate", "activate", "prepare_boot"] {
+            assert!(
+                sessions.iter().any(|record| record.fields.get("operation")
+                    == Some(&Value::Text(operation.to_owned())))
+            );
+        }
+        let termination = sessions
+            .iter()
+            .filter(|record| {
+                record.fields.get("operation") == Some(&Value::Text("terminate".to_owned()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(termination.len(), 2);
+        assert_text(termination[0], "result", "unavailable");
+        assert_text(termination[1], "result", "ok");
+        for record in termination {
+            assert_text(record, "role", "contest");
+        }
+        for operation in ["prepare", "apply", "recover", "verify"] {
+            assert!(
+                homes.iter().any(|record| record.fields.get("operation")
+                    == Some(&Value::Text(operation.to_owned())))
+            );
+        }
+        assert!(
+            homes
+                .iter()
+                .all(|record| record.fields.get("reset_epoch") == Some(&Value::Unsigned(7)))
+        );
+        let helper = fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|e| panic!("helper: {e}"));
+        assert_eq!(helper.termination_calls.len(), 2);
+        assert_eq!(helper.home_calls, [7, 7]);
+        assert_resource_event_secrets(&capture);
+    }
+    .with_subscriber(capture.subscriber())
+    .await;
+}
+
+#[tokio::test]
+async fn owned_home_steps_use_captured_epoch_even_after_cancellation_and_offline() {
+    use observability::tests::{Capture, Value, assert_text, subscriber_guard};
+    use tracing::instrument::WithSubscriber as _;
+    let _guard = subscriber_guard();
+    let fixture = fixture(HelperState {
+        progress: Some(HomeResetProgress {
+            reset_epoch: 8,
+            phase: HomeResetPhase::Prepared,
+        }),
+        ..HelperState::default()
+    })
+    .await
+    .unwrap_or_else(|e| panic!("fixture: {e}"));
+    let capture = Capture::default();
+    async {
+        fixture
+            .snapshots
+            .deactivate(None)
+            .await
+            .unwrap_or_else(|e| panic!("deactivate: {e}"));
+        let fence = CancellationToken::new();
+        fence.cancel();
+        assert!(matches!(
+            fixture
+                .snapshots
+                .home
+                .reconcile(
+                    Some(9),
+                    Some(&waiting_session()),
+                    &fence,
+                    Some(&plan_context())
+                )
+                .await,
+            Err(SnapshotError::Cancelled)
+        ));
+        let owned = capture.records("home step completed");
+        assert_eq!(owned.len(), 2);
+        assert_text(&owned[0], "operation", "apply");
+        assert_text(&owned[1], "operation", "verify");
+        assert!(
+            owned
+                .iter()
+                .all(|record| record.fields.get("reset_epoch") == Some(&Value::Unsigned(8)))
+        );
+        fixture
+            .snapshots
+            .home
+            .reconcile(None, None, &CancellationToken::new(), None)
+            .await
+            .unwrap_or_else(|e| panic!("offline: {e}"));
+        let records = capture.records("home step completed");
+        let last = records.last().unwrap_or_else(|| panic!("record"));
+        assert_text(last, "operation", "verify");
+        assert!(!last.fields.contains_key("plan"));
+        assert!(!last.fields.contains_key("target_digest"));
+        assert_eq!(
+            fixture
+                .helper
+                .lock()
+                .unwrap_or_else(|e| panic!("helper: {e}"))
+                .home_calls,
+            [8]
+        );
+    }
+    .with_subscriber(capture.subscriber())
+    .await;
+}
+
+#[tokio::test]
+async fn offline_home_recovery_reports_rpc_error_without_a_remote_epoch() {
+    use observability::tests::{Capture, assert_text, subscriber_guard};
+    use tracing::instrument::WithSubscriber as _;
+    let _guard = subscriber_guard();
+    let fixture = fixture(HelperState {
+        rejected: true,
+        ..HelperState::default()
+    })
+    .await
+    .unwrap_or_else(|e| panic!("fixture: {e}"));
+    let capture = Capture::default();
+    async {
+        fixture
+            .snapshots
+            .home
+            .reconcile(None, None, &CancellationToken::new(), None)
+            .await
+            .unwrap_or_else(|e| panic!("recovery: {e}"));
+        let records = capture.records("home step completed");
+        assert_eq!(records.len(), 1);
+        assert_text(&records[0], "operation", "recover_local");
+        assert_text(&records[0], "result", "rpc_error");
+        for field in ["plan", "target_digest", "reset_epoch"] {
+            assert!(!records[0].fields.contains_key(field));
+        }
+    }
+    .with_subscriber(capture.subscriber())
+    .await;
+}
+
+#[tokio::test]
+async fn rejected_mutation_steps_keep_typed_result_without_retry_changes() {
+    use observability::tests::{Capture, assert_text, subscriber_guard};
+    use tracing::instrument::WithSubscriber as _;
+    let _guard = subscriber_guard();
+    let fixture = fixture(HelperState {
+        rejected: true,
+        foreground: Some(SessionForeground::Waiting),
+        ..HelperState::default()
+    })
+    .await
+    .unwrap_or_else(|e| panic!("fixture: {e}"));
+    let capture = Capture::default();
+    async {
+        let target = session::validate_target(SessionControlTarget {
+            foreground_target: ForegroundTarget::Contest.into(),
+            terminate_epoch: Some(7),
+        })
+        .unwrap_or_else(|| panic!("target"));
+        let context = plan_context();
+        let token = CancellationToken::new();
+        let session = fixture
+            .snapshots
+            .session
+            .reconcile(&target, Some(&waiting_session()), &token, Some(&context))
+            .await
+            .unwrap_or_else(|e| panic!("session: {e}"));
+        assert!(!session.retry);
+        let home = fixture
+            .snapshots
+            .home
+            .reconcile(Some(8), Some(&waiting_session()), &token, Some(&context))
+            .await
+            .unwrap_or_else(|e| panic!("home: {e}"));
+        assert!(!home.retry);
+        for message in ["session step completed", "home step completed"] {
+            let records = capture.records(message);
+            assert_eq!(records.len(), 1);
+            assert_text(&records[0], "result", "rejected");
+            assert_text(&records[0], "target_digest", &context.target.target_digest);
+        }
+        assert_resource_event_secrets(&capture);
+    }
+    .with_subscriber(capture.subscriber())
+    .await;
+}
+
+#[tokio::test]
+async fn caddy_ready_failure_and_blocked_fallback_keep_the_same_plan() {
+    use observability::tests::{Capture, Value, assert_text, subscriber_guard};
+    use tracing::instrument::WithSubscriber as _;
+    let _guard = subscriber_guard();
+    let (fixture, mut target) = ready_fixture()
+        .await
+        .unwrap_or_else(|e| panic!("fixture: {e}"));
+    target.runtime_origin = "https://other.example".to_owned();
+    let binary = fixture.directory.path().join("caddy-fixture");
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = validate ] && grep -q reverse_proxy '{}'; then exit 1; fi\nprintf '{{}}\\n'\n",
+        fixture.directory.path().join("caddyfile").display()
+    );
+    std::fs::write(binary, script).unwrap_or_else(|e| panic!("script: {e}"));
+    let capture = Capture::default();
+    async {
+        let context = plan_context();
+        let token = CancellationToken::new();
+        fixture
+            .snapshots
+            .begin_plan(&token)
+            .unwrap_or_else(|e| panic!("plan: {e}"));
+        fixture.snapshots.annotate_plan(&token, &context);
+        let outcome = fixture
+            .snapshots
+            .reconcile(&target, token, &context)
+            .await
+            .unwrap_or_else(|e| panic!("reconcile: {e}"));
+        assert!(outcome.retry);
+        let records = capture.records("caddy load completed");
+        let ready = records
+            .iter()
+            .position(|record| record.fields.get("mode") == Some(&Value::Text("ready".to_owned())))
+            .unwrap_or_else(|| panic!("ready load"));
+        assert_text(&records[ready], "result", "error");
+        assert_text(&records[ready + 1], "mode", "blocked");
+        assert_text(&records[ready + 1], "result", "ok");
+        for record in &records[ready..=ready + 1] {
+            assert_eq!(
+                record.fields.get("plan"),
+                Some(&Value::Unsigned(context.plan))
+            );
+            assert_text(record, "target_digest", &context.target.target_digest);
+        }
+        assert_resource_event_secrets(&capture);
+    }
+    .with_subscriber(capture.subscriber())
+    .await;
+}
+
+#[tokio::test]
+async fn steady_observation_has_no_session_or_home_step_events() {
+    use observability::tests::{Capture, Value, assert_text, subscriber_guard};
+    use tracing::instrument::WithSubscriber as _;
+    let _guard = subscriber_guard();
+    for completed in [None, Some(8)] {
+        let fixture = fixture(HelperState {
+            progress: completed.map(|reset_epoch| HomeResetProgress {
+                reset_epoch,
+                phase: HomeResetPhase::Verified,
+            }),
+            home_calls: completed.into_iter().collect(),
+            ..HelperState::default()
+        })
+        .await
+        .unwrap_or_else(|e| panic!("fixture: {e}"));
+        fixture
+            .snapshots
+            .home
+            .reconcile(None, None, &CancellationToken::new(), None)
+            .await
+            .unwrap_or_else(|e| panic!("completion: {e}"));
+        let target = validate_server_snapshot(snapshot()).unwrap_or_else(|e| panic!("target: {e}"));
+        let capture = Capture::default();
+        async {
+            for _ in 0..2 {
+                let observed = fixture
+                    .snapshots
+                    .observe(Some(&target))
+                    .await
+                    .unwrap_or_else(|e| panic!("observe: {e}"));
+                assert_eq!(
+                    observed
+                        .actual
+                        .as_ref()
+                        .and_then(|actual| actual.home.as_ref())
+                        .and_then(|home| home.completed_reset_epoch),
+                    completed
+                );
+            }
+            assert!(capture.records("session step completed").is_empty());
+            assert!(capture.records("home step completed").is_empty());
+            if completed.is_some() {
+                fixture
+                    .helper
+                    .lock()
+                    .unwrap_or_else(|e| panic!("helper: {e}"))
+                    .home_verify_failure = true;
+                let observed = fixture
+                    .snapshots
+                    .observe(Some(&target))
+                    .await
+                    .unwrap_or_else(|e| panic!("failed verify: {e}"));
+                assert_eq!(
+                    observed
+                        .actual
+                        .and_then(|actual| actual.home)
+                        .map(|home| home.state),
+                    Some(i32::from(HomeState::RecoveryRequired))
+                );
+                let records = capture.records("home step completed");
+                assert_eq!(records.len(), 1);
+                assert_text(&records[0], "operation", "verify");
+                assert_text(&records[0], "result", "unavailable");
+                assert_eq!(
+                    records[0].fields.get("reset_epoch"),
+                    Some(&Value::Unsigned(8))
+                );
+                assert!(matches!(
+                    records[0].fields.get("helper_call_us"),
+                    Some(Value::Unsigned(_))
+                ));
+            }
+            assert_eq!(
+                fixture
+                    .helper
+                    .lock()
+                    .unwrap_or_else(|e| panic!("helper: {e}"))
+                    .waiting_resume_calls,
+                if completed.is_some() { 3 } else { 2 }
+            );
+        }
+        .with_subscriber(capture.subscriber())
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn waiting_resume_events_require_resumed_work_or_failure() {
+    use observability::tests::{Capture, Value, assert_text, subscriber_guard};
+    use tracing::instrument::WithSubscriber as _;
+    let _guard = subscriber_guard();
+    let fixture = fixture(HelperState::default())
+        .await
+        .unwrap_or_else(|e| panic!("fixture: {e}"));
+    let capture = Capture::default();
+    async {
+        let context = plan_context();
+        for result in [
+            Ok(false),
+            Ok(true),
+            Err(ResourceControlError::Unavailable(
+                "resume-failure-canary".to_owned(),
+            )),
+        ] {
+            fixture
+                .helper
+                .lock()
+                .unwrap_or_else(|e| panic!("helper: {e}"))
+                .waiting_resume_result = Some(result);
+            fixture
+                .snapshots
+                .session
+                .maintain_waiting(Some(&context))
+                .await
+                .unwrap_or_else(|e| panic!("maintain: {e}"));
+        }
+        let records = capture.records("session step completed");
+        assert_eq!(records.len(), 2);
+        for (record, result) in records.iter().zip(["ok", "unavailable"]) {
+            assert_text(record, "operation", "resume_waiting");
+            assert_text(record, "role", "waiting");
+            assert_text(record, "result", result);
+            assert_text(record, "target_digest", &context.target.target_digest);
+            assert_eq!(
+                record.fields.get("plan"),
+                Some(&Value::Unsigned(context.plan))
+            );
+            assert!(matches!(
+                record.fields.get("helper_call_us"),
+                Some(Value::Unsigned(_))
+            ));
+        }
+        let helper = fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|e| panic!("helper: {e}"));
+        assert_eq!(helper.waiting_resume_calls, 3);
+        assert_eq!(
+            helper.waiting_recovery_calls,
+            [] as [Option<GraphicalSession>; 0]
+        );
+    }
+    .with_subscriber(capture.subscriber())
+    .await;
 }

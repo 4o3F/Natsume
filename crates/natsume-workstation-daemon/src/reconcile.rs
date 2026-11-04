@@ -219,6 +219,14 @@ impl SnapshotReconciler {
         self.binding_input.refresh_plan(plan)
     }
 
+    pub(crate) fn annotate_plan(
+        &self,
+        fence: &CancellationToken,
+        context: &observability::PlanContext,
+    ) {
+        self.binding_input.annotate_plan(fence, context);
+    }
+
     /// Revokes all Binding submission authority before a plan is awaited.
     pub(crate) fn end_plan(&self) -> Result<(), SnapshotError> {
         self.binding_input.end_plan()
@@ -236,8 +244,9 @@ impl SnapshotReconciler {
         let mut timings = StageTimings::new(Instant::now());
         let mut retry = RetryDecisions::default();
         let result = async {
-            let (local_before, configuration_before) =
-                self.inspect_and_guard(snapshot, &cancellation).await?;
+            let (local_before, configuration_before) = self
+                .inspect_and_guard(snapshot, &cancellation, Some(context))
+                .await?;
             timings.advance(Stage::Configuration, Instant::now());
             let configuration =
                 self.apply_configuration(snapshot, configuration_before, &cancellation)?;
@@ -245,13 +254,19 @@ impl SnapshotReconciler {
             retry.runtime = Some(configuration.runtime_actual.retry);
             timings.advance(Stage::Maintenance, Instant::now());
             let maintenance = self
-                .reconcile_maintenance(snapshot, local_before, &cancellation)
+                .reconcile_maintenance(snapshot, local_before, &cancellation, Some(context))
                 .await?;
             retry.session = Some(maintenance.session_actual.retry);
             retry.home = Some(maintenance.home_actual.retry);
             timings.advance(Stage::Access, Instant::now());
             let access = self
-                .reconcile_access(snapshot, &configuration, maintenance, &cancellation)
+                .reconcile_access(
+                    snapshot,
+                    &configuration,
+                    maintenance,
+                    &cancellation,
+                    Some(context),
+                )
                 .await?;
             retry.session = Some(access.session_actual.retry);
             retry.home = Some(access.home_actual.retry);
@@ -323,12 +338,14 @@ impl SnapshotReconciler {
         &self,
         target: Option<&ValidatedSnapshot>,
     ) -> Result<ClientStateSnapshot, SnapshotError> {
-        self.session.maintain_waiting().await?;
+        self.session.maintain_waiting(None).await?;
         let LocalAccessObservation {
             mut session, home, ..
-        } = self.guard_local_access(target).await?;
+        } = self.guard_local_access(target, None).await?;
         if !self.session.binding_foreground_ready().await?
-            && self.binding_input.revoke_eligibility()?
+            && self
+                .binding_input
+                .revoke_eligibility("waiting_unavailable")?
         {
             // Revocation selects a new placeholder revision after the sample.
             // The old Binding frame cannot confirm that new presentation.

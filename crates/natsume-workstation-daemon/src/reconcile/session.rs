@@ -20,8 +20,10 @@ use uuid::Uuid;
 use crate::atomic_write::{WritePolicy, atomic_write};
 
 use super::{
-    ReconcileOutcome, SnapshotError, binding::BindingInputProvider, check_cancellation,
-    invalid_epoch,
+    ReconcileOutcome, SnapshotError,
+    binding::BindingInputProvider,
+    check_cancellation, invalid_epoch,
+    observability::{PlanContext, session_call, trace_session_call},
 };
 
 const ARTIFACT_FORMAT_VERSION: u32 = 1;
@@ -177,7 +179,10 @@ impl SessionReconciler {
 
     /// Local recovery is independent of business Targets. The current control
     /// task tracks this bounded call; only Helper can spend the per-boot budget.
-    pub(super) async fn maintain_waiting(&self) -> Result<(), SnapshotError> {
+    pub(super) async fn maintain_waiting(
+        &self,
+        context: Option<&PlanContext>,
+    ) -> Result<(), SnapshotError> {
         let proxy = self.proxy().await?;
         let Ok(observed) = proxy.query_managed_sessions().await else {
             let mut health = self
@@ -199,11 +204,23 @@ impl SessionReconciler {
         // Selecting Binding invalidates the preceding Waiting frame. Pending
         // presentation affects readiness and recovery, not live-Agent eligibility.
         if !available {
-            self.agent.revoke_eligibility()?;
+            self.agent.revoke_eligibility("waiting_unavailable")?;
         }
         // An already captured operation is resumed without another cooldown,
         // including after a Daemon/Helper restart. It never captures new work.
-        match proxy.resume_waiting_recovery().await {
+        let started = Instant::now();
+        let resumed = proxy.resume_waiting_recovery().await;
+        let elapsed = started.elapsed();
+        if !matches!(resumed, Ok(false)) {
+            trace_session_call(
+                context,
+                "resume_waiting",
+                SessionRole::Waiting,
+                elapsed,
+                &resumed,
+            );
+        }
+        match resumed {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(error) => {
@@ -214,9 +231,13 @@ impl SessionReconciler {
         if due {
             self.agent
                 .retire_waiting(observed.waiting.session.as_ref())?;
-            match proxy
-                .recover_waiting_session(&observed.waiting.session)
-                .await
+            match session_call(
+                context,
+                "recover_waiting",
+                SessionRole::Waiting,
+                proxy.recover_waiting_session(&observed.waiting.session),
+            )
+            .await
             {
                 Ok(_) => {
                     self.waiting_health
@@ -235,6 +256,7 @@ impl SessionReconciler {
         target: &ValidatedSessionTarget,
         waiting: Option<&GraphicalSession>,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<ReconcileOutcome<SessionControlActualState>, SnapshotError> {
         let mut completion = match read_completion(&self.artifact_path) {
             CompletionState::Valid(completion) => completion,
@@ -247,7 +269,10 @@ impl SessionReconciler {
         };
         let proxy = self.proxy().await?;
 
-        if let Some(actual) = self.resume_pending(&proxy, &mut completion).await? {
+        if let Some(actual) = self
+            .resume_pending(&proxy, &mut completion, context)
+            .await?
+        {
             return Ok(actual);
         }
         if let Some(actual) = self
@@ -257,6 +282,7 @@ impl SessionReconciler {
                 target.terminate_epoch,
                 waiting,
                 cancellation,
+                context,
             )
             .await?
         {
@@ -282,13 +308,21 @@ impl SessionReconciler {
         &self,
         proxy: &Privileged1Proxy<'_>,
         completion: &mut SessionCompletionArtifact,
+        context: Option<&PlanContext>,
     ) -> Result<Option<ReconcileOutcome<SessionControlActualState>>, SnapshotError> {
         let Some(pending) = completion.pending.as_ref() else {
             return Ok(None);
         };
         // This is already-owned work on one exact boot/session. Revoking a
         // Target cannot revoke a logind call or make a replacement its target.
-        if let Err(error) = proxy.terminate_contest_session(&pending.session).await {
+        if let Err(error) = session_call(
+            context,
+            "terminate",
+            SessionRole::Contest,
+            proxy.terminate_contest_session(&pending.session),
+        )
+        .await
+        {
             return Ok(Some(ReconcileOutcome::control_error(
                 terminating_actual(completion.completed_terminate_epoch),
                 &error,
@@ -307,6 +341,7 @@ impl SessionReconciler {
         target_epoch: Option<u64>,
         waiting: Option<&GraphicalSession>,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<Option<ReconcileOutcome<SessionControlActualState>>, SnapshotError> {
         let Some(epoch) = target_epoch.filter(|epoch| {
             completion
@@ -365,7 +400,14 @@ impl SessionReconciler {
                 });
                 persist_completion(&self.artifact_path, completion)?;
                 check_cancellation(cancellation)?;
-                if let Err(error) = proxy.terminate_contest_session(session).await {
+                if let Err(error) = session_call(
+                    context,
+                    "terminate",
+                    SessionRole::Contest,
+                    proxy.terminate_contest_session(session),
+                )
+                .await
+                {
                     return Ok(Some(ReconcileOutcome::control_error(
                         terminating_actual(completion.completed_terminate_epoch),
                         &error,
@@ -406,6 +448,7 @@ impl SessionReconciler {
     pub(super) async fn waiting_foreground(
         &self,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<ReconcileOutcome<Option<GraphicalSession>>, SnapshotError> {
         let proxy = self.proxy().await?;
         let observed = proxy
@@ -418,7 +461,13 @@ impl SessionReconciler {
         };
         check_cancellation(cancellation)?;
         if observed.foreground != SessionForeground::Waiting
-            && let Err(error) = proxy.activate_session(SessionRole::Waiting, &waiting).await
+            && let Err(error) = session_call(
+                context,
+                "activate",
+                SessionRole::Waiting,
+                proxy.activate_session(SessionRole::Waiting, &waiting),
+            )
+            .await
         {
             return Ok(ReconcileOutcome::control_error(None, &error));
         }
@@ -444,6 +493,7 @@ impl SessionReconciler {
     pub(super) async fn prepare_boot(
         &self,
         cancellation: Option<&CancellationToken>,
+        context: Option<&PlanContext>,
     ) -> Result<bool, SnapshotError> {
         let proxy = self.proxy().await?;
         let observed = proxy
@@ -457,10 +507,14 @@ impl SessionReconciler {
         if let Some(cancellation) = cancellation {
             check_cancellation(cancellation)?;
         }
-        proxy
-            .prepare_boot_sessions(&waiting)
-            .await
-            .map_err(|_| SnapshotError::LocalControl)
+        session_call(
+            context,
+            "prepare_boot",
+            SessionRole::Waiting,
+            proxy.prepare_boot_sessions(&waiting),
+        )
+        .await
+        .map_err(|_| SnapshotError::LocalControl)
     }
 
     pub(super) async fn binding_foreground_ready(&self) -> Result<bool, SnapshotError> {
@@ -491,16 +545,17 @@ impl SessionReconciler {
         bound: bool,
         maintenance_complete: bool,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<ReconcileOutcome<SessionControlActualState>, SnapshotError> {
         check_cancellation(cancellation)?;
         if !maintenance_complete {
-            let waiting = self.waiting_foreground(cancellation).await?;
+            let waiting = self.waiting_foreground(cancellation, context).await?;
             return Ok(ReconcileOutcome {
                 actual: self.observe().await?,
                 retry: waiting.retry,
             });
         }
-        if !self.prepare_boot(Some(cancellation)).await? {
+        if !self.prepare_boot(Some(cancellation), context).await? {
             return Ok(ReconcileOutcome::retry(self.observe().await?));
         }
         check_cancellation(cancellation)?;
@@ -518,7 +573,14 @@ impl SessionReconciler {
             )
         {
             check_cancellation(cancellation)?;
-            if let Err(error) = proxy.prepare_session(SessionRole::Contest).await {
+            if let Err(error) = session_call(
+                context,
+                "prepare",
+                SessionRole::Contest,
+                proxy.prepare_session(SessionRole::Contest),
+            )
+            .await
+            {
                 return Ok(ReconcileOutcome::control_error(
                     self.observe().await?,
                     &error,
@@ -552,7 +614,14 @@ impl SessionReconciler {
             && observed.foreground != foreground
         {
             check_cancellation(cancellation)?;
-            if let Err(error) = proxy.activate_session(effective, &session).await {
+            if let Err(error) = session_call(
+                context,
+                "activate",
+                effective,
+                proxy.activate_session(effective, &session),
+            )
+            .await
+            {
                 return Ok(ReconcileOutcome::control_error(
                     self.observe().await?,
                     &error,
@@ -570,10 +639,14 @@ impl SessionReconciler {
     /// Completes only durable pending termination, without capturing a new target.
     pub(super) async fn recover_owned(
         &self,
+        context: Option<&PlanContext>,
     ) -> Result<ReconcileOutcome<SessionControlActualState>, SnapshotError> {
         if let CompletionState::Valid(mut completion) = read_completion(&self.artifact_path) {
             let proxy = self.proxy().await?;
-            if let Some(outcome) = self.resume_pending(&proxy, &mut completion).await? {
+            if let Some(outcome) = self
+                .resume_pending(&proxy, &mut completion, context)
+                .await?
+            {
                 return Ok(outcome);
             }
         }
@@ -784,7 +857,7 @@ pub(super) mod tests {
             health.last_sample = Some(now - Duration::from_secs(30));
         }
         assert!(!session.observe().await?.waiting_ready);
-        session.maintain_waiting().await?;
+        session.maintain_waiting(None).await?;
         let helper = fixture.helper.lock().map_err(|_| "helper lock")?;
         assert_eq!(helper.waiting_recovery_calls, []);
         assert_eq!(helper.activation_calls, []);
@@ -810,7 +883,7 @@ pub(super) mod tests {
         fixture.pause_agent_frames().await;
         let session = &fixture.snapshots.session;
         let cancellation = CancellationToken::new();
-        let pending = session.waiting_foreground(&cancellation).await?;
+        let pending = session.waiting_foreground(&cancellation, None).await?;
         assert!(pending.retry);
         assert!(pending.actual.is_none());
         {
@@ -819,7 +892,7 @@ pub(super) mod tests {
             assert_eq!(helper.activation_calls.len(), 1);
         }
         fixture.confirm_agent_frame()?;
-        let ready = session.waiting_foreground(&cancellation).await?;
+        let ready = session.waiting_foreground(&cancellation, None).await?;
         assert!(!ready.retry);
         assert!(ready.actual.is_some());
         assert_eq!(
@@ -858,7 +931,7 @@ pub(super) mod tests {
             .await?;
         let session = &fixture.snapshots.session;
         assert!(!session.observe().await?.waiting_ready);
-        session.maintain_waiting().await?;
+        session.maintain_waiting(None).await?;
         assert_eq!(
             fixture
                 .helper
@@ -874,7 +947,7 @@ pub(super) mod tests {
             health.failed_since = Some(now - WAITING_FAILURE_COOLDOWN);
             health.last_sample = Some(now - Duration::from_secs(30));
         }
-        session.maintain_waiting().await?;
+        session.maintain_waiting(None).await?;
         assert_eq!(
             fixture
                 .helper
@@ -885,7 +958,12 @@ pub(super) mod tests {
             1
         );
         assert!(!session.binding_foreground_ready().await?);
-        assert!(!fixture.snapshots.binding_input.revoke_eligibility()?);
+        assert!(
+            !fixture
+                .snapshots
+                .binding_input
+                .revoke_eligibility("waiting_unavailable")?
+        );
         Ok(())
     }
 
@@ -1017,5 +1095,98 @@ pub(super) mod tests {
         assert!(!locked.contest_ready);
         assert!(!locked.waiting_ready);
         assert!(!foreground_is_ready(SessionRole::Contest, &locked));
+    }
+    #[tokio::test]
+    async fn preparation_and_offline_recovery_events_preserve_roles_and_cancellation() {
+        use crate::reconcile::{
+            observability::tests::{Capture, Value, assert_text, context, subscriber_guard},
+            tests::{HelperState, fixture},
+        };
+        use tracing::instrument::WithSubscriber as _;
+        let _guard = subscriber_guard();
+        let fixture = fixture(HelperState {
+            session_state: Some(GraphicalSessionState::None),
+            foreground: Some(SessionForeground::Waiting),
+            ..HelperState::default()
+        })
+        .await
+        .unwrap_or_else(|e| panic!("fixture: {e}"));
+        let capture = Capture::default();
+        async {
+            let target = validate_target(SessionControlTarget {
+                foreground_target: ForegroundTarget::Contest.into(),
+                terminate_epoch: None,
+            })
+            .unwrap_or_else(|| panic!("target"));
+            let token = CancellationToken::new();
+            let context = context();
+            let outcome = fixture
+                .snapshots
+                .session
+                .present(&target, true, true, &token, Some(&context))
+                .await
+                .unwrap_or_else(|e| panic!("present: {e}"));
+            assert!(outcome.retry);
+            let records = capture.records("session step completed");
+            assert_eq!(records.len(), 2);
+            for (record, (operation, role)) in records
+                .iter()
+                .zip([("prepare_boot", "waiting"), ("prepare", "contest")])
+            {
+                assert_text(record, "operation", operation);
+                assert_text(record, "role", role);
+                assert_text(record, "result", "ok");
+                assert_eq!(
+                    record.fields.get("plan"),
+                    Some(&Value::Unsigned(context.plan))
+                );
+            }
+            token.cancel();
+            assert!(matches!(
+                fixture
+                    .snapshots
+                    .session
+                    .present(&target, true, true, &token, Some(&context))
+                    .await,
+                Err(SnapshotError::Cancelled)
+            ));
+            assert_eq!(capture.records("session step completed").len(), 2);
+            fixture.pause_agent_frames().await;
+            {
+                let now = Instant::now();
+                let mut health = fixture
+                    .snapshots
+                    .session
+                    .waiting_health
+                    .lock()
+                    .unwrap_or_else(|e| panic!("health: {e}"));
+                health.failed_since = Some(now - WAITING_FAILURE_COOLDOWN);
+                health.last_sample = Some(now - Duration::from_secs(30));
+            }
+            fixture
+                .snapshots
+                .session
+                .maintain_waiting(None)
+                .await
+                .unwrap_or_else(|e| panic!("maintain: {e}"));
+            let records = capture.records("session step completed");
+            assert_eq!(records.len(), 3);
+            for (record, operation) in records[2..].iter().zip(["recover_waiting"]) {
+                assert_text(record, "operation", operation);
+                assert_text(record, "role", "waiting");
+                assert_text(record, "result", "ok");
+                assert!(!record.fields.contains_key("plan"));
+                assert!(!record.fields.contains_key("target_digest"));
+            }
+            let helper = fixture
+                .helper
+                .lock()
+                .unwrap_or_else(|e| panic!("helper: {e}"));
+            assert_eq!(helper.preparation_calls, [SessionRole::Contest]);
+            assert_eq!(helper.waiting_resume_calls, 1);
+            assert_eq!(helper.waiting_recovery_calls.len(), 1);
+        }
+        .with_subscriber(capture.subscriber())
+        .await;
     }
 }
