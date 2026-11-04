@@ -69,9 +69,54 @@ impl PrivilegedService {
 async fn bounded_session_operation<T>(
     operation: impl std::future::Future<Output = Result<T, ResourceControlError>>,
 ) -> Result<T, ResourceControlError> {
-    tokio::time::timeout(std::time::Duration::from_secs(8), operation)
-        .await
-        .map_err(|_| session::unavailable("session operation timed out; resample before retry"))?
+    bounded_session_attempt(operation).await.0
+}
+
+async fn bounded_session_attempt<T>(
+    operation: impl std::future::Future<Output = Result<T, ResourceControlError>>,
+) -> (Result<T, ResourceControlError>, bool) {
+    match tokio::time::timeout(std::time::Duration::from_secs(8), operation).await {
+        Ok(result) => (result, false),
+        Err(_) => (
+            Err(session::unavailable(
+                "session operation timed out; resample before retry",
+            )),
+            true,
+        ),
+    }
+}
+
+fn duration_micros(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn local_result<T>(result: &Result<T, ResourceControlError>, timed_out: bool) -> &'static str {
+    if timed_out {
+        "timeout"
+    } else if result.is_ok() {
+        "ok"
+    } else {
+        "error"
+    }
+}
+
+fn trace_home_request<T>(
+    epoch: u64,
+    operation: &'static str,
+    elapsed: std::time::Duration,
+    result: &Result<T, ResourceControlError>,
+    timed_out: bool,
+    worked: bool,
+) {
+    if worked || result.is_err() {
+        tracing::info!(
+            reset_epoch = epoch,
+            operation,
+            elapsed_us = duration_micros(elapsed),
+            result = local_result(result, timed_out),
+            "home reset completed"
+        );
+    }
 }
 
 #[zbus::interface(name = "org.natsume.Privileged1")]
@@ -102,11 +147,23 @@ impl PrivilegedService {
         &mut self,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        bounded_session_operation(home::window::restore_home(
+        let started = tokio::time::Instant::now();
+        let mut observation = home::window::RecoveryObservation::default();
+        let (result, timed_out) = bounded_session_attempt(home::window::restore_home(
             &self.filesystem_root,
             connection,
+            &mut observation,
         ))
-        .await
+        .await;
+        let elapsed = started.elapsed();
+        tracing::info!(
+            reset_epoch = observation.reset_epoch,
+            action = observation.action.map(home::window::RecoveryAction::name),
+            elapsed_us = duration_micros(elapsed),
+            result = local_result(&result, timed_out),
+            "home recovery"
+        );
+        result
     }
 
     #[zbus(name = "IsHomeReady")]
@@ -176,17 +233,37 @@ impl PrivilegedService {
         target: GraphicalSession,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        let _mutation = admission::mutation(&self.filesystem_root)?;
-        if role == SessionRole::Contest {
-            admission::require_open(&self.filesystem_root)?;
+        let started = tokio::time::Instant::now();
+        let mut activate_us = None;
+        let mut timed_out = false;
+        let result = async {
+            let _mutation = admission::mutation(&self.filesystem_root)?;
+            if role == SessionRole::Contest {
+                admission::require_open(&self.filesystem_root)?;
+            }
+            let activate_started = tokio::time::Instant::now();
+            let (result, hit) = bounded_session_attempt(session::activate(
+                connection,
+                &self.filesystem_root,
+                role,
+                &target,
+            ))
+            .await;
+            activate_us = Some(activate_started.elapsed());
+            timed_out = hit;
+            result
         }
-        bounded_session_operation(session::activate(
-            connection,
-            &self.filesystem_root,
-            role,
-            &target,
-        ))
-        .await
+        .await;
+        let elapsed = started.elapsed();
+        tracing::info!(
+            operation = "activate",
+            foreground_target = session::role_name(role),
+            elapsed_us = duration_micros(elapsed),
+            activate_us = activate_us.map(duration_micros),
+            result = local_result(&result, timed_out),
+            "session switch completed"
+        );
+        result
     }
 
     #[zbus(name = "CloseContestAdmission")]
@@ -227,13 +304,23 @@ impl PrivilegedService {
         waiting: GraphicalSession,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        bounded_session_operation(home::window::prepare(
+        let started = tokio::time::Instant::now();
+        let (result, timed_out) = bounded_session_attempt(home::window::prepare(
             &self.filesystem_root,
             connection,
             reset_epoch,
             &waiting,
         ))
-        .await
+        .await;
+        trace_home_request(
+            reset_epoch,
+            "prepare_request",
+            started.elapsed(),
+            &result,
+            timed_out,
+            true,
+        );
+        result
     }
 
     #[zbus(name = "ApplyHomeReset")]
@@ -242,12 +329,24 @@ impl PrivilegedService {
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        bounded_session_operation(home::window::apply(
+        let started = tokio::time::Instant::now();
+        let mut worked = false;
+        let (result, timed_out) = bounded_session_attempt(home::window::apply(
             &self.filesystem_root,
             connection,
             reset_epoch,
+            &mut worked,
         ))
-        .await
+        .await;
+        trace_home_request(
+            reset_epoch,
+            "apply_request",
+            started.elapsed(),
+            &result,
+            timed_out,
+            worked,
+        );
+        result
     }
 
     #[zbus(name = "QueryHomeReset")]
@@ -261,12 +360,24 @@ impl PrivilegedService {
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<HomeResetProgress, ResourceControlError> {
-        bounded_session_operation(home::window::verify(
+        let started = tokio::time::Instant::now();
+        let mut worked = false;
+        let (result, timed_out) = bounded_session_attempt(home::window::verify(
             &self.filesystem_root,
             connection,
             reset_epoch,
+            &mut worked,
         ))
-        .await
+        .await;
+        trace_home_request(
+            reset_epoch,
+            "verify_request",
+            started.elapsed(),
+            &result,
+            timed_out,
+            worked,
+        );
+        result
     }
 
     #[zbus(name = "RecoverHomeReset")]
@@ -275,17 +386,27 @@ impl PrivilegedService {
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        bounded_session_operation(home::window::recover(
+        let started = tokio::time::Instant::now();
+        let (result, timed_out) = bounded_session_attempt(home::window::recover(
             &self.filesystem_root,
             connection,
             reset_epoch,
         ))
-        .await
+        .await;
+        trace_home_request(
+            reset_epoch,
+            "recover_request",
+            started.elapsed(),
+            &result,
+            timed_out,
+            true,
+        );
+        result
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{fs, os::unix::fs::PermissionsExt as _, path::Path};
 
     use natsume_workstation_ipc::{
@@ -295,6 +416,99 @@ mod tests {
     use tokio::net::UnixStream;
 
     use super::*;
+
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex, MutexGuard},
+    };
+    use tracing::{
+        Event, Subscriber,
+        field::{Field, Visit},
+    };
+    use tracing_subscriber::{Layer, layer::Context, prelude::*};
+
+    static SUBSCRIBER_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) struct SubscriberGuard {
+        _lock: MutexGuard<'static, ()>,
+        _dispatch: tracing::Dispatch,
+    }
+    pub(crate) fn subscriber_guard() -> SubscriberGuard {
+        SubscriberGuard {
+            _lock: SUBSCRIBER_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            _dispatch: tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()),
+        }
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub(crate) enum Value {
+        Text(String),
+        Unsigned(u64),
+        Boolean(bool),
+    }
+    #[derive(Clone, Debug)]
+    pub(crate) struct Record {
+        pub(crate) fields: BTreeMap<String, Value>,
+        pub(crate) level: tracing::Level,
+    }
+    impl Visit for Record {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.record_str(field, &format!("{value:?}"));
+        }
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.fields
+                .insert(field.name().to_owned(), Value::Text(value.to_owned()));
+        }
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.fields
+                .insert(field.name().to_owned(), Value::Unsigned(value));
+        }
+        fn record_bool(&mut self, field: &Field, value: bool) {
+            self.fields
+                .insert(field.name().to_owned(), Value::Boolean(value));
+        }
+    }
+    #[derive(Clone, Default)]
+    pub(crate) struct Capture(Arc<Mutex<Vec<Record>>>);
+    impl<S: Subscriber> Layer<S> for Capture {
+        fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+            let mut record = Record {
+                fields: BTreeMap::new(),
+                level: *event.metadata().level(),
+            };
+            event.record(&mut record);
+            if matches!(record.fields.get("message"), Some(Value::Text(message)) if matches!(message.as_str(), "session switch completed" | "home reset completed" | "home recovery"))
+            {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| panic!("capture: {e}"))
+                    .push(record);
+            }
+        }
+    }
+    impl Capture {
+        pub(crate) fn subscriber(&self) -> impl Subscriber + Send + Sync + use<> {
+            tracing_subscriber::registry().with(self.clone())
+        }
+        pub(crate) fn events(&self, message: &str) -> Vec<Record> {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| panic!("capture: {e}"))
+                .iter()
+                .filter(|record| {
+                    record.fields.get("message") == Some(&Value::Text(message.to_owned()))
+                })
+                .cloned()
+                .collect()
+        }
+    }
+    pub(crate) fn assert_text(record: &Record, field: &str, value: &str) {
+        assert_eq!(record.level, tracing::Level::INFO);
+        assert_eq!(
+            record.fields.get(field),
+            Some(&Value::Text(value.to_owned()))
+        );
+    }
 
     impl PrivilegedService {
         fn fixture(filesystem_root: &Path) -> Self {
@@ -547,5 +761,33 @@ mod tests {
             .unwrap_or_else(|e| panic!("record: {e}")),
             spent
         );
+    }
+    #[tokio::test]
+    async fn bounded_attempt_retains_the_eight_second_deadline_and_result_classification() {
+        let (result, hit) =
+            bounded_session_attempt(async { Ok::<_, ResourceControlError>(7) }).await;
+        assert_eq!(result.unwrap_or_else(|e| panic!("result: {e}")), 7);
+        assert!(!hit);
+        let (result, hit) =
+            bounded_session_attempt(async { Err::<(), _>(session::rejected("fixture")) }).await;
+        assert!(!hit);
+        assert_eq!(local_result(&result, hit), "error");
+        let started = tokio::time::Instant::now();
+        let (result, hit) =
+            bounded_session_attempt(std::future::pending::<Result<(), ResourceControlError>>())
+                .await;
+        assert!(hit);
+        assert!(started.elapsed() >= std::time::Duration::from_secs(8));
+        assert!(
+            matches!(&result, Err(ResourceControlError::Unavailable(message)) if message == "session operation timed out; resample before retry")
+        );
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        trace_home_request(7, "apply_request", started.elapsed(), &result, hit, true);
+        let events = capture.events("home reset completed");
+        assert_eq!(events.len(), 1);
+        assert_text(&events[0], "result", "timeout");
+        assert!(!events[0].fields.contains_key("deadline_hit"));
     }
 }

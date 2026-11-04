@@ -5,7 +5,8 @@ use std::{net::IpAddr, sync::Arc, time::Duration};
 use axum::extract::ws::{Message as WebSocketMessage, WebSocket};
 use natsume_workstation_protocol::generated::{
     ClientActiveEnvelope, ClientHandshakeEnvelope, EnrollmentReviewState, EnrollmentReviewStatus,
-    ServerHandshakeEnvelope, SessionReady, client_active_envelope, server_handshake_envelope,
+    ServerActiveEnvelope, ServerHandshakeEnvelope, SessionReady, client_active_envelope,
+    server_active_envelope, server_handshake_envelope,
 };
 use prost::Message as _;
 use tokio::{
@@ -87,6 +88,70 @@ use self::{
     actor::{DeviceHandle, DeviceRegistry},
     admission::{EnrollmentPreAuth, ProofSubmission, ProofWindow},
 };
+
+#[derive(Clone, Copy)]
+enum DispatchCause {
+    ClientState,
+    Dirty,
+    Refresh,
+    Retry,
+}
+
+struct DispatchMetadata {
+    device_id: DeviceId,
+    cause: DispatchCause,
+    queued: Option<Duration>,
+    materialize: Duration,
+}
+
+struct OutboundSnapshot {
+    envelope: ServerActiveEnvelope,
+    metadata: DispatchMetadata,
+}
+
+impl DispatchMetadata {
+    fn trace_dispatched(&self, envelope: &ServerActiveEnvelope, send: Duration) {
+        use natsume_workstation_protocol::{generated::ForegroundTarget, target_digest};
+
+        let Some(server_active_envelope::Body::ServerState(snapshot)) = envelope.body.as_ref()
+        else {
+            return;
+        };
+        let Some(target) = snapshot.target.as_ref() else {
+            return;
+        };
+        let Some(session) = target.session_control.as_ref() else {
+            return;
+        };
+        let foreground = match ForegroundTarget::try_from(session.foreground_target) {
+            Ok(ForegroundTarget::Waiting) => "waiting",
+            Ok(ForegroundTarget::Contest) => "contest",
+            Ok(ForegroundTarget::Unspecified) | Err(_) => "unspecified",
+        };
+        let cause = match self.cause {
+            DispatchCause::ClientState => "client_state",
+            DispatchCause::Dirty => "dirty",
+            DispatchCause::Refresh => "refresh",
+            DispatchCause::Retry => "retry",
+        };
+        tracing::info!(
+            device_id = %self.device_id.as_text(),
+            target_digest = %target_digest(target),
+            foreground_target = foreground,
+            terminate_epoch = session.terminate_epoch,
+            reset_epoch = target.home.as_ref().and_then(|home| home.reset_epoch),
+            cause,
+            queued_us = self.queued.map(duration_micros),
+            materialize_us = duration_micros(self.materialize),
+            send_us = duration_micros(send),
+            "target dispatched"
+        );
+    }
+}
+
+fn duration_micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
 
 /// Device application use cases and their process-local runtime.
 ///
@@ -578,7 +643,7 @@ async fn run_active(
     mut socket: WebSocket,
     session_id: Uuid,
     handle: &DeviceHandle,
-    outgoing: &mut mpsc::Receiver<natsume_workstation_protocol::generated::ServerActiveEnvelope>,
+    outgoing: &mut mpsc::Receiver<OutboundSnapshot>,
 ) -> ConnectionEnd {
     let client_deadline = sleep_until(Instant::now() + CLIENT_SILENCE_TIMEOUT);
     tokio::pin!(client_deadline);
@@ -626,9 +691,10 @@ async fn run_active(
                 let Some(envelope) = envelope else {
                     break ConnectionEnd::OutgoingClosed;
                 };
-                let bytes = envelope.encode_to_vec();
+                let bytes = envelope.envelope.encode_to_vec();
+                let started_at = Instant::now();
                 match timeout(SEND_TIMEOUT, socket.send(WebSocketMessage::Binary(bytes.into()))).await {
-                    Ok(Ok(())) => {},
+                    Ok(Ok(())) => envelope.metadata.trace_dispatched(&envelope.envelope, started_at.elapsed()),
                     Ok(Err(_)) => break ConnectionEnd::SendFailed,
                     Err(_) => break ConnectionEnd::SendTimeout,
                 }

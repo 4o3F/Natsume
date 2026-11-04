@@ -11,6 +11,8 @@ use natsume_workstation_protocol::generated::{
     ServerStateSnapshot, SessionControlTarget,
 };
 use snafu::{OptionExt as _, ResultExt as _, Snafu};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::component::{
     binding::{
@@ -30,12 +32,18 @@ use super::{
 
 const SEAT_CODE_LENGTH_LIMIT: usize = 64;
 
+pub(super) struct MaterializedTarget {
+    pub(super) snapshot: ServerStateSnapshot,
+    pub(super) started_at: Instant,
+    pub(super) elapsed: Duration,
+}
+
 pub(super) async fn reconcile(
     control: &DeviceControl,
     device_id: DeviceId,
     snapshot: &ClientStateSnapshot,
     context: crate::journal::JournalContext,
-) -> Result<(ServerStateSnapshot, ObservedActualState), ReconcileError> {
+) -> Result<(MaterializedTarget, ObservedActualState), ReconcileError> {
     let input = snapshot.input.as_ref().context(InvalidSnapshotSnafu)?;
     let actual = snapshot.actual.as_ref().context(InvalidSnapshotSnafu)?;
     let gateway_input = match input.gateway_credential.as_ref() {
@@ -71,7 +79,8 @@ pub(super) async fn reconcile(
 pub(super) async fn materialize(
     control: &DeviceControl,
     device_id: DeviceId,
-) -> Result<ServerStateSnapshot, ReconcileError> {
+) -> Result<MaterializedTarget, ReconcileError> {
+    let started_at = Instant::now();
     let gateway = control
         .gateway
         .materialize(device_id)
@@ -103,7 +112,7 @@ pub(super) async fn materialize(
         .await
         .context(PowerMaterializeSnafu)?;
 
-    Ok(ServerStateSnapshot {
+    let snapshot = ServerStateSnapshot {
         intent: Some(ServerIntentState {
             gateway_credential: Some(GatewayCredentialIntent {
                 credential_id: gateway.intent().credential_id().as_text(),
@@ -137,6 +146,11 @@ pub(super) async fn materialize(
             home: Some(HomeTarget { reset_epoch: home }),
             power: Some(encode_power_target(power)),
         }),
+    };
+    Ok(MaterializedTarget {
+        snapshot,
+        started_at,
+        elapsed: started_at.elapsed(),
     })
 }
 

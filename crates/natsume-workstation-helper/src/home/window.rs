@@ -9,6 +9,26 @@ use zbus::Connection;
 use super::{rejected, unavailable};
 use crate::{admission, session};
 
+#[derive(Default)]
+pub(crate) struct RecoveryObservation {
+    pub(crate) action: Option<RecoveryAction>,
+    pub(crate) reset_epoch: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RecoveryAction {
+    Resume,
+    Baseline,
+}
+impl RecoveryAction {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Resume => "resume",
+            Self::Baseline => "baseline",
+        }
+    }
+}
+
 const WINDOW: &str = "login-window";
 
 /// The captured session is immutable across retries, Helper restarts and boots.
@@ -232,12 +252,14 @@ pub(crate) async fn apply(
     root: &Path,
     connection: &Connection,
     epoch: u64,
+    worked: &mut bool,
 ) -> Result<(), ResourceControlError> {
     let _mutation = admission::mutation(root)?;
     let window = require_epoch(root, epoch)?;
     if window.is_none() && verified_mount(root, epoch)? {
         return Ok(());
     }
+    *worked = true;
     let mut window =
         window.ok_or_else(|| rejected("Home maintenance window has not been prepared"))?;
     let _admission = enter(root, connection, &mut window).await?;
@@ -327,6 +349,7 @@ pub(crate) async fn verify(
     root: &Path,
     connection: &Connection,
     epoch: u64,
+    worked: &mut bool,
 ) -> Result<HomeResetProgress, ResourceControlError> {
     // GDM preparation holds the mutation lock while it waits for the desktop.
     // Observing a completed, still mounted generation needs no mutation. Check
@@ -343,6 +366,7 @@ pub(crate) async fn verify(
             phase: HomeResetPhase::Verified,
         });
     }
+    *worked = true;
     let _mutation = admission::mutation(root)?;
     let owned = require_epoch(root, epoch)?;
     if query(root)?.is_some_and(|p| p.reset_epoch == epoch && p.phase == HomeResetPhase::Draining) {
@@ -393,13 +417,17 @@ fn finish(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
 pub(crate) async fn restore_home(
     root: &Path,
     connection: &Connection,
+    observation: &mut RecoveryObservation,
 ) -> Result<(), ResourceControlError> {
     let _mutation = admission::mutation(root)?;
     admission::close(root)?;
     super::cleanup::require_policy(root)?;
     if let Some(progress) = query(root)? {
+        observation.action = Some(RecoveryAction::Resume);
+        observation.reset_epoch = Some(progress.reset_epoch);
         return recover_owned(root, connection, progress.reset_epoch).await;
     }
+    observation.action = Some(RecoveryAction::Baseline);
     // A fresh image has no remote reset epoch. Validate its baseline without
     // inventing a reset or silently adopting an unmanaged mount.
     super::prepare_metadata(root, 1)?;
@@ -507,7 +535,7 @@ mod tests {
                 .build(),
         )?;
         assert!(matches!(
-            verify(root.path(), &connection, 7).await,
+            verify(root.path(), &connection, 7, &mut false).await,
             Err(ResourceControlError::Unavailable(_))
         ));
         assert_eq!(
@@ -588,10 +616,26 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(apply(root.path(), &connection, 7).await.is_err());
-        assert!(verify(root.path(), &connection, 7).await.is_err());
+        assert!(
+            apply(root.path(), &connection, 7, &mut false)
+                .await
+                .is_err()
+        );
+        assert!(
+            verify(root.path(), &connection, 7, &mut false)
+                .await
+                .is_err()
+        );
         assert!(recover(root.path(), &connection, 7).await.is_err());
-        assert!(restore_home(root.path(), &connection).await.is_err());
+        assert!(
+            restore_home(
+                root.path(),
+                &connection,
+                &mut RecoveryObservation::default()
+            )
+            .await
+            .is_err()
+        );
         assert!(Window::read(root.path())?.is_none());
         assert!(require_epoch(root.path(), 8)?.is_none());
         assert_eq!(
@@ -611,10 +655,26 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(apply(root.path(), &connection, 7).await.is_err());
-        assert!(verify(root.path(), &connection, 7).await.is_err());
+        assert!(
+            apply(root.path(), &connection, 7, &mut false)
+                .await
+                .is_err()
+        );
+        assert!(
+            verify(root.path(), &connection, 7, &mut false)
+                .await
+                .is_err()
+        );
         assert!(recover(root.path(), &connection, 7).await.is_err());
-        assert!(restore_home(root.path(), &connection).await.is_err());
+        assert!(
+            restore_home(
+                root.path(),
+                &connection,
+                &mut RecoveryObservation::default()
+            )
+            .await
+            .is_err()
+        );
         assert!(require_epoch(root.path(), 8)?.is_none());
         // Nor may a crash-persisted Home Verified inside an owned window grant admission.
         Window {
@@ -685,13 +745,18 @@ mod tests {
         };
         for _ in 0..2 {
             prepare(root.path(), &connection, 7, &waiting).await?;
-            apply(root.path(), &connection, 7).await?;
+            apply(root.path(), &connection, 7, &mut false).await?;
             assert_eq!(
-                verify(root.path(), &connection, 7).await?.phase,
+                verify(root.path(), &connection, 7, &mut false).await?.phase,
                 HomeResetPhase::Verified
             );
             recover(root.path(), &connection, 7).await?;
-            restore_home(root.path(), &connection).await?;
+            restore_home(
+                root.path(),
+                &connection,
+                &mut RecoveryObservation::default(),
+            )
+            .await?;
             assert_eq!(
                 fs::read_to_string(root.path().join("tmp/current"))?,
                 "new temporary state"
@@ -721,7 +786,227 @@ mod tests {
         // Removing or changing the image contract revokes even a current permit.
         fs::write(root.path().join("etc/natsume/contest-reset-policy"), "2\n")?;
         assert!(admission::require_open(root.path()).is_err());
-        assert!(verify(root.path(), &connection, 7).await.is_err());
+        assert!(
+            verify(root.path(), &connection, 7, &mut false)
+                .await
+                .is_err()
+        );
         Ok(())
+    }
+    #[tokio::test]
+    async fn request_events_and_healthy_replays_keep_the_original_admission_order() {
+        use crate::tests::{Capture, Value, assert_text, subscriber_guard};
+        use tracing::instrument::WithSubscriber as _;
+        let _guard = subscriber_guard();
+        let root = verified_fixture().unwrap_or_else(|e| panic!("fixture: {e}"));
+        super::super::write_state(root.path(), "cleanup-complete", "2\n7\n")
+            .unwrap_or_else(|e| panic!("proof: {e}"));
+        admission::open(root.path()).unwrap_or_else(|e| panic!("permit: {e}"));
+        let (connection, _peer) = peer().await.unwrap_or_else(|e| panic!("peer: {e}"));
+        let mut service = crate::PrivilegedService {
+            filesystem_root: root.path().to_owned(),
+        };
+        let capture = Capture::default();
+        async {
+            service
+                .verify_home_reset(7, &connection)
+                .await
+                .unwrap_or_else(|e| panic!("verify: {e}"));
+            service
+                .apply_home_reset(7, &connection)
+                .await
+                .unwrap_or_else(|e| panic!("apply: {e}"));
+            assert!(capture.events("home reset completed").is_empty());
+            let waiting = GraphicalSession {
+                boot_id: BOOT.to_owned(),
+                logind_session_id: "waiting-canary".to_owned(),
+            };
+            assert!(
+                service
+                    .prepare_home_reset(0, waiting.clone(), &connection)
+                    .await
+                    .is_err()
+            );
+            assert!(service.apply_home_reset(0, &connection).await.is_err());
+            assert!(service.verify_home_reset(0, &connection).await.is_err());
+            assert!(service.recover_home_reset(0, &connection).await.is_err());
+            let events = capture.events("home reset completed");
+            assert_eq!(events.len(), 4);
+            for (event, operation) in events.iter().zip([
+                "prepare_request",
+                "apply_request",
+                "verify_request",
+                "recover_request",
+            ]) {
+                assert_text(event, "operation", operation);
+                assert_text(event, "result", "error");
+                assert_eq!(event.fields.get("reset_epoch"), Some(&Value::Unsigned(0)));
+                assert!(matches!(
+                    event.fields.get("elapsed_us"),
+                    Some(Value::Unsigned(_))
+                ));
+            }
+            let stale = GraphicalSession {
+                boot_id: "550e8400-e29b-41d4-a716-446655440001".to_owned(),
+                logind_session_id: "activation-canary".to_owned(),
+            };
+            assert!(
+                service
+                    .activate_session(SessionRole::Waiting, stale, &connection)
+                    .await
+                    .is_err()
+            );
+            let events = capture.events("session switch completed");
+            assert_eq!(events.len(), 1);
+            assert_text(&events[0], "operation", "activate");
+            assert_text(&events[0], "foreground_target", "waiting");
+            assert_text(&events[0], "result", "error");
+            assert!(matches!(
+                events[0].fields.get("activate_us"),
+                Some(Value::Unsigned(_))
+            ));
+            admission::require_open(root.path()).unwrap_or_else(|e| panic!("original permit: {e}"));
+            for event in events {
+                assert!(!format!("{event:?}").contains("activation-canary"));
+            }
+        }
+        .with_subscriber(capture.subscriber())
+        .await;
+    }
+
+    #[tokio::test]
+    async fn recovery_event_captures_resume_baseline_and_unknown_action_on_corruption() {
+        use crate::tests::{Capture, Value, assert_text, subscriber_guard};
+        use tracing::instrument::WithSubscriber as _;
+        let _guard = subscriber_guard();
+        let (connection, _peer) = peer().await.unwrap_or_else(|e| panic!("peer: {e}"));
+        for action in ["resume", "baseline", "corrupt"] {
+            let root = if action == "resume" {
+                verified_fixture().unwrap_or_else(|e| panic!("verified: {e}"))
+            } else {
+                super::super::tests::fixture()
+            };
+            super::super::cleanup::tests::policy_fixture(root.path())
+                .unwrap_or_else(|e| panic!("policy: {e}"));
+            fs::create_dir_all(root.path().join("run/natsume-privileged"))
+                .unwrap_or_else(|e| panic!("runtime: {e}"));
+            fs::set_permissions(
+                root.path().join("run/natsume-privileged"),
+                fs::Permissions::from_mode(0o700),
+            )
+            .unwrap_or_else(|e| panic!("mode: {e}"));
+            fs::create_dir_all(root.path().join("proc/sys/kernel/random"))
+                .unwrap_or_else(|e| panic!("proc: {e}"));
+            fs::write(root.path().join("proc/sys/kernel/random/boot_id"), BOOT)
+                .unwrap_or_else(|e| panic!("boot: {e}"));
+            if action == "resume" {
+                super::super::write_state(root.path(), "cleanup-complete", "2\n7\n")
+                    .unwrap_or_else(|e| panic!("proof: {e}"));
+            }
+            if action == "corrupt" {
+                fs::write(
+                    super::super::state_directory(root.path()).join("progress"),
+                    "corrupt-progress-canary",
+                )
+                .unwrap_or_else(|e| panic!("progress: {e}"));
+            }
+            let capture = Capture::default();
+            let mut service = crate::PrivilegedService {
+                filesystem_root: root.path().to_owned(),
+            };
+            async {
+                let result = service.recover_local_home(&connection).await;
+                assert_eq!(result.is_ok(), action != "corrupt");
+                let events = capture.events("home recovery");
+                assert_eq!(events.len(), 1);
+                assert_text(
+                    &events[0],
+                    "result",
+                    if action == "corrupt" { "error" } else { "ok" },
+                );
+                if action == "corrupt" {
+                    assert!(!events[0].fields.contains_key("action"));
+                    assert!(!events[0].fields.contains_key("reset_epoch"));
+                } else {
+                    assert_text(&events[0], "action", action);
+                    assert_eq!(
+                        events[0].fields.get("reset_epoch"),
+                        if action == "resume" {
+                            Some(&Value::Unsigned(7))
+                        } else {
+                            None
+                        }
+                    );
+                    admission::require_open(root.path()).unwrap_or_else(|e| panic!("ready: {e}"));
+                }
+                assert!(!format!("{:?}", events[0]).contains("corrupt-progress-canary"));
+            }
+            .with_subscriber(capture.subscriber())
+            .await;
+        }
+    }
+    type ListedSessions = Vec<(String, u32, String, String, zbus::OwnedObjectPath)>;
+    struct SilentLogind;
+    #[zbus::interface(name = "org.freedesktop.login1.Manager")]
+    impl SilentLogind {
+        async fn list_sessions(&self) -> ListedSessions {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_timeout_keeps_the_captured_action_and_epoch_after_future_cancellation() {
+        use crate::tests::{Capture, Value, assert_text, subscriber_guard};
+        use tracing::instrument::WithSubscriber as _;
+        let _guard = subscriber_guard();
+        let root = super::super::tests::fixture();
+        super::super::cleanup::tests::policy_fixture(root.path())
+            .unwrap_or_else(|e| panic!("policy: {e}"));
+        let runtime = root.path().join("run/natsume-privileged");
+        fs::create_dir_all(&runtime).unwrap_or_else(|e| panic!("runtime: {e}"));
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))
+            .unwrap_or_else(|e| panic!("mode: {e}"));
+        fs::create_dir_all(root.path().join("proc/sys/kernel/random"))
+            .unwrap_or_else(|e| panic!("proc: {e}"));
+        fs::write(root.path().join("proc/sys/kernel/random/boot_id"), BOOT)
+            .unwrap_or_else(|e| panic!("boot: {e}"));
+        Window {
+            epoch: 7,
+            boot: BOOT.to_owned(),
+            contest_id: Some("capturedcanary".to_owned()),
+            maintaining: false,
+        }
+        .persist(root.path())
+        .unwrap_or_else(|e| panic!("window: {e}"));
+        let (server, client) =
+            tokio::net::UnixStream::pair().unwrap_or_else(|e| panic!("pair: {e}"));
+        let server = zbus::connection::Builder::unix_stream(
+            server.into_std().unwrap_or_else(|e| panic!("server: {e}")),
+        )
+        .server(zbus::Guid::generate())
+        .p2p()
+        .serve_at("/org/freedesktop/login1", SilentLogind);
+        let client = zbus::connection::Builder::unix_stream(
+            client.into_std().unwrap_or_else(|e| panic!("client: {e}")),
+        )
+        .p2p();
+        let (_server, connection) =
+            tokio::try_join!(server.build(), client.build()).unwrap_or_else(|e| panic!("bus: {e}"));
+        let mut service = crate::PrivilegedService {
+            filesystem_root: root.path().to_owned(),
+        };
+        let capture = Capture::default();
+        async {
+            assert!(matches!(service.recover_local_home(&connection).await, Err(ResourceControlError::Unavailable(_))));
+            let events = capture.events("home recovery");
+            assert_eq!(events.len(), 1);
+            assert_text(&events[0], "action", "resume");
+            assert_text(&events[0], "result", "timeout");
+            assert_eq!(events[0].fields.get("reset_epoch"), Some(&Value::Unsigned(7)));
+            assert!(matches!(events[0].fields.get("elapsed_us"), Some(Value::Unsigned(elapsed)) if *elapsed >= 8_000_000));
+            assert!(!format!("{:?}", events[0]).contains("capturedcanary"));
+            assert!(admission::require_open(root.path()).is_err());
+            let _retry = admission::mutation(root.path()).unwrap_or_else(|e| panic!("released mutation: {e}"));
+        }.with_subscriber(capture.subscriber()).await;
     }
 }

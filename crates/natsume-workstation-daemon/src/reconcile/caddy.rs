@@ -16,7 +16,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::{
     net::TcpStream,
     process::Command,
-    time::{Duration, timeout},
+    time::{Duration, Instant, timeout},
 };
 use tokio_rustls::TlsConnector;
 use tokio_util::sync::CancellationToken;
@@ -26,6 +26,7 @@ use crate::atomic_write::{WritePolicy, atomic_write};
 
 use super::{
     SnapshotError, binding::ValidatedBindingContext, check_cancellation, gateway::GatewayMaterial,
+    observability::PlanContext,
 };
 
 const MODE_FORMAT_VERSION: u32 = 1;
@@ -113,12 +114,13 @@ impl Caddy {
         &self,
         material: Option<&GatewayMaterial>,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<CaddyObservation, SnapshotError> {
         let mode = CaddyModeArtifact::Blocked {
             format_version: MODE_FORMAT_VERSION,
             credential_id: material.map(|material| material.credential_id.clone()),
         };
-        self.ensure(&self.render_blocked(material), &mode, cancellation)
+        self.ensure(&self.render_blocked(material), &mode, cancellation, context)
             .await
     }
 
@@ -129,6 +131,7 @@ impl Caddy {
         binding: &ValidatedBindingContext,
         password: &str,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<CaddyObservation, SnapshotError> {
         let mode = CaddyModeArtifact::Ready {
             format_version: MODE_FORMAT_VERSION,
@@ -138,7 +141,8 @@ impl Caddy {
         };
         let configuration =
             Zeroizing::new(self.render_ready(material, domjudge_origin, binding, password));
-        self.ensure(&configuration, &mode, cancellation).await
+        self.ensure(&configuration, &mode, cancellation, context)
+            .await
     }
 
     async fn ensure(
@@ -146,12 +150,13 @@ impl Caddy {
         configuration: &str,
         mode: &CaddyModeArtifact,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<CaddyObservation, SnapshotError> {
         check_cancellation(cancellation)?;
         if let Some(observation) = self.current(configuration, mode).await {
             return Ok(observation);
         }
-        self.load(configuration, mode, cancellation).await
+        self.load(configuration, mode, cancellation, context).await
     }
 
     async fn load(
@@ -159,33 +164,78 @@ impl Caddy {
         configuration: &str,
         mode: &CaddyModeArtifact,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<CaddyObservation, SnapshotError> {
-        check_cancellation(cancellation)?;
-        self.invalidate_mode()?;
-        atomic_write(
-            &self.configuration_path,
-            configuration.as_bytes(),
-            0o600,
-            WritePolicy::Replace,
-        )
-        .map_err(|_| SnapshotError::Caddy)?;
-
-        check_cancellation(cancellation)?;
-        self.run_caddy("validate").await?;
-        check_cancellation(cancellation)?;
-        let expected = self.adapt().await?;
-        check_cancellation(cancellation)?;
-        self.run_caddy("reload").await?;
-        check_cancellation(cancellation)?;
-        if self.loaded_configuration().await? != expected {
-            return Err(SnapshotError::Caddy);
-        }
-
-        check_cancellation(cancellation)?;
-        let encoded = serde_json::to_vec(mode).map_err(|_| SnapshotError::Caddy)?;
-        atomic_write(&self.mode_path, &encoded, 0o600, WritePolicy::Replace)
+        let started_at = Instant::now();
+        let (mut validate, mut adapt, mut reload, mut admin_check) = (None, None, None, None);
+        let result = async {
+            check_cancellation(cancellation)?;
+            self.invalidate_mode()?;
+            atomic_write(
+                &self.configuration_path,
+                configuration.as_bytes(),
+                0o600,
+                WritePolicy::Replace,
+            )
             .map_err(|_| SnapshotError::Caddy)?;
-        Ok(self.observation_for_mode(mode.clone()).await)
+
+            check_cancellation(cancellation)?;
+            let started = Instant::now();
+            let result = self.run_caddy("validate").await;
+            validate = Some(started.elapsed());
+            result?;
+            check_cancellation(cancellation)?;
+            let started = Instant::now();
+            let result = self.adapt().await;
+            adapt = Some(started.elapsed());
+            let expected = result?;
+            check_cancellation(cancellation)?;
+            let started = Instant::now();
+            let result = self.run_caddy("reload").await;
+            reload = Some(started.elapsed());
+            result?;
+            check_cancellation(cancellation)?;
+            let started = Instant::now();
+            let result = self
+                .loaded_configuration()
+                .await
+                .map(|loaded| loaded == expected);
+            admin_check = Some(started.elapsed());
+            if !result? {
+                return Err(SnapshotError::Caddy);
+            }
+
+            check_cancellation(cancellation)?;
+            let encoded = serde_json::to_vec(mode).map_err(|_| SnapshotError::Caddy)?;
+            atomic_write(&self.mode_path, &encoded, 0o600, WritePolicy::Replace)
+                .map_err(|_| SnapshotError::Caddy)?;
+            Ok(self.observation_for_mode(mode.clone()).await)
+        }
+        .await;
+        let elapsed = started_at.elapsed();
+        let mode = match mode {
+            CaddyModeArtifact::Ready { .. } => "ready",
+            CaddyModeArtifact::Blocked { .. } => "blocked",
+        };
+        let outcome = match &result {
+            Ok(_) => "ok",
+            Err(SnapshotError::Cancelled) => "cancelled",
+            Err(_) => "error",
+        };
+        let micros = |duration: Duration| u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+        tracing::info!(
+            plan = context.map(|context| context.plan),
+            target_digest = context.map(|context| context.target.target_digest.as_str()),
+            mode,
+            result = outcome,
+            elapsed_us = micros(elapsed),
+            validate_us = validate.map(micros),
+            adapt_us = adapt.map(micros),
+            reload_us = reload.map(micros),
+            admin_check_us = admin_check.map(micros),
+            "caddy load completed"
+        );
+        result
     }
 
     fn invalidate_mode(&self) -> Result<(), SnapshotError> {
@@ -1046,5 +1096,109 @@ pub(super) mod tests {
                 let _ = stream.shutdown().await;
             });
         }
+    }
+    #[tokio::test]
+    async fn load_events_keep_reached_stage_timings_on_each_failure() {
+        use crate::reconcile::observability::tests::{
+            Capture, Value, assert_text, context, subscriber_guard,
+        };
+        use tracing::instrument::WithSubscriber as _;
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        async {
+            for failing in ["validate", "adapt", "reload", "admin", "none"] {
+                let directory = tempfile::tempdir().unwrap_or_else(|e| panic!("directory: {e}"));
+                let (caddy, admin) = fixture(&directory).unwrap_or_else(|e| panic!("fixture: {e}"));
+                let script = format!(
+                    "#!/bin/sh\nif [ \"$1\" = \"{failing}\" ]; then exit 1; fi\nprintf '{{}}\\n'\n"
+                );
+                fs::write(&caddy.binary_path, script).unwrap_or_else(|e| panic!("script: {e}"));
+                if failing == "admin" {
+                    admin.abort();
+                }
+                let before = capture.records("caddy load completed").len();
+                let context = context();
+                let result = caddy
+                    .ensure_blocked(None, &CancellationToken::new(), Some(&context))
+                    .await;
+                assert_eq!(result.is_ok(), failing == "none");
+                let records = capture.records("caddy load completed");
+                assert_eq!(records.len(), before + 1);
+                let record = &records[before];
+                assert_text(record, "mode", "blocked");
+                assert_text(
+                    record,
+                    "result",
+                    if failing == "none" { "ok" } else { "error" },
+                );
+                assert_text(record, "target_digest", &context.target.target_digest);
+                assert_eq!(
+                    record.fields.get("plan"),
+                    Some(&Value::Unsigned(context.plan))
+                );
+                assert!(matches!(
+                    record.fields.get("elapsed_us"),
+                    Some(Value::Unsigned(_))
+                ));
+                let mut reached = true;
+                for (step, field) in [
+                    ("validate", "validate_us"),
+                    ("adapt", "adapt_us"),
+                    ("reload", "reload_us"),
+                    ("admin", "admin_check_us"),
+                ] {
+                    assert_eq!(
+                        matches!(record.fields.get(field), Some(Value::Unsigned(_))),
+                        reached
+                    );
+                    if step == failing {
+                        reached = false;
+                    }
+                }
+                admin.abort();
+            }
+        }
+        .with_subscriber(capture.subscriber())
+        .await;
+    }
+
+    #[tokio::test]
+    async fn load_cancellation_and_current_hit_keep_original_boundaries() {
+        use crate::reconcile::observability::tests::{
+            Capture, Value, assert_text, context, subscriber_guard,
+        };
+        use tracing::instrument::WithSubscriber as _;
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        async {
+            let directory = tempfile::tempdir().unwrap_or_else(|e| panic!("directory: {e}"));
+            let (caddy, admin) = fixture(&directory).unwrap_or_else(|e| panic!("fixture: {e}"));
+            let context = context();
+            caddy.ensure_blocked(None, &CancellationToken::new(), Some(&context)).await.unwrap_or_else(|e| panic!("load: {e}"));
+            caddy.ensure_blocked(None, &CancellationToken::new(), Some(&context)).await.unwrap_or_else(|e| panic!("current: {e}"));
+            assert_eq!(capture.records("caddy load completed").len(), 1);
+            let marker = directory.path().join("started");
+            fs::write(&caddy.binary_path, format!("#!/bin/sh\nif [ \"$1\" = validate ]; then touch '{}'; sleep 0.05; fi\nprintf '{{}}\\n'\n", marker.display())).unwrap_or_else(|e| panic!("script: {e}"));
+            let token = CancellationToken::new();
+            let mode = CaddyModeArtifact::Blocked { format_version: MODE_FORMAT_VERSION, credential_id: None };
+            let configuration = caddy.render_blocked(None);
+            let cancel = async {
+                while !marker.exists() { tokio::task::yield_now().await; }
+                token.cancel();
+            };
+            let (result, ()) = tokio::join!(caddy.load(&configuration, &mode, &token, Some(&context)), cancel);
+            assert!(matches!(result, Err(SnapshotError::Cancelled)));
+            let records = capture.records("caddy load completed");
+            assert_eq!(records.len(), 2);
+            assert_text(&records[1], "result", "cancelled");
+            assert!(matches!(records[1].fields.get("validate_us"), Some(Value::Unsigned(_))));
+            for field in ["adapt_us", "reload_us", "admin_check_us"] { assert!(!records[1].fields.contains_key(field)); }
+            assert!(matches!(caddy.load(&configuration, &mode, &token, None).await, Err(SnapshotError::Cancelled)));
+            let records = capture.records("caddy load completed");
+            assert_eq!(records.len(), 3);
+            assert_text(&records[2], "result", "cancelled");
+            for field in ["plan", "target_digest", "validate_us", "adapt_us", "reload_us", "admin_check_us"] { assert!(!records[2].fields.contains_key(field)); }
+            admin.abort();
+        }.with_subscriber(capture.subscriber()).await;
     }
 }

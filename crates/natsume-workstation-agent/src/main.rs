@@ -205,11 +205,56 @@ mod application {
             })
     }
 
+    struct PresentationTiming {
+        registered_at: Instant,
+        revision: u64,
+        revision_queued_at: Instant,
+        confirmed: bool,
+    }
+
+    impl PresentationTiming {
+        fn new(revision: u64, now: Instant) -> Self {
+            Self {
+                registered_at: now,
+                revision,
+                revision_queued_at: now,
+                confirmed: false,
+            }
+        }
+
+        fn queued(&mut self, revision: u64, now: Instant) {
+            self.revision = revision;
+            self.revision_queued_at = now;
+            self.confirmed = false;
+        }
+
+        fn confirmed(&mut self, frame: &SessionPresentation, now: Instant) {
+            if !frame.first_frame_presented || frame.ui_revision != self.revision || self.confirmed
+            {
+                return;
+            }
+            let since_lease_us = u64::try_from(now.duration_since(self.registered_at).as_micros())
+                .unwrap_or(u64::MAX);
+            let since_revision_us =
+                u64::try_from(now.duration_since(self.revision_queued_at).as_micros())
+                    .unwrap_or(u64::MAX);
+            tracing::info!(
+                role = "waiting",
+                ui_revision = frame.ui_revision,
+                since_lease_us,
+                since_revision_us,
+                "frame presented"
+            );
+            self.confirmed = true;
+        }
+    }
+
     async fn confirm_presentation(
         proxy: &Device1Proxy<'_>,
         lease: &SessionAgentLease,
         deadline: Instant,
         frame: &SessionPresentation,
+        timing: &mut PresentationTiming,
     ) -> Result<Option<SessionUiSnapshot>, ConnectionEnd> {
         const OPERATION: &str = "ConfirmSessionPresentation";
         if Instant::now() >= deadline {
@@ -225,6 +270,7 @@ mod application {
             return Err(operation_expired(OPERATION));
         }
         let Err(error) = result else {
+            timing.confirmed(frame, Instant::now());
             return Ok(None);
         };
         log_rpc_failure(OPERATION, &error);
@@ -349,9 +395,11 @@ mod application {
             ));
         }
         let mut revision = initial.ui_revision;
+        let mut timing = PresentationTiming::new(revision, Instant::now());
         let mut presentations = ui::presentation_receiver();
         let mut deadline = lease_deadline(&lease);
         last.clone_from(&initial);
+        timing.queued(revision, Instant::now());
         ui::queue(initial);
 
         let mut refresh = tokio::time::interval(Duration::from_secs(1));
@@ -377,6 +425,7 @@ mod application {
                     if snapshot.ui_revision > revision {
                         revision = snapshot.ui_revision;
                         last.clone_from(&snapshot);
+                        timing.queued(revision, Instant::now());
                         ui::queue(snapshot);
                     } else {
                         ui::retry_presentation();
@@ -393,10 +442,11 @@ mod application {
                     let frame = presentations.borrow_and_update().clone();
                     if let Some(frame) = frame
                         && frame.session == *session && frame.ui_revision == revision && frame.agent_lease_id == lease.lease_id
-                        && let Some(snapshot) = confirm_presentation(&proxy, &lease, deadline, &frame).await?
+                        && let Some(snapshot) = confirm_presentation(&proxy, &lease, deadline, &frame, &mut timing).await?
                     {
                         revision = snapshot.ui_revision;
                         last.clone_from(&snapshot);
+                        timing.queued(revision, Instant::now());
                         ui::queue(snapshot);
                     }
                 }

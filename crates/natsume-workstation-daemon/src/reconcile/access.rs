@@ -13,6 +13,7 @@ use super::{
     configuration::{AppliedConfiguration, ConfigurationObservation},
     gateway::GatewayMaterialState,
     maintenance::MaintenanceOutcome,
+    observability::PlanContext,
 };
 
 pub(super) struct LocalAccessObservation {
@@ -30,11 +31,14 @@ pub(super) struct AccessOutcome {
 
 impl SnapshotReconciler {
     /// Revokes Binding input and confirms the loaded data plane is blocked.
-    pub(crate) async fn deactivate(&self) -> Result<bool, SnapshotError> {
-        let presentation_changed = self.binding_input.revoke_eligibility()?;
+    pub(crate) async fn deactivate(
+        &self,
+        context: Option<&PlanContext>,
+    ) -> Result<bool, SnapshotError> {
+        let presentation_changed = self.binding_input.revoke_eligibility("access_blocked")?;
         let material = self.gateway.active_material();
         self.caddy
-            .ensure_blocked(material.as_ref(), &CancellationToken::new())
+            .ensure_blocked(material.as_ref(), &CancellationToken::new(), context)
             .await
             .map(|_| presentation_changed)
     }
@@ -44,9 +48,10 @@ impl SnapshotReconciler {
         &self,
         snapshot: &ValidatedSnapshot,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<(LocalAccessObservation, ConfigurationObservation), SnapshotError> {
         check_cancellation(cancellation)?;
-        let local = self.guard_local_access(Some(snapshot)).await?;
+        let local = self.guard_local_access(Some(snapshot), context).await?;
         let gateway_before = self.gateway.current_material(&snapshot.gateway_target);
         let runtime = self.runtime.observe();
         let origin_applied = applied_runtime_origin(&snapshot.runtime_origin, &runtime).is_some();
@@ -58,7 +63,7 @@ impl SnapshotReconciler {
         };
         check_cancellation(cancellation)?;
         if current_caddy.is_none() {
-            self.deactivate().await?;
+            self.deactivate(context).await?;
         }
         Ok((
             local,
@@ -78,6 +83,7 @@ impl SnapshotReconciler {
         configuration: &AppliedConfiguration,
         maintenance: MaintenanceOutcome,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<AccessOutcome, SnapshotError> {
         let MaintenanceOutcome {
             mut session_actual,
@@ -87,7 +93,7 @@ impl SnapshotReconciler {
         let reconciled_access =
             local_access_is_allowed(snapshot, &session_actual.actual, &home_actual.actual);
         if !reconciled_access {
-            self.deactivate().await?;
+            self.deactivate(context).await?;
         }
         check_cancellation(cancellation)?;
         // Home may replace the contest generation. Sample both resources again
@@ -96,7 +102,7 @@ impl SnapshotReconciler {
             session: session_observed,
             home: home_observed,
             allowed: observed_access,
-        } = self.guard_local_access(Some(snapshot)).await?;
+        } = self.guard_local_access(Some(snapshot), context).await?;
         if matches!(
             SessionState::try_from(session_actual.actual.session_state),
             Ok(SessionState::Running)
@@ -115,6 +121,7 @@ impl SnapshotReconciler {
                 &configuration.runtime_actual.actual,
                 allowed,
                 cancellation,
+                context,
             )
             .await?;
         self.binding_input.set_eligible(
@@ -173,6 +180,7 @@ impl SnapshotReconciler {
         runtime_actual: &RuntimeConfigActualState,
         local_access: bool,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<(CaddyObservation, bool), SnapshotError> {
         let material = match gateway {
             GatewayMaterialState::Available(material) => Some(material),
@@ -191,6 +199,7 @@ impl SnapshotReconciler {
                     &bound.context,
                     bound.password.as_str(),
                     cancellation,
+                    context,
                 )
                 .await
             {
@@ -203,7 +212,7 @@ impl SnapshotReconciler {
                 Ok(_) | Err(SnapshotError::Caddy) => {
                     return match self
                         .caddy
-                        .ensure_blocked(Some(material), cancellation)
+                        .ensure_blocked(Some(material), cancellation, context)
                         .await
                     {
                         Ok(caddy) => Ok((caddy, true)),
@@ -214,7 +223,7 @@ impl SnapshotReconciler {
             }
         }
         self.caddy
-            .ensure_blocked(material, cancellation)
+            .ensure_blocked(material, cancellation, context)
             .await
             .map(|caddy| (caddy, false))
     }
@@ -224,6 +233,7 @@ impl SnapshotReconciler {
     pub(super) async fn guard_local_access(
         &self,
         target: Option<&ValidatedSnapshot>,
+        context: Option<&PlanContext>,
     ) -> Result<LocalAccessObservation, SnapshotError> {
         let mut session = self.session.observe().await;
         let session_allowed = match (target, &session) {
@@ -231,19 +241,19 @@ impl SnapshotReconciler {
             _ => false,
         };
         if !session_allowed
-            && self.deactivate().await?
+            && self.deactivate(context).await?
             && let Ok(session) = &mut session
         {
             session.waiting_ready = false;
         }
-        let home = self.home.observe().await;
+        let home = self.home.observe(context).await;
         let allowed = match (target, &session, &home) {
             (Some(target), Ok(session), Ok(home)) => local_access_is_allowed(target, session, home),
             _ => false,
         };
         if session_allowed
             && !allowed
-            && self.deactivate().await?
+            && self.deactivate(context).await?
             && let Ok(session) = &mut session
         {
             session.waiting_ready = false;

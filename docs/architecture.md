@@ -1597,6 +1597,14 @@ async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享
 - peer free text；
 - 高基数secret-derived label。
 
+### 16.4 工位控制事件
+
+Server、Daemon、Helper 和 Waiting Agent 通过 INFO tracing 事件记录本地执行结果与耗时。完成事件在对应副作用的结果已知后记录，接收和状态变化事件记录所属边界已接受的事实；日志不改变执行顺序、deadline、重试或授权。没有实际工作或状态变化的周期检查、幂等返回及重复帧确认保持静默。事件字段不携带凭据、账号名、Home 路径、文件名或配置内容。
+
+Server 与 Daemon 使用 protocol crate 的同一 `target_digest` 函数关联目标：逐字段构造 `ConcreteTargetState` 投影，将 `binding_access.bound.password` 设为 `None`，保留其余字段的值和 presence，构造时不复制密码；对投影的 `prost` 编码计算 SHA-256，取前 8 bytes 编成 16 位小写十六进制摘要。摘要只用于诊断关联，业务目标比较沿用原有规则。
+
+Daemon 在执行尝试实际启动时分配从 1 递增的本地 `plan` 编号，重试分配新编号。计数器跨控制连接重连保留，进程重启后重新开始；关联时同时使用进程实例信息。编号不进入协议，也不改变目标合并或调度决定。
+
 ## 17. Crate、模块与依赖
 
 ### 17.1 Workspace

@@ -403,7 +403,7 @@ impl DeviceControl {
         _admission: &crate::lifecycle::Admission,
         machine_hardware_id: MachineHardwareId,
         authority: ControlAuthority,
-        outbound: mpsc::Sender<natsume_workstation_protocol::generated::ServerActiveEnvelope>,
+        outbound: mpsc::Sender<super::OutboundSnapshot>,
     ) -> Result<Option<(Uuid, DeviceHandle)>, super::AdmissionUnavailable> {
         if self.registry.is_closed().await {
             return Err(super::AdmissionUnavailable::ServerStopping);

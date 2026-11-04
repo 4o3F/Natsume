@@ -109,27 +109,42 @@ fn generation_is_complete(root: &Path, epoch: u64, home: &fs::Metadata) -> bool 
 }
 
 fn remove_other_generations(root: &Path, current_epoch: u64) -> Result<(), ResourceControlError> {
-    let generations = state_directory(root).join("generations");
-    let current = current_epoch.to_string();
-    let entries = fs::read_dir(&generations)
-        .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
-    for entry in entries {
-        let entry =
-            entry.map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
-        if entry.file_name().as_os_str() == OsStr::new(&current) {
-            continue;
-        }
-        if !entry
-            .file_type()
-            .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?
-            .is_dir()
-        {
-            return Err(rejected("Old Home reset generations cannot be removed"));
-        }
-        fs::remove_dir_all(entry.path())
+    let started = std::time::Instant::now();
+    let mut remove = None;
+    let result = (|| {
+        let generations = state_directory(root).join("generations");
+        let current = current_epoch.to_string();
+        let entries = fs::read_dir(&generations)
             .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
-    }
-    sync_directory(&generations)
+        for entry in entries {
+            let entry =
+                entry.map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
+            if entry.file_name().as_os_str() == OsStr::new(&current) {
+                continue;
+            }
+            if !entry
+                .file_type()
+                .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?
+                .is_dir()
+            {
+                return Err(rejected("Old Home reset generations cannot be removed"));
+            }
+            fs::remove_dir_all(entry.path())
+                .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
+        }
+        remove = Some(started.elapsed());
+        sync_directory(&generations)
+    })();
+    let elapsed = started.elapsed();
+    tracing::info!(
+        operation = "remove_generations",
+        reset_epoch = current_epoch,
+        elapsed_us = crate::duration_micros(elapsed),
+        remove_us = crate::duration_micros(remove.unwrap_or(elapsed)),
+        result = crate::local_result(&result, false),
+        "home reset completed"
+    );
+    result
 }
 
 fn prepare_generation(
@@ -137,36 +152,56 @@ fn prepare_generation(
     epoch: u64,
     home: &fs::Metadata,
 ) -> Result<(), ResourceControlError> {
-    let state = state_directory(root);
-    if directory_metadata(&state).is_none() {
-        return Err(unavailable("Home reset state directory is unavailable"));
-    }
-    let generations = state.join("generations");
-    ensure_directory(&generations)?;
-    let generation = generations.join(epoch.to_string());
-    ensure_directory(&generation)?;
-    let upper = generation.join("upper");
-    let work = generation.join("work");
-    ensure_directory(&upper)?;
-    ensure_directory(&work)?;
+    let started = std::time::Instant::now();
+    let mut prepare = None;
+    let mut fsync: Option<std::time::Duration> = None;
+    let result = (|| {
+        let state = state_directory(root);
+        if directory_metadata(&state).is_none() {
+            return Err(unavailable("Home reset state directory is unavailable"));
+        }
+        let generations = state.join("generations");
+        ensure_directory(&generations)?;
+        let generation = generations.join(epoch.to_string());
+        ensure_directory(&generation)?;
+        let upper = generation.join("upper");
+        let work = generation.join("work");
+        ensure_directory(&upper)?;
+        ensure_directory(&work)?;
 
-    let upper_metadata = directory_metadata(&upper)
-        .ok_or_else(|| unavailable("Home reset generation cannot be prepared"))?;
-    if upper_metadata.uid() != home.uid() || upper_metadata.gid() != home.gid() {
-        chown(
-            &upper,
-            Some(Uid::from_raw(home.uid())),
-            Some(Gid::from_raw(home.gid())),
-        )
-        .map_err(|_| unavailable("Home reset generation cannot be prepared"))?;
-    }
-    fs::set_permissions(&upper, fs::Permissions::from_mode(home.mode() & 0o7777))
-        .map_err(|_| unavailable("Home reset generation cannot be prepared"))?;
+        let upper_metadata = directory_metadata(&upper)
+            .ok_or_else(|| unavailable("Home reset generation cannot be prepared"))?;
+        if upper_metadata.uid() != home.uid() || upper_metadata.gid() != home.gid() {
+            chown(
+                &upper,
+                Some(Uid::from_raw(home.uid())),
+                Some(Gid::from_raw(home.gid())),
+            )
+            .map_err(|_| unavailable("Home reset generation cannot be prepared"))?;
+        }
+        fs::set_permissions(&upper, fs::Permissions::from_mode(home.mode() & 0o7777))
+            .map_err(|_| unavailable("Home reset generation cannot be prepared"))?;
 
-    for directory in [&upper, &work, &generation, &generations, &state] {
-        sync_directory(directory)?;
-    }
-    Ok(())
+        for directory in [&upper, &work, &generation, &generations, &state] {
+            let sync_started = std::time::Instant::now();
+            prepare.get_or_insert(sync_started.duration_since(started));
+            let result = sync_directory(directory);
+            fsync = Some(fsync.unwrap_or_default() + sync_started.elapsed());
+            result?;
+        }
+        Ok(())
+    })();
+    let elapsed = started.elapsed();
+    tracing::info!(
+        operation = "prepare_generation",
+        reset_epoch = epoch,
+        elapsed_us = crate::duration_micros(elapsed),
+        prepare_us = crate::duration_micros(prepare.unwrap_or(elapsed)),
+        fsync_us = fsync.map(crate::duration_micros),
+        result = crate::local_result(&result, false),
+        "home reset completed"
+    );
+    result
 }
 
 fn phase_name(phase: HomeResetPhase) -> &'static str {
@@ -804,5 +839,89 @@ pub(super) mod tests {
             assert!(!old.exists());
         }
         Ok(())
+    }
+    #[test]
+    fn synchronous_generation_events_have_phase_timings_without_paths_or_counts_for_old_generations()
+     {
+        use crate::tests::{Capture, Value, assert_text, subscriber_guard};
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        let root = fixture();
+        prepare(root.path(), 7).unwrap_or_else(|e| panic!("prepare: {e}"));
+        let events = capture.events("home reset completed");
+        assert_eq!(events.len(), 1);
+        assert_text(&events[0], "operation", "prepare_generation");
+        assert_text(&events[0], "result", "ok");
+        for field in ["elapsed_us", "prepare_us", "fsync_us"] {
+            assert!(matches!(
+                events[0].fields.get(field),
+                Some(Value::Unsigned(_))
+            ));
+        }
+        let previous = generation_directory(root.path(), 6);
+        fs::create_dir_all(previous.join("upper")).unwrap_or_else(|e| panic!("old: {e}"));
+        fs::write(previous.join("upper/old-file-canary"), b"old")
+            .unwrap_or_else(|e| panic!("old file: {e}"));
+        super::remove_other_generations(root.path(), 7).unwrap_or_else(|e| panic!("remove: {e}"));
+        assert!(!previous.exists());
+        let events = capture.events("home reset completed");
+        assert_eq!(events.len(), 2);
+        assert_text(&events[1], "operation", "remove_generations");
+        assert_text(&events[1], "result", "ok");
+        assert!(matches!(
+            events[1].fields.get("remove_us"),
+            Some(Value::Unsigned(_))
+        ));
+        for field in ["removed_entries", "removed_bytes", "fsync_us"] {
+            assert!(!events[1].fields.contains_key(field));
+        }
+        for event in events {
+            assert!(!format!("{event:?}").contains("canary"));
+        }
+    }
+
+    #[test]
+    fn generation_errors_keep_the_timing_of_the_failed_phase() {
+        use crate::tests::{Capture, Value, assert_text, subscriber_guard};
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        let root = fixture();
+        let home = fs::metadata(root.path().join("home/teams"))
+            .unwrap_or_else(|e| panic!("metadata: {e}"));
+        fs::remove_dir(state_directory(root.path())).unwrap_or_else(|e| panic!("remove: {e}"));
+        assert!(super::prepare_generation(root.path(), 7, &home).is_err());
+        let events = capture.events("home reset completed");
+        assert_eq!(events.len(), 1);
+        assert_text(&events[0], "result", "error");
+        assert!(matches!(
+            events[0].fields.get("prepare_us"),
+            Some(Value::Unsigned(_))
+        ));
+        assert!(!events[0].fields.contains_key("fsync_us"));
+        fs::create_dir_all(generation_directory(root.path(), 7).join("work"))
+            .unwrap_or_else(|e| panic!("work: {e}"));
+        fs::set_permissions(
+            generation_directory(root.path(), 7).join("work"),
+            fs::Permissions::from_mode(0o0),
+        )
+        .unwrap_or_else(|e| panic!("mode: {e}"));
+        let result = super::prepare_generation(root.path(), 7, &home);
+        if !rustix::process::geteuid().is_root() {
+            assert!(result.is_err());
+            let events = capture.events("home reset completed");
+            assert_eq!(events.len(), 2);
+            assert_text(&events[1], "result", "error");
+            assert!(matches!(
+                events[1].fields.get("fsync_us"),
+                Some(Value::Unsigned(_))
+            ));
+        }
+        fs::set_permissions(
+            generation_directory(root.path(), 7).join("work"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap_or_else(|e| panic!("restore: {e}"));
     }
 }

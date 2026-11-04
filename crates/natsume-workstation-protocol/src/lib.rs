@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 //! Generated Device Control schema and shared wire primitives.
 
+mod target_digest;
 mod transcript;
 
+pub use target_digest::target_digest;
 pub use transcript::{
     ProofVerificationError, client_proof_signing_digest, sign_client_proof, verify_client_proof,
 };

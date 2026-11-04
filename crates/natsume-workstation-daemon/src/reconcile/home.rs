@@ -5,11 +5,15 @@ use natsume_workstation_ipc::{
 };
 use natsume_workstation_protocol::generated::{HomeActualState, HomeState};
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::atomic_write::{WritePolicy, atomic_write};
 
-use super::{ReconcileOutcome, SnapshotError, check_cancellation, invalid_epoch};
+use super::{
+    ReconcileOutcome, SnapshotError, check_cancellation, invalid_epoch,
+    observability::{PlanContext, home_call, trace_home_call},
+};
 
 const ARTIFACT_FORMAT_VERSION: u32 = 1;
 
@@ -46,6 +50,7 @@ impl HomeReconciler {
         target_epoch: Option<u64>,
         waiting: Option<&GraphicalSession>,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<ReconcileOutcome<HomeActualState>, SnapshotError> {
         let mut completed = match read_completion(&self.artifact_path) {
             CompletionState::Absent => None,
@@ -67,7 +72,7 @@ impl HomeReconciler {
         if let Some(progress) = progress {
             // A durable Helper window owns its captured epoch independently of
             // the current transport/Target. Finish it before considering new work.
-            let finished = finish_progress(&proxy, &progress).await?;
+            let finished = finish_progress(&proxy, &progress, context).await?;
             if !finished.actual {
                 return Ok(ReconcileOutcome {
                     actual: recovery_required(completed),
@@ -80,7 +85,8 @@ impl HomeReconciler {
 
         let Some(epoch) = target_epoch else {
             if !proxy.is_home_ready().await.unwrap_or(false)
-                && let Err(error) = proxy.recover_local_home().await
+                && let Err(error) =
+                    home_call(context, "recover_local", None, proxy.recover_local_home()).await
             {
                 return Ok(ReconcileOutcome::control_error(
                     recovery_required(completed),
@@ -113,7 +119,14 @@ impl HomeReconciler {
         let Some(waiting) = waiting else {
             return Ok(ReconcileOutcome::retry(recovery_required(completed)));
         };
-        if let Err(error) = proxy.prepare_home_reset(epoch, waiting).await {
+        if let Err(error) = home_call(
+            context,
+            "prepare",
+            Some(epoch),
+            proxy.prepare_home_reset(epoch, waiting),
+        )
+        .await
+        {
             return Ok(ReconcileOutcome::control_error(
                 recovery_required(completed),
                 &error,
@@ -123,7 +136,7 @@ impl HomeReconciler {
             reset_epoch: epoch,
             phase: HomeResetPhase::Prepared,
         };
-        let finished = finish_progress(&proxy, &prepared).await?;
+        let finished = finish_progress(&proxy, &prepared, context).await?;
         if !finished.actual {
             return Ok(ReconcileOutcome {
                 actual: recovery_required(completed),
@@ -134,7 +147,10 @@ impl HomeReconciler {
         Ok(ReconcileOutcome::idle(steady(completed)))
     }
 
-    pub(super) async fn observe(&self) -> Result<HomeActualState, SnapshotError> {
+    pub(super) async fn observe(
+        &self,
+        context: Option<&PlanContext>,
+    ) -> Result<HomeActualState, SnapshotError> {
         let completed = match read_completion(&self.artifact_path) {
             CompletionState::Absent => None,
             CompletionState::Valid(epoch) => Some(epoch),
@@ -153,7 +169,22 @@ impl HomeReconciler {
                 },
             );
         };
-        let verified = match proxy.verify_home_reset(progress.reset_epoch).await {
+        let started = Instant::now();
+        let verified = proxy.verify_home_reset(progress.reset_epoch).await;
+        let elapsed = started.elapsed();
+        let unchanged = progress.phase == HomeResetPhase::Verified
+            && completed == Some(progress.reset_epoch)
+            && matches!(&verified, Ok(verified) if verified.reset_epoch == progress.reset_epoch && verified.phase == HomeResetPhase::Verified);
+        if !unchanged {
+            trace_home_call(
+                context,
+                "verify",
+                Some(progress.reset_epoch),
+                elapsed,
+                &verified,
+            );
+        }
+        let verified = match verified {
             Ok(verified) if verified.reset_epoch == progress.reset_epoch => verified,
             Ok(_) | Err(_) => return Ok(recovery_required(completed)),
         };
@@ -177,6 +208,7 @@ impl HomeReconciler {
 async fn finish_progress(
     proxy: &Privileged1Proxy<'_>,
     progress: &HomeResetProgress,
+    context: Option<&PlanContext>,
 ) -> Result<ReconcileOutcome<bool>, SnapshotError> {
     if invalid_epoch(progress.reset_epoch) {
         return Ok(ReconcileOutcome::idle(false));
@@ -190,16 +222,37 @@ async fn finish_progress(
         outcome
     };
     let applied = match progress.phase {
-        HomeResetPhase::Prepared => proxy.apply_home_reset(progress.reset_epoch).await,
+        HomeResetPhase::Prepared => {
+            home_call(
+                context,
+                "apply",
+                Some(progress.reset_epoch),
+                proxy.apply_home_reset(progress.reset_epoch),
+            )
+            .await
+        }
         HomeResetPhase::Draining | HomeResetPhase::RecoveryRequired => {
-            proxy.recover_home_reset(progress.reset_epoch).await
+            home_call(
+                context,
+                "recover",
+                Some(progress.reset_epoch),
+                proxy.recover_home_reset(progress.reset_epoch),
+            )
+            .await
         }
         HomeResetPhase::Applied | HomeResetPhase::Verified => Ok(()),
     };
     if let Err(error) = applied {
         return Ok(pending_error(&error));
     }
-    let verified = match proxy.verify_home_reset(progress.reset_epoch).await {
+    let verified = match home_call(
+        context,
+        "verify",
+        Some(progress.reset_epoch),
+        proxy.verify_home_reset(progress.reset_epoch),
+    )
+    .await
+    {
         Ok(verified) => verified,
         Err(error) => return Ok(pending_error(&error)),
     };

@@ -30,6 +30,7 @@ use super::{
     SnapshotError,
     caddy::{CaddyModeArtifact, CaddyObservation},
     check_cancellation, invalid_epoch,
+    observability::{PlanContext, trace_eligibility},
 };
 
 const INPUT_FORMAT_VERSION: u32 = 1;
@@ -181,6 +182,8 @@ pub(super) struct BindingInputProvider {
 /// In-memory Binding authority serialized with submission persistence.
 struct BindingInputState {
     current_plan: Option<CancellationToken>,
+    /// Context of the plan that currently owns `current_plan`.
+    plan_context: Option<PlanContext>,
     eligible: bool,
     current_intent: Option<ValidatedBindingIntent>,
     ui_revision: u64,
@@ -201,6 +204,7 @@ impl BindingInputProvider {
             input_path: PathBuf::from("/var/lib/natsume/state/binding-input.json"),
             state: Mutex::new(BindingInputState {
                 current_plan: None,
+                plan_context: None,
                 eligible: false,
                 current_intent: None,
                 ui_revision: 1,
@@ -213,12 +217,26 @@ impl BindingInputProvider {
         }
     }
 
+    pub(super) fn annotate_plan(&self, fence: &CancellationToken, context: &PlanContext) {
+        if let Ok(mut state) = self.state.lock()
+            && state.current_plan.as_ref() == Some(fence)
+        {
+            state.plan_context = Some(context.clone());
+        }
+    }
+
     pub(super) fn begin_plan(&self, plan: &CancellationToken) -> Result<(), SnapshotError> {
         let mut state = self.state.lock().map_err(|_| SnapshotError::Artifact)?;
+        let plan_context = state.plan_context.take();
         state.current_plan = Some(plan.clone());
+        let changed = state.eligible;
         if state.eligible {
             state.eligible = false;
             state.advance_ui_revision();
+        }
+        drop(state);
+        if changed {
+            trace_eligibility(plan_context.as_ref(), false, "target_replaced");
         }
         Ok(())
     }
@@ -235,26 +253,38 @@ impl BindingInputProvider {
             return Err(SnapshotError::Cancelled);
         }
         state.current_plan = Some(plan.clone());
+        state.plan_context = None;
         Ok(())
     }
 
     pub(super) fn end_plan(&self) -> Result<(), SnapshotError> {
         let mut state = self.state.lock().map_err(|_| SnapshotError::Artifact)?;
+        let plan_context = state.plan_context.take();
+        let changed = state.eligible;
         state.current_plan = None;
         if state.eligible {
             state.eligible = false;
             state.advance_ui_revision();
         }
+        drop(state);
+        if changed {
+            trace_eligibility(plan_context.as_ref(), false, "lease_ended");
+        }
         Ok(())
     }
 
     /// Observation may withdraw permission, including while a new plan is queued.
-    pub(super) fn revoke_eligibility(&self) -> Result<bool, SnapshotError> {
+    pub(super) fn revoke_eligibility(&self, reason: &'static str) -> Result<bool, SnapshotError> {
         let mut state = self.state.lock().map_err(|_| SnapshotError::Artifact)?;
         let changed = state.eligible;
         if changed {
             state.eligible = false;
             state.advance_ui_revision();
+        }
+        let plan_context = changed.then(|| state.plan_context.clone()).flatten();
+        drop(state);
+        if changed {
+            trace_eligibility(plan_context.as_ref(), false, reason);
         }
         Ok(changed)
     }
@@ -321,7 +351,7 @@ impl BindingInputProvider {
         &self,
         expected: Option<&GraphicalSession>,
     ) -> Result<(), SnapshotError> {
-        self.revoke_eligibility()?;
+        self.revoke_eligibility("agent_retired")?;
         let mut registered = self
             .registered
             .lock()
@@ -393,9 +423,23 @@ impl BindingInputProvider {
     ) -> Result<(), SnapshotError> {
         let mut state = self.state.lock().map_err(|_| SnapshotError::Artifact)?;
         require_current_plan(&state, plan)?;
-        if state.eligible != eligible {
+        let changed = state.eligible != eligible;
+        if changed {
             state.eligible = eligible;
             state.advance_ui_revision();
+        }
+        let plan_context = changed.then(|| state.plan_context.clone()).flatten();
+        drop(state);
+        if changed {
+            trace_eligibility(
+                plan_context.as_ref(),
+                eligible,
+                if eligible {
+                    "requirements_satisfied"
+                } else {
+                    "requirements_unsatisfied"
+                },
+            );
         }
         Ok(())
     }
@@ -762,6 +806,7 @@ pub(super) mod tests {
             input_path: directory.path().join("binding-input.json"),
             state: Mutex::new(BindingInputState {
                 current_plan: None,
+                plan_context: None,
                 eligible: false,
                 current_intent: None,
                 ui_revision: 1,
@@ -1339,5 +1384,152 @@ pub(super) mod tests {
                 accepted
             );
         }
+    }
+    #[test]
+    fn eligibility_events_follow_token_context_and_only_boolean_changes() {
+        use crate::reconcile::observability::tests::{
+            Capture, Value, assert_text, context, subscriber_guard,
+        };
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        let directory = tempdir();
+        let provider = input_provider(&directory);
+        let (first, second) = (CancellationToken::new(), CancellationToken::new());
+        let mut one = context();
+        one.plan = 11;
+        let mut two = context();
+        two.plan = 22;
+        provider
+            .begin_plan(&first)
+            .unwrap_or_else(|e| panic!("begin: {e}"));
+        provider.annotate_plan(&first, &one);
+        provider
+            .set_eligible(&first, true)
+            .unwrap_or_else(|e| panic!("grant: {e}"));
+        provider
+            .set_eligible(&first, true)
+            .unwrap_or_else(|e| panic!("repeat: {e}"));
+        provider
+            .begin_plan(&second)
+            .unwrap_or_else(|e| panic!("replace: {e}"));
+        provider.annotate_plan(&first, &one);
+        assert!(provider.set_eligible(&first, true).is_err());
+        provider
+            .set_eligible(&second, true)
+            .unwrap_or_else(|e| panic!("queued: {e}"));
+        provider
+            .revoke_eligibility("access_blocked")
+            .unwrap_or_else(|e| panic!("revoke: {e}"));
+        provider.annotate_plan(&second, &two);
+        provider
+            .set_eligible(&second, true)
+            .unwrap_or_else(|e| panic!("grant: {e}"));
+        provider
+            .retire_waiting(None)
+            .unwrap_or_else(|e| panic!("retire: {e}"));
+        provider
+            .set_eligible(&second, true)
+            .unwrap_or_else(|e| panic!("grant: {e}"));
+        provider
+            .revoke_eligibility("waiting_unavailable")
+            .unwrap_or_else(|e| panic!("waiting: {e}"));
+        provider
+            .set_eligible(&second, true)
+            .unwrap_or_else(|e| panic!("grant: {e}"));
+        provider
+            .set_eligible(&second, false)
+            .unwrap_or_else(|e| panic!("requirements: {e}"));
+        provider
+            .set_eligible(&second, true)
+            .unwrap_or_else(|e| panic!("grant: {e}"));
+        provider.end_plan().unwrap_or_else(|e| panic!("end: {e}"));
+        provider
+            .end_plan()
+            .unwrap_or_else(|e| panic!("repeat end: {e}"));
+        let records = capture.records("binding eligibility changed");
+        let expected = [
+            (Some(11), true, "requirements_satisfied"),
+            (Some(11), false, "target_replaced"),
+            (None, true, "requirements_satisfied"),
+            (None, false, "access_blocked"),
+            (Some(22), true, "requirements_satisfied"),
+            (Some(22), false, "agent_retired"),
+            (Some(22), true, "requirements_satisfied"),
+            (Some(22), false, "waiting_unavailable"),
+            (Some(22), true, "requirements_satisfied"),
+            (Some(22), false, "requirements_unsatisfied"),
+            (Some(22), true, "requirements_satisfied"),
+            (Some(22), false, "lease_ended"),
+        ];
+        assert_eq!(records.len(), expected.len());
+        for (record, (plan, eligible, reason)) in records.iter().zip(expected) {
+            assert_eq!(
+                record.fields.get("plan"),
+                plan.map(Value::Unsigned).as_ref()
+            );
+            assert_eq!(
+                record.fields.get("eligible"),
+                Some(&Value::Boolean(eligible))
+            );
+            assert_text(record, "reason", reason);
+            if plan.is_some() {
+                assert_text(
+                    record,
+                    "target_digest",
+                    if plan == Some(11) {
+                        &one.target.target_digest
+                    } else {
+                        &two.target.target_digest
+                    },
+                );
+            } else {
+                assert!(!record.fields.contains_key("target_digest"));
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_clears_previous_context_until_new_owner_is_annotated() {
+        use crate::reconcile::observability::tests::{
+            Capture, assert_text, context, subscriber_guard,
+        };
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        let _subscriber = tracing::subscriber::set_default(capture.subscriber());
+        let directory = tempdir();
+        let provider = input_provider(&directory);
+        let (first, second) = (CancellationToken::new(), CancellationToken::new());
+        provider
+            .begin_plan(&first)
+            .unwrap_or_else(|e| panic!("begin: {e}"));
+        provider.annotate_plan(&first, &context());
+        provider
+            .set_eligible(&first, true)
+            .unwrap_or_else(|e| panic!("grant: {e}"));
+        provider
+            .refresh_plan(&second)
+            .unwrap_or_else(|e| panic!("refresh: {e}"));
+        provider
+            .set_eligible(&second, false)
+            .unwrap_or_else(|e| panic!("revoke: {e}"));
+        let records = capture.records("binding eligibility changed");
+        assert_eq!(records.len(), 2);
+        assert_text(&records[1], "reason", "requirements_unsatisfied");
+        assert!(!records[1].fields.contains_key("plan"));
+        assert!(!records[1].fields.contains_key("target_digest"));
+        let mut renewed = context();
+        renewed.plan = 2;
+        provider.annotate_plan(&second, &renewed);
+        provider
+            .set_eligible(&second, true)
+            .unwrap_or_else(|e| panic!("grant: {e}"));
+        let records = capture.records("binding eligibility changed");
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            records[2].fields.get("plan"),
+            Some(&crate::reconcile::observability::tests::Value::Unsigned(2))
+        );
+        assert_text(&records[2], "target_digest", &renewed.target.target_digest);
     }
 }

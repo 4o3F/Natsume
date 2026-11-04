@@ -113,6 +113,32 @@ impl Diagnostics {
         self.report.stage = stage;
         self.report.status = status;
         self.event(None);
+        let stage = match stage {
+            DiagnosticStage::Starting => "starting",
+            DiagnosticStage::SystemBus => "system_bus",
+            DiagnosticStage::Helper => "helper",
+            DiagnosticStage::IdentityPreflight => "identity_preflight",
+            DiagnosticStage::HardwareIdentity => "hardware_identity",
+            DiagnosticStage::LocalGateway => "local_gateway",
+            DiagnosticStage::ControlIdentity => "control_identity",
+            DiagnosticStage::Reconciliation => "reconciliation",
+            DiagnosticStage::ControlConfiguration => "control_configuration",
+            DiagnosticStage::Connecting => "connecting",
+            DiagnosticStage::Handshake => "handshake",
+            DiagnosticStage::PendingReview => "pending_review",
+            DiagnosticStage::AuthorityInstallation => "authority_installation",
+            DiagnosticStage::Active => "active",
+        };
+        let status = match status {
+            DiagnosticStatus::Starting => "starting",
+            DiagnosticStatus::Retrying => "retrying",
+            DiagnosticStatus::WaitingForReview => "waiting_for_review",
+            DiagnosticStatus::Denied => "denied",
+            DiagnosticStatus::Active => "active",
+            DiagnosticStatus::Stopped => "stopped",
+        };
+        let at_boot_ms = self.report.events.last().and_then(|event| event.at_boot_ms);
+        tracing::info!(stage, status, at_boot_ms, "startup milestone");
         self.publish(false);
     }
 
@@ -252,6 +278,57 @@ mod tests {
         assert!(bytes.len() <= MAX_DIAGNOSTIC_REPORT_BYTES);
         serde_json::from_slice(&bytes)
             .unwrap_or_else(|error| panic!("complete report must decode: {error}"))
+    }
+
+    #[test]
+    fn startup_milestones_reuse_event_samples_and_fixed_names() {
+        use crate::reconcile::observability::tests::{Capture, Value, assert_text};
+        let _guard = crate::reconcile::observability::tests::subscriber_guard();
+        let capture = Capture::default();
+        let subscriber = capture.subscriber();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let mut diagnostics = Diagnostics::disabled();
+        let mut samples = vec![
+            diagnostics
+                .report
+                .events
+                .last()
+                .and_then(|event| event.at_boot_ms),
+        ];
+        for (stage, status) in [
+            (DiagnosticStage::Connecting, DiagnosticStatus::Retrying),
+            (DiagnosticStage::Connecting, DiagnosticStatus::Retrying),
+            (DiagnosticStage::Active, DiagnosticStatus::Active),
+        ] {
+            diagnostics.set_stage(stage, status);
+            samples.push(
+                diagnostics
+                    .report
+                    .events
+                    .last()
+                    .and_then(|event| event.at_boot_ms),
+            );
+        }
+        diagnostics.complete(DiagnosticStage::Active);
+        let records = capture.records("startup milestone");
+        assert_eq!(records.len(), 4);
+        for ((record, sample), (stage, status)) in records.iter().zip(samples).zip([
+            ("starting", "starting"),
+            ("connecting", "retrying"),
+            ("connecting", "retrying"),
+            ("active", "active"),
+        ]) {
+            assert_text(record, "stage", stage);
+            assert_text(record, "status", status);
+            assert_eq!(
+                record.fields.get("at_boot_ms"),
+                sample.map(Value::Unsigned).as_ref()
+            );
+        }
+        assert_eq!(
+            diagnostics.report.last_completed_stage,
+            Some(DiagnosticStage::Active)
+        );
     }
 
     #[test]

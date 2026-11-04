@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     ReconcileOutcome, SnapshotError, SnapshotReconciler, ValidatedSnapshot,
     access::LocalAccessObservation, check_cancellation, local_access_is_allowed,
+    observability::PlanContext,
 };
 
 pub(super) struct MaintenanceOutcome {
@@ -21,13 +22,15 @@ impl SnapshotReconciler {
     /// Finishes durable local maintenance and the fixed first-boot preparation
     /// while disconnected, without new epochs or business presentation.
     pub(crate) async fn recover_local(&self) -> Result<ClientStateSnapshot, SnapshotError> {
-        self.deactivate().await.map_err(|_| SnapshotError::Caddy)?;
-        let session = self.session.recover_owned().await;
+        self.deactivate(None)
+            .await
+            .map_err(|_| SnapshotError::Caddy)?;
+        let session = self.session.recover_owned(None).await;
         // Home owns a separate durable window. An unavailable session observation
         // must not stop the attempt to recover that already-captured window.
         let home = self
             .home
-            .reconcile(None, None, &CancellationToken::new())
+            .reconcile(None, None, &CancellationToken::new(), None)
             .await;
         let session = session?;
         let home = home?;
@@ -36,7 +39,7 @@ impl SnapshotReconciler {
             && session.actual.session_state != i32::from(SessionState::Terminating)
             && session.actual.session_state != i32::from(SessionState::Error)
         {
-            let boot_prepared = self.session.prepare_boot(None).await?;
+            let boot_prepared = self.session.prepare_boot(None, None).await?;
             if boot_prepared && home.actual.completed_reset_epoch.is_some() {
                 // GDM may select its greeter while the captured contest is
                 // drained. The boot fence is already complete on a later reset;
@@ -47,7 +50,7 @@ impl SnapshotReconciler {
                     && observed.foreground == i32::from(SessionForeground::Greeter)
                 {
                     self.session
-                        .waiting_foreground(&CancellationToken::new())
+                        .waiting_foreground(&CancellationToken::new(), None)
                         .await?;
                 }
             }
@@ -61,6 +64,7 @@ impl SnapshotReconciler {
         snapshot: &ValidatedSnapshot,
         before: LocalAccessObservation,
         cancellation: &CancellationToken,
+        context: Option<&PlanContext>,
     ) -> Result<MaintenanceOutcome, SnapshotError> {
         let LocalAccessObservation {
             session: session_before,
@@ -75,8 +79,10 @@ impl SnapshotReconciler {
                     .is_none_or(|completed| epoch > completed)
             });
         let waiting = if needs_maintenance {
-            self.deactivate().await?;
-            self.session.waiting_foreground(cancellation).await?
+            self.deactivate(context).await?;
+            self.session
+                .waiting_foreground(cancellation, context)
+                .await?
         } else {
             ReconcileOutcome::idle(None)
         };
@@ -86,11 +92,12 @@ impl SnapshotReconciler {
                 &snapshot.session_target,
                 waiting.actual.as_ref(),
                 cancellation,
+                context,
             )
             .await?;
         if access_before && !local_access_is_allowed(snapshot, &session_actual.actual, &home_before)
         {
-            self.deactivate().await?;
+            self.deactivate(context).await?;
         }
         check_cancellation(cancellation)?;
         let waiting = if snapshot.home_epoch.is_some_and(|epoch| {
@@ -98,13 +105,20 @@ impl SnapshotReconciler {
                 .completed_reset_epoch
                 .is_none_or(|completed| epoch > completed)
         }) {
-            self.session.waiting_foreground(cancellation).await?
+            self.session
+                .waiting_foreground(cancellation, context)
+                .await?
         } else {
             waiting
         };
         let home_actual = self
             .home
-            .reconcile(snapshot.home_epoch, waiting.actual.as_ref(), cancellation)
+            .reconcile(
+                snapshot.home_epoch,
+                waiting.actual.as_ref(),
+                cancellation,
+                context,
+            )
             .await?;
         let maintenance_complete = home_actual.actual.state == i32::from(HomeState::Steady)
             && home_actual.actual.completed_reset_epoch == snapshot.home_epoch
@@ -118,6 +132,7 @@ impl SnapshotReconciler {
                 snapshot.binding_target.bound.is_some(),
                 maintenance_complete,
                 cancellation,
+                context,
             )
             .await?;
         session_actual.actual = presented.actual;

@@ -32,6 +32,28 @@ use crate::{
     },
 };
 
+use super::{DispatchCause, DispatchMetadata, OutboundSnapshot};
+
+type DirtyMark = Arc<std::sync::Mutex<Option<Instant>>>;
+
+fn mark_dirty(sender: &watch::Sender<DirtyMark>, now: Instant) {
+    let mark = Arc::clone(&sender.borrow());
+    let mut pending = mark
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pending.get_or_insert(now);
+    sender.send_replace(Arc::clone(&mark));
+}
+
+fn take_dirty(receiver: &mut watch::Receiver<DirtyMark>) -> Option<Instant> {
+    let mark = Arc::clone(&receiver.borrow());
+    let mut pending = mark
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    drop(receiver.borrow_and_update());
+    pending.take()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FenceKind {
     Disabled,
@@ -504,7 +526,7 @@ pub(super) struct DeviceHandle {
     /// Bounded actor mailbox; closure means the actor has stopped consuming events.
     sender: mpsc::Sender<DeviceEvent>,
     /// Coalescing target-refresh notifications sent by the coordinator, consumed by the actor.
-    dirty: watch::Sender<()>,
+    dirty: watch::Sender<DirtyMark>,
     /// Initially false; handle shutdown sets true so the supervisor recognizes expected actor exit.
     stopping: Arc<AtomicBool>,
     /// Excludes authority commits from in-flight component writes and fences queued work.
@@ -540,7 +562,7 @@ impl DeviceHandle {
         run: impl FnOnce(
             Arc<Mutex<Option<FenceReason>>>,
             mpsc::Receiver<DeviceEvent>,
-            watch::Receiver<()>,
+            watch::Receiver<DirtyMark>,
             ActorJournal,
         ) -> F,
     ) -> (Self, impl Future<Output = ()> + Send + 'static)
@@ -548,7 +570,7 @@ impl DeviceHandle {
         F: Future<Output = ()> + Send + 'static,
     {
         let (sender, receiver) = mpsc::channel(MAILBOX_CAPACITY);
-        let (dirty, dirty_receiver) = watch::channel(());
+        let (dirty, dirty_receiver) = watch::channel(Arc::new(std::sync::Mutex::new(None)));
         let (current_session, _) = watch::channel(None);
         let handle = Self {
             sender,
@@ -586,7 +608,7 @@ impl DeviceHandle {
     pub(super) async fn replace_current_lease(
         &self,
         control: Weak<DeviceControl>,
-        outbound: mpsc::Sender<ServerActiveEnvelope>,
+        outbound: mpsc::Sender<OutboundSnapshot>,
     ) -> Option<Uuid> {
         let (replaced, received) = oneshot::channel();
         self.sender
@@ -660,7 +682,7 @@ impl DeviceHandle {
     }
 
     fn dirty(&self) {
-        self.dirty.send_replace(());
+        mark_dirty(&self.dirty, Instant::now());
     }
 
     pub(super) async fn evict_current_lease(&self, end: LeaseEnd) {
@@ -771,7 +793,7 @@ enum DeviceEvent {
     /// Replaces any current lease and acknowledges when fencing is effective.
     ReplaceCurrentLease {
         control: Weak<DeviceControl>,
-        outbound: mpsc::Sender<ServerActiveEnvelope>,
+        outbound: mpsc::Sender<OutboundSnapshot>,
         replaced: oneshot::Sender<Uuid>,
     },
     /// Reconciles one complete snapshot if `session_id` is still current.
@@ -806,7 +828,7 @@ enum DeviceEvent {
 /// terminate the lease and discard any pending complete snapshot.
 struct CurrentLease {
     session_id: Uuid,
-    outbound: mpsc::Sender<ServerActiveEnvelope>,
+    outbound: mpsc::Sender<OutboundSnapshot>,
     observation: Option<(ObservedActualState, i64)>,
     pending: Option<(Box<ClientStateSnapshot>, i64)>,
     consecutive_failures: u8,
@@ -828,7 +850,7 @@ async fn run_actor(
     device_id: DeviceId,
     authority_fence: Arc<Mutex<Option<FenceReason>>>,
     mut receiver: mpsc::Receiver<DeviceEvent>,
-    mut dirty: watch::Receiver<()>,
+    mut dirty: watch::Receiver<DirtyMark>,
     events: ActorJournal,
 ) {
     let mut current: Option<CurrentLease> = None;
@@ -844,18 +866,23 @@ async fn run_actor(
                 if changed.is_err() {
                     break;
                 }
-                dirty.borrow_and_update();
+                let dirty_since = take_dirty(&mut dirty);
                 let fenced = authority_fence.lock().await;
                 if let Some(reason) = fenced.as_ref() {
                     events.terminate_fenced(&mut current, reason);
                 } else if current.as_ref().is_some_and(|lease| lease.consecutive_failures == 0) {
                     drop(fenced);
-                    refresh_target(device_id, &authority_fence, &mut current, &mut refresh, &events).await;
+                    refresh_target(device_id, &authority_fence, &mut current, &mut refresh, &events, DispatchCause::Dirty, dirty_since).await;
                 }
                 continue;
             }
             _ = refresh.tick() => {
-                refresh_target(device_id, &authority_fence, &mut current, &mut refresh, &events).await;
+                let cause = if current.as_ref().is_some_and(|lease| lease.consecutive_failures != 0) {
+                    DispatchCause::Retry
+                } else {
+                    DispatchCause::Refresh
+                };
+                refresh_target(device_id, &authority_fence, &mut current, &mut refresh, &events, cause, None).await;
                 continue;
             }
         };
@@ -949,6 +976,8 @@ async fn run_actor(
                         &mut current,
                         &mut refresh,
                         &events,
+                        DispatchCause::ClientState,
+                        None,
                     )
                     .await;
                 }
@@ -1006,6 +1035,8 @@ async fn refresh_target(
     current: &mut Option<CurrentLease>,
     refresh: &mut tokio::time::Interval,
     events: &ActorJournal,
+    cause: DispatchCause,
+    dirty_since: Option<Instant>,
 ) {
     let Some((session_id, outbound, control)) = current
         .as_ref()
@@ -1025,6 +1056,7 @@ async fn refresh_target(
         return;
     }
     let pending = current.as_mut().and_then(|lease| lease.pending.take());
+    let reconcile_started = Instant::now();
     let result = match pending.as_ref() {
         Some((snapshot, received_at)) => {
             state::reconcile(&control, device_id, snapshot, events.context(session_id))
@@ -1035,7 +1067,8 @@ async fn refresh_target(
             .await
             .map(|snapshot| (snapshot, None)),
     };
-    let (snapshot, observation) = match result {
+    let reconcile_elapsed = reconcile_started.elapsed();
+    let (materialized, observation) = match result {
         Ok(value) => value,
         Err(error) => {
             if let Some(lease) = current.as_mut() {
@@ -1045,11 +1078,20 @@ async fn refresh_target(
             return;
         }
     };
+    let metadata = DispatchMetadata {
+        device_id,
+        cause,
+        queued: dirty_since
+            .map(|started| materialized.started_at.saturating_duration_since(started)),
+        materialize: materialized.elapsed,
+    };
     let envelope = ServerActiveEnvelope {
         session_id: session_id.as_bytes().to_vec(),
-        body: Some(server_active_envelope::Body::ServerState(snapshot)),
+        body: Some(server_active_envelope::Body::ServerState(
+            materialized.snapshot,
+        )),
     };
-    if let Err(error) = outbound.try_send(envelope) {
+    if let Err(error) = outbound.try_send(OutboundSnapshot { envelope, metadata }) {
         let reason = match error {
             mpsc::error::TrySendError::Full(_) => DisconnectReason::OutboundBackpressure,
             mpsc::error::TrySendError::Closed(_) => DisconnectReason::OutboundClosed,
@@ -1057,11 +1099,14 @@ async fn refresh_target(
         events.terminate_after_fault(current, reason);
     } else if let Some(lease) = current.as_mut() {
         if let Some(observation) = observation {
-            observation.0.emit_journal_changes(
+            let changed = observation.0.emit_journal_changes(
                 lease.observation.as_ref().map(|previous| &previous.0),
                 &events.journal,
                 &events.context(session_id),
             );
+            observation
+                .0
+                .trace_received(device_id, changed, reconcile_elapsed);
             lease.observation = Some(observation);
         }
         if lease.consecutive_failures != 0 {
@@ -1279,7 +1324,7 @@ mod tests {
                     .is_ok()
             );
         }
-        let (dirty, mut dirty_receiver) = watch::channel(());
+        let (dirty, mut dirty_receiver) = watch::channel(Arc::new(std::sync::Mutex::new(None)));
         let handle = DeviceHandle {
             sender,
             dirty,
@@ -1305,5 +1350,71 @@ mod tests {
         assert_eq!(target_refresh_delay(&session_id), Duration::from_secs(1));
         let session_id = Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_003b);
         assert_eq!(target_refresh_delay(&session_id), TARGET_REFRESH_INTERVAL);
+    }
+
+    #[test]
+    fn dirty_marks_keep_the_first_timestamp_and_reset_without_a_notification() {
+        let (sender, mut receiver) = watch::channel(Arc::new(std::sync::Mutex::new(None)));
+        let first = Instant::now();
+        mark_dirty(&sender, first);
+        mark_dirty(&sender, first + Duration::from_millis(5));
+        assert_eq!(take_dirty(&mut receiver), Some(first));
+        assert!(
+            !receiver
+                .has_changed()
+                .unwrap_or_else(|error| panic!("watch: {error}"))
+        );
+        let next = first + Duration::from_millis(10);
+        mark_dirty(&sender, next);
+        assert!(
+            receiver
+                .has_changed()
+                .unwrap_or_else(|error| panic!("watch: {error}"))
+        );
+        assert_eq!(take_dirty(&mut receiver), Some(next));
+        assert!(
+            !receiver
+                .has_changed()
+                .unwrap_or_else(|error| panic!("watch: {error}"))
+        );
+    }
+
+    #[test]
+    fn concurrent_dirty_mark_and_consumption_leave_no_unnotified_timestamp() {
+        let (sender, mut receiver) = watch::channel(Arc::new(std::sync::Mutex::new(None)));
+        for _ in 0..100 {
+            let first = Instant::now();
+            mark_dirty(&sender, first);
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let producer = scope.spawn(|| {
+                    barrier.wait();
+                    mark_dirty(&sender, Instant::now());
+                });
+                barrier.wait();
+                assert_eq!(take_dirty(&mut receiver), Some(first));
+                producer
+                    .join()
+                    .unwrap_or_else(|_| panic!("dirty producer panicked"));
+            });
+            if receiver
+                .has_changed()
+                .unwrap_or_else(|error| panic!("watch: {error}"))
+            {
+                assert!(take_dirty(&mut receiver).is_some());
+            }
+            assert!(
+                receiver
+                    .borrow()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_none()
+            );
+            assert!(
+                !receiver
+                    .has_changed()
+                    .unwrap_or_else(|error| panic!("watch: {error}"))
+            );
+        }
     }
 }

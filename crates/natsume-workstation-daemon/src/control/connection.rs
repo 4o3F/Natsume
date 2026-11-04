@@ -29,12 +29,14 @@ use tokio_tungstenite::{
         protocol::WebSocketConfig,
     },
 };
+use tracing::instrument::WithSubscriber as _;
 
 use crate::{
     CanonicalEndpoint,
     diagnostics::Diagnostics,
     reconcile::{
         ReconcileOutcome, SnapshotError, SnapshotReconciler, ValidatedSnapshot,
+        observability::{PlanContext, SnapshotSource, TargetMetadata},
         validate_server_snapshot,
     },
 };
@@ -302,7 +304,7 @@ pub(crate) async fn run(
 ) -> Result<(), ControlLoopError> {
     let snapshots = Arc::new(snapshots);
     snapshots
-        .deactivate()
+        .deactivate(None)
         .await
         .map_err(|_| ControlLoopError::LocalDeactivation)?;
     diagnostics.set_stage(
@@ -328,6 +330,7 @@ pub(crate) async fn run(
     );
     diagnostics.complete(DiagnosticStage::ControlConfiguration);
     let mut backoff = ReconnectBackoff::new();
+    let mut next_plan = 0;
     let mut first_attempt = true;
     loop {
         // One tracked local pass runs alongside backoff/connect/handshake. It
@@ -395,10 +398,16 @@ pub(crate) async fn run(
                     .map_err(|_| ControlLoopError::PresentationCache)?;
                 diagnostics.reset_failures();
                 diagnostics.set_stage(DiagnosticStage::Active, DiagnosticStatus::Active);
-                let stable =
-                    run_active(socket, session_id, Arc::clone(&snapshots), Some(local)).await;
+                let stable = run_active(
+                    socket,
+                    session_id,
+                    Arc::clone(&snapshots),
+                    Some(local),
+                    &mut next_plan,
+                )
+                .await;
                 snapshots
-                    .deactivate()
+                    .deactivate(None)
                     .await
                     .map_err(|_| ControlLoopError::LocalDeactivation)?;
                 // Evidence I/O follows the safety barrier, never precedes it.
@@ -427,27 +436,39 @@ pub(crate) async fn run(
     }
 }
 
+#[derive(Clone)]
+struct ObservedTarget {
+    state: Arc<ValidatedSnapshot>,
+    metadata: TargetMetadata,
+}
+
+struct ObservationTask {
+    task: LocalSnapshotTask,
+    metadata: Option<TargetMetadata>,
+}
+
 /// The only target plan eligible to publish a result for the current lease.
 ///
 /// Replacement closes this cooperative fence and waits for the task before the
 /// next plan starts. In-flight external operations use their own fixed deadlines;
 /// the fence only prevents the next resource effect from starting.
 struct CurrentPlan {
+    context: PlanContext,
     fence: tokio_util::sync::CancellationToken,
     /// Retained validated target used to coalesce exact repeats without copying secrets.
-    target: Arc<ValidatedSnapshot>,
+    target: ObservedTarget,
     task: JoinHandle<Result<ReconcileOutcome<ClientStateSnapshot>, SnapshotError>>,
 }
 
 /// Latest validated target waiting for the canceled running plan to stop.
 struct PendingPlan {
     fence: tokio_util::sync::CancellationToken,
-    target: Arc<ValidatedSnapshot>,
+    target: ObservedTarget,
 }
 
 /// Retry authority belongs to the last completed plan in this active lease.
 struct RetrySchedule {
-    target: Option<Arc<ValidatedSnapshot>>,
+    target: Option<ObservedTarget>,
     deadline: Option<Instant>,
     delay_ms: u32,
 }
@@ -461,7 +482,7 @@ impl RetrySchedule {
         }
     }
 
-    fn completed(&mut self, target: Arc<ValidatedSnapshot>, retry: bool) {
+    fn completed(&mut self, target: ObservedTarget, retry: bool) {
         self.target = Some(target);
         self.deadline = if retry {
             let jitter = getrandom::u32().unwrap_or(u32::MAX);
@@ -484,13 +505,20 @@ async fn run_active(
     session_id: [u8; 16],
     snapshots: Arc<SnapshotReconciler>,
     initial_local_task: Option<LocalSnapshotTask>,
+    next_plan: &mut u64,
 ) -> bool {
+    let mut last_received = None;
     let stable_at = Instant::now() + STABLE_ACTIVE_DURATION;
     let mut stable = false;
     let mut last_sent = None::<ClientStateSnapshot>;
     let (mut current, mut queued) = (None::<CurrentPlan>, None::<PendingPlan>);
-    let mut observation =
-        Some(initial_local_task.unwrap_or_else(|| start_observation(Arc::clone(&snapshots), None)));
+    let mut observation = Some(match initial_local_task {
+        Some(task) => ObservationTask {
+            task,
+            metadata: None,
+        },
+        None => start_observation(Arc::clone(&snapshots), None),
+    });
     let mut retry = RetrySchedule::new();
     let mut local_change_pending = false;
     let mut awaiting_target = false;
@@ -508,7 +536,7 @@ async fn run_active(
         };
         let observation_finished = async {
             match observation.as_mut() {
-                Some(task) => task.await,
+                Some(task) => (&mut task.task).await,
                 None => pending().await,
             }
         };
@@ -530,7 +558,7 @@ async fn run_active(
                     snapshot_error = Some(error);
                     break;
                 }
-                current = Some(start_plan(Arc::clone(&snapshots), PendingPlan { fence, target: Arc::clone(target) }));
+                current = Some(start_plan(Arc::clone(&snapshots), PendingPlan { fence, target: target.clone() }, next_plan));
             }
             message = socket.next() => {
                 let received_at = Instant::now();
@@ -544,6 +572,8 @@ async fn run_active(
                             awaiting_target,
                             observation.is_some(),
                             *target,
+                            &mut last_received,
+                            next_plan,
                         )
                         {
                             snapshot_error = Some(error);
@@ -565,7 +595,7 @@ async fn run_active(
                     break;
                 };
                 if let Some(next) = queued.take() {
-                    current = Some(start_plan(Arc::clone(&snapshots), next));
+                    current = Some(start_plan(Arc::clone(&snapshots), next, next_plan));
                     continue;
                 }
                 let outcome = match result {
@@ -585,15 +615,15 @@ async fn run_active(
                     observation = Some(start_observation(Arc::clone(&snapshots), retry.target.clone()));
                     continue;
                 }
-                let Ok(sent) = send_changed_snapshot(&mut socket, session_id, &mut last_sent, outcome.actual).await else {
+                let Ok(sent) = send_changed_snapshot(&mut socket, session_id, &mut last_sent, outcome.actual, SnapshotSource::Plan(&finished.context)).await else {
                     break;
                 };
                 awaiting_target |= sent;
             }
             result = observation_finished => {
-                observation = None;
+                let metadata = observation.take().and_then(|task| task.metadata);
                 if let Some(next) = queued.take() {
-                    current = Some(start_plan(Arc::clone(&snapshots), next));
+                    current = Some(start_plan(Arc::clone(&snapshots), next, next_plan));
                     continue;
                 }
                 let snapshot = match result {
@@ -612,7 +642,7 @@ async fn run_active(
                     observation = Some(start_observation(Arc::clone(&snapshots), retry.target.clone()));
                     continue;
                 }
-                let Ok(sent) = send_changed_snapshot(&mut socket, session_id, &mut last_sent, snapshot).await else {
+                let Ok(sent) = send_changed_snapshot(&mut socket, session_id, &mut last_sent, snapshot, SnapshotSource::Observation(metadata.as_ref())).await else {
                     break;
                 };
                 awaiting_target |= sent;
@@ -642,7 +672,7 @@ async fn run_active(
     if let Some(task) = observation {
         // The initial task can own a local Home/termination recovery. Closing
         // WSS does not cancel a Helper mutation; join it before reconnecting.
-        let _ = task.await;
+        let _ = task.task.await;
     }
     if let Some(error) = snapshot_error {
         tracing::error!(error = %error, "Device active snapshot processing failed");
@@ -652,6 +682,10 @@ async fn run_active(
     stable
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit scheduling and observation state preserve pump ownership"
+)]
 fn queue_latest_plan(
     snapshots: &Arc<SnapshotReconciler>,
     current: &mut Option<CurrentPlan>,
@@ -660,20 +694,47 @@ fn queue_latest_plan(
     awaiting_target: bool,
     observation_running: bool,
     target: ServerStateSnapshot,
+    last_received: &mut Option<Instant>,
+    next_plan: &mut u64,
 ) -> Result<(), SnapshotError> {
+    let received_at = Instant::now();
+    let metadata = TargetMetadata::new(
+        target
+            .target
+            .as_ref()
+            .ok_or(SnapshotError::InvalidServerSnapshot)?,
+    );
     let presentation = crate::reconcile::snapshot_presentation(&target);
     let target = Arc::new(validate_server_snapshot(target)?);
     snapshots.accept_presentation(presentation)?;
-    if target_is_redundant(
-        current.as_ref().map(|plan| plan.target.as_ref()),
-        pending.as_ref().map(|plan| plan.target.as_ref()),
-        retry.target.as_deref(),
+    let redundant = target_is_redundant(
+        current.as_ref().map(|plan| plan.target.state.as_ref()),
+        pending.as_ref().map(|plan| plan.target.state.as_ref()),
+        retry.target.as_ref().map(|target| target.state.as_ref()),
         awaiting_target && retry.deadline.is_none(),
         target.as_ref(),
-    ) {
+    );
+    let action = if redundant {
+        "coalesced"
+    } else if current.is_some() || observation_running {
+        "queued"
+    } else {
+        "started"
+    };
+    metadata.trace_received(
+        last_received.map(|previous| received_at.duration_since(previous)),
+        action,
+    );
+    *last_received = Some(received_at);
+    if redundant {
         return Ok(());
     }
-    let unchanged = retry.target.as_deref() == Some(target.as_ref());
+    let unchanged =
+        retry.target.as_ref().map(|target| target.state.as_ref()) == Some(target.as_ref());
+    let target = ObservedTarget {
+        state: target,
+        metadata,
+    };
     *retry = RetrySchedule::new();
     let fence = tokio_util::sync::CancellationToken::new();
     if unchanged {
@@ -690,7 +751,7 @@ fn queue_latest_plan(
             replaced.fence.cancel();
         }
     } else {
-        *current = Some(start_plan(Arc::clone(snapshots), latest));
+        *current = Some(start_plan(Arc::clone(snapshots), latest, next_plan));
     }
     Ok(())
 }
@@ -711,6 +772,7 @@ async fn send_changed_snapshot(
     session_id: [u8; 16],
     last_sent: &mut Option<ClientStateSnapshot>,
     snapshot: ClientStateSnapshot,
+    source: SnapshotSource<'_>,
 ) -> Result<bool, ()> {
     if last_sent.as_ref() == Some(&snapshot) {
         return Ok(false);
@@ -718,6 +780,7 @@ async fn send_changed_snapshot(
     if !send_snapshot(socket, session_id, &snapshot).await {
         return Err(());
     }
+    source.trace_sent(&snapshot);
     *last_sent = Some(snapshot);
     Ok(true)
 }
@@ -729,12 +792,31 @@ pub(super) fn heartbeat_interval() -> Interval {
     interval
 }
 
-fn start_plan(snapshots: Arc<SnapshotReconciler>, pending: PendingPlan) -> CurrentPlan {
+fn start_plan(
+    snapshots: Arc<SnapshotReconciler>,
+    pending: PendingPlan,
+    next_plan: &mut u64,
+) -> CurrentPlan {
     let PendingPlan { fence, target } = pending;
     let task_fence = fence.clone();
-    let task_target = Arc::clone(&target);
-    let task = tokio::spawn(async move { snapshots.reconcile(&task_target, task_fence).await });
+    *next_plan += 1;
+    let context = PlanContext {
+        plan: *next_plan,
+        target: target.metadata.clone(),
+    };
+    snapshots.annotate_plan(&fence, &context);
+    let task_context = context.clone();
+    let task_target = Arc::clone(&target.state);
+    let task = tokio::spawn(
+        async move {
+            snapshots
+                .reconcile(&task_target, task_fence, &task_context)
+                .await
+        }
+        .with_current_subscriber(),
+    );
     CurrentPlan {
+        context,
         fence,
         target,
         task,
@@ -743,9 +825,18 @@ fn start_plan(snapshots: Arc<SnapshotReconciler>, pending: PendingPlan) -> Curre
 
 fn start_observation(
     snapshots: Arc<SnapshotReconciler>,
-    target: Option<Arc<ValidatedSnapshot>>,
-) -> LocalSnapshotTask {
-    tokio::spawn(async move { snapshots.observe(target.as_deref()).await })
+    target: Option<ObservedTarget>,
+) -> ObservationTask {
+    let metadata = target.as_ref().map(|target| target.metadata.clone());
+    let task = tokio::spawn(
+        async move {
+            snapshots
+                .observe(target.as_ref().map(|target| target.state.as_ref()))
+                .await
+        }
+        .with_current_subscriber(),
+    );
+    ObservationTask { task, metadata }
 }
 
 async fn fence_plans(
@@ -856,6 +947,7 @@ fn control_url(endpoint: CanonicalEndpoint) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod observability;
     use natsume_workstation_protocol::generated::{
         BindingAccessTarget, BindingNegotiationIntent, ConcreteTargetState, ForegroundTarget,
         GatewayCredentialIntent, GatewayTarget, HomeTarget, RuntimeConfigTarget, ServerIntentState,
@@ -1257,12 +1349,11 @@ mod tests {
                 .await;
         let socket = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
         let session_id = *Uuid::now_v7().as_bytes();
-        let pump = tokio::spawn(run_active(
-            client,
-            session_id,
-            Arc::clone(&resources.snapshots),
-            None,
-        ));
+        let snapshots = Arc::clone(&resources.snapshots);
+        let pump = tokio::spawn(
+            async move { run_active(client, session_id, snapshots, None, &mut 0).await }
+                .with_current_subscriber(),
+        );
         let mut fixture = ActiveFixture {
             resources,
             socket,
@@ -1715,12 +1806,11 @@ mod tests {
                 .await;
         let socket = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
         let session_id = *Uuid::now_v7().as_bytes();
-        let pump = tokio::spawn(run_active(
-            client,
-            session_id,
-            Arc::clone(&resources.snapshots),
-            Some(local),
-        ));
+        let snapshots = Arc::clone(&resources.snapshots);
+        let pump = tokio::spawn(
+            async move { run_active(client, session_id, snapshots, Some(local), &mut 0).await }
+                .with_current_subscriber(),
+        );
         let mut active = ActiveFixture {
             resources,
             socket,
@@ -1790,7 +1880,10 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let resources = fixture(HelperState::default()).await?;
         let wire = snapshot();
-        let target = Arc::new(validate_server_snapshot(wire.clone())?);
+        let target = ObservedTarget {
+            state: Arc::new(validate_server_snapshot(wire.clone())?),
+            metadata: TargetMetadata::new(wire.target.as_ref().ok_or("target")?),
+        };
         let mut retry = RetrySchedule::new();
         retry.completed(target, true);
         let deadline = retry.deadline;
@@ -1805,6 +1898,8 @@ mod tests {
                 true,
                 false,
                 wire.clone(),
+                &mut None,
+                &mut 0,
             )?;
         }
         assert_eq!(retry.deadline, deadline);
@@ -1815,11 +1910,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn retry_delay_is_bounded_and_cleared_when_local_work_finishes() {
-        let target = Arc::new(target(ForegroundTarget::Contest));
+        let target = ObservedTarget {
+            state: Arc::new(target(ForegroundTarget::Contest)),
+            metadata: crate::reconcile::observability::tests::context().target,
+        };
         let mut retry = RetrySchedule::new();
         for ceiling in [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000] {
             let now = Instant::now();
-            retry.completed(Arc::clone(&target), true);
+            retry.completed(target.clone(), true);
             let delay = retry.deadline.unwrap_or_else(|| panic!("retry deadline")) - now;
             assert!(delay >= Duration::from_millis(ceiling / 2));
             assert!(delay <= Duration::from_millis(ceiling));

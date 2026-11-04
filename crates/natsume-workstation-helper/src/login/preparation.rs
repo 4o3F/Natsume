@@ -293,74 +293,151 @@ async fn prepare(connection: &Connection, state: &mut State) -> Result<(), Resou
     }
 }
 
+async fn prepare_attempt(
+    budget: Duration,
+    work: impl std::future::Future<Output = Result<(), ResourceControlError>>,
+) -> (Result<(), ResourceControlError>, bool) {
+    match timeout(budget, work).await {
+        Ok(result) => (result, false),
+        Err(_) => (
+            Err(unavailable(
+                "preparation_timeout: registration or desktop initialization did not complete",
+            )),
+            true,
+        ),
+    }
+}
+
 pub(super) async fn run(role: SessionRole) -> Result<(), ResourceControlError> {
-    if !rustix::process::geteuid().is_root() {
-        return Err(rejected("session preparation requires root"));
-    }
-    let begun = Instant::now();
-    let _mutation = mutation_when_available(Path::new("/")).await?;
-    if role == SessionRole::Waiting {
-        crate::waiting::require_login_allowed(Path::new("/"))?;
-    }
-    if role == SessionRole::Contest {
-        admission::require_open(Path::new("/"))?;
-        crate::home::require_template(Path::new("/"))?;
-    }
-    let connection = Connection::system()
-        .await
-        .map_err(|_| unavailable("system bus is unavailable"))?;
-    let boot = session::read_boot_id(Path::new("/"))?;
-    let pid =
-        i32::try_from(std::process::id()).map_err(|_| unavailable("preparation PID is invalid"))?;
-    let start = processes::start_time(Path::new("/"), pid)?
-        .ok_or_else(|| unavailable("preparation process is unavailable"))?;
-    let mut state = State {
-        boot,
-        role,
-        pid,
-        start,
-        phase: Phase::Greeter,
-        session: None,
-        greeter: None,
-    };
-    state.record(Phase::Greeter)?;
-    // Keep the owner alive during bounded cleanup; dropping the work future
-    // alone does not prove that GDM cancelled an already-opened session.
-    let work = PREPARE_TIMEOUT
-        .saturating_sub(Duration::from_secs(5))
-        .saturating_sub(begun.elapsed());
-    let result = match timeout(work, prepare(&connection, &mut state)).await {
-        Ok(result) => result,
-        Err(_) => Err(unavailable(
-            "preparation_timeout: registration or desktop initialization did not complete",
-        )),
-    };
-    if let Err(error) = &result {
-        tracing::error!(%error, role = role_name(role), phase = ?state.phase,
-            elapsed_ms = begun.elapsed().as_millis(), "Graphical preparation incomplete; resample before retry");
-        state.record(Phase::Failed)?;
+    let started = Instant::now();
+    let mut prepare_us = None;
+    let mut timed_out = false;
+    let result = async {
+        if !rustix::process::geteuid().is_root() {
+            return Err(rejected("session preparation requires root"));
+        }
+        let begun = Instant::now();
+        let _mutation = mutation_when_available(Path::new("/")).await?;
+        if role == SessionRole::Waiting {
+            crate::waiting::require_login_allowed(Path::new("/"))?;
+        }
         if role == SessionRole::Contest {
-            let cleanup = async {
-                let observed = session::observe(&connection, Path::new("/")).await?;
-                if observed.waiting.desktop_ready
-                    && !observed.waiting.locked_hint
-                    && let Some(waiting) = observed.waiting.session
-                {
-                    session::activate(&connection, Path::new("/"), SessionRole::Waiting, &waiting)
-                        .await?;
+            admission::require_open(Path::new("/"))?;
+            crate::home::require_template(Path::new("/"))?;
+        }
+        let connection = Connection::system()
+            .await
+            .map_err(|_| unavailable("system bus is unavailable"))?;
+        let boot = session::read_boot_id(Path::new("/"))?;
+        let pid =
+            i32::try_from(std::process::id()).map_err(|_| unavailable("preparation PID is invalid"))?;
+        let start = processes::start_time(Path::new("/"), pid)?
+            .ok_or_else(|| unavailable("preparation process is unavailable"))?;
+        let mut state = State {
+            boot,
+            role,
+            pid,
+            start,
+            phase: Phase::Greeter,
+            session: None,
+            greeter: None,
+        };
+        state.record(Phase::Greeter)?;
+        // Keep the owner alive during bounded cleanup; dropping the work future
+        // alone does not prove that GDM cancelled an already-opened session.
+        let work = PREPARE_TIMEOUT
+            .saturating_sub(Duration::from_secs(5))
+            .saturating_sub(begun.elapsed());
+        let prepare_started = Instant::now();
+        let (result, hit) = prepare_attempt(work, prepare(&connection, &mut state)).await;
+        prepare_us = Some(prepare_started.elapsed());
+        timed_out = hit;
+        if let Err(error) = &result {
+            tracing::error!(%error, role = role_name(role), phase = ?state.phase,
+                elapsed_ms = begun.elapsed().as_millis(), "Graphical preparation incomplete; resample before retry");
+            state.record(Phase::Failed)?;
+            if role == SessionRole::Contest {
+                let cleanup = async {
+                    let observed = session::observe(&connection, Path::new("/")).await?;
+                    if observed.waiting.desktop_ready
+                        && !observed.waiting.locked_hint
+                        && let Some(waiting) = observed.waiting.session
+                    {
+                        session::activate(&connection, Path::new("/"), SessionRole::Waiting, &waiting)
+                            .await?;
+                    }
+                    Ok::<_, ResourceControlError>(())
+                };
+                if !matches!(
+                    timeout(PREPARE_TIMEOUT.saturating_sub(begun.elapsed()), cleanup).await,
+                    Ok(Ok(()))
+                ) {
+                    tracing::warn!(
+                        code = "waiting_restore_unconfirmed",
+                        "Could not confirm waiting after preparation failure"
+                    );
                 }
-                Ok::<_, ResourceControlError>(())
-            };
-            if !matches!(
-                timeout(PREPARE_TIMEOUT.saturating_sub(begun.elapsed()), cleanup).await,
-                Ok(Ok(()))
-            ) {
-                tracing::warn!(
-                    code = "waiting_restore_unconfirmed",
-                    "Could not confirm waiting after preparation failure"
-                );
             }
         }
-    }
+        result
+    }.await;
+    let elapsed = started.elapsed();
+    tracing::info!(
+        operation = "prepare",
+        foreground_target = role_name(role),
+        elapsed_us = crate::duration_micros(elapsed),
+        prepare_us = prepare_us.map(crate::duration_micros),
+        result = crate::local_result(&result, timed_out),
+        "session switch completed"
+    );
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn preparation_attempt_keeps_result_and_identifies_only_its_own_timeout() {
+        let (result, hit) = prepare_attempt(Duration::from_secs(40), async { Ok(()) }).await;
+        assert!(result.is_ok());
+        assert!(!hit);
+        let (result, hit) =
+            prepare_attempt(Duration::from_secs(40), async { Err(rejected("fixture")) }).await;
+        assert!(matches!(result, Err(ResourceControlError::Rejected(_))));
+        assert!(!hit);
+        let (result, hit) = prepare_attempt(Duration::from_millis(1), std::future::pending()).await;
+        assert!(hit);
+        assert!(
+            matches!(&result, Err(ResourceControlError::Unavailable(message)) if message == "preparation_timeout: registration or desktop initialization did not complete")
+        );
+        assert_eq!(crate::local_result(&result, hit), "timeout");
+    }
+
+    #[tokio::test]
+    async fn preparation_entry_failure_has_no_invented_prepare_interval() {
+        use crate::tests::{Capture, Value, assert_text, subscriber_guard};
+        use tracing::instrument::WithSubscriber as _;
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        async {
+            assert!(run(SessionRole::Waiting).await.is_err());
+            let events = capture.events("session switch completed");
+            assert_eq!(events.len(), 1);
+            assert_text(&events[0], "operation", "prepare");
+            assert_text(&events[0], "foreground_target", "waiting");
+            assert_text(&events[0], "result", "error");
+            assert!(matches!(
+                events[0].fields.get("elapsed_us"),
+                Some(Value::Unsigned(_))
+            ));
+            assert!(!events[0].fields.contains_key("prepare_us"));
+            assert!(!events[0].fields.contains_key("activate_us"));
+        }
+        .with_subscriber(capture.subscriber())
+        .await;
+    }
 }
