@@ -1,4 +1,4 @@
-import { configuration } from "./config.ts";
+import { configuration, type Experiment } from "./config.ts";
 import { command, remote } from "./run.ts";
 
 export function attribution(folded: string) {
@@ -47,6 +47,12 @@ export function attribution(folded: string) {
     top_leaves: [...top].sort((a, b) => b[1] - a[1]).slice(0, 30),
   };
 }
+export function profileTitle(
+  e: Pick<Experiment, "name" | "version" | "devices">,
+) {
+  return `${e.name}: ${e.version} N=${e.devices}`;
+}
+
 export async function analyzePerf(base: string, flamegraph: string) {
   const e = configuration(await Deno.readTextFile(`${base}/experiment.toml`));
   const A = e.hosts.server;
@@ -69,7 +75,7 @@ export async function analyzePerf(base: string, flamegraph: string) {
   const svg = await command("perl", [
     `${flamegraph}/flamegraph.pl`,
     "--title",
-    `${e.name}: v2.10.3 N=${e.devices}`,
+    profileTitle(e),
     `${base}/perf.folded`,
   ]);
   await Deno.writeTextFile(`${base}/flamegraph.svg`, svg + "\n");

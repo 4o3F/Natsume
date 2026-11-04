@@ -16,6 +16,8 @@ deno run --frozen --cached-only --no-prompt --allow-read --allow-write=context/b
 
 每个实验使用新的本地结果目录和 B 上的 fleet 副本；目录已存在时退出。恢复程序检查快照摘要，将原有 bench data 移入同一文件系统上的 root-only staging，再发布快照中的 data。原有 data 保留在该 root-only staging 中。工具读取基线快照，不访问生产备份。
 
+`version` 同时接受发布版本和构建变体标签，例如 `v2.10.3`、`v2-60fbe1a`、`pr17-956b1b8`。标签须以 ASCII 字母或数字开头，其余字符只允许字母、数字、点和横线。二进制位于 `/opt/natsume-bench/<version>/natsume-server`，配置和数据位于 `/srv/natsume-bench/<version>/`；运行前须将 `natsume-bench.service` 的 ExecStart、配置绑定和可写数据目录指向对应标签，工具检查 ExecStart 后恢复该标签的快照。
+
 TOML 的 `name`、`version`、`devices`、`scenario` 标记实验；`ramp_seconds`、`warmup_seconds`、`steady_seconds` 定义时间窗口，`sample_seconds` 定义资源采样周期。`tabs` 为面板数量，`panel_rates` 为所有面板合计的各 GET 路由每分钟次数；省略的路由停用。`logo_interval_seconds=0` 关闭 logo。`baseline`、`fleet_baseline`、`seats` 分别相对 A 的版本目录和 B 的 B0 输入目录。`cold_etag=true` 清空当次副本的 logo 缓存；`require_active=true` 要求测量前全部设备已完成应用握手。
 
 每份实验配置必须提供 `[hosts]`，`server` 和 `loadgen` 使用 `user@hostname` 格式且须不同，`server_url` 为不含凭据、路径、查询参数或片段的 HTTPS origin；端口由 URL 指定，省略时为 443。SSH 地址和 Server URL 均无代码默认值，证书须覆盖 URL 主机名。运行、容量准备和 bootstrap 都读取同一份配置。采样器使用 URL 的端口；资源 CSV 为兼容历史结果保留 `tcp_8443_established` 列名，该列记录配置端口的连接数。
@@ -35,12 +37,13 @@ server_url = "https://10.12.13.166:8443"
 
 ## 容量基线
 
-N=300 和 418 使用已有的 B0 基线与 418 队伍名单；300 只启动前 300 台设备。N=500、600、800 先各自扩充合成名单，再关闭 logo 轮询完成 Enrollment，保存专属快照和 fleet。新增设备的 ETag 从同组织的 B0 缓存复制，组织按设备序号模 140 分配；私有 fleet 数据保留在 B。
+N=300 和 418 使用已有的 B0 基线与 418 队伍名单；300 只启动前 300 台设备。N=500、600、800、1200 先各自扩充合成名单，再关闭 logo 轮询完成 Enrollment，保存专属快照和 fleet。新增设备的 ETag 从同组织的 B0 缓存复制，组织按设备序号模 140 分配；私有 fleet 数据保留在 B。prepare 要求对应版本目录已有含418个身份的 `baseline.tar.gz` 与摘要；新版本须先在 A 内迁移该起始快照。N=1200 要求 Server 的连接上限高于1200，首次注册的782台仍受64个短期认证名额及640条review registry约束，工具最多等待180秒收敛。
 
 ```sh
 deno run --frozen --cached-only --no-prompt --allow-read --allow-run --deny-net bench/run/prepare.ts 500 bench/run/experiments/B2-N500-on.toml
 deno run --frozen --cached-only --no-prompt --allow-read --allow-run --deny-net bench/run/prepare.ts 600 bench/run/experiments/B2-N600-on.toml
 deno run --frozen --cached-only --no-prompt --allow-read --allow-run --deny-net bench/run/prepare.ts 800 bench/run/experiments/B2-N800-on.toml
+deno run --frozen --cached-only --no-prompt --allow-read --allow-run --deny-net bench/run/prepare.ts 1200 bench/run/experiments/CMP-pr63-close-B2-N1200-on.toml
 ```
 
 ## 合成 logo 与首次 operator

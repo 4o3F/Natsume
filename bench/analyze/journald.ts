@@ -377,7 +377,7 @@ export async function extract(log: string, out: string) {
       const write = notes.row({
         ts_us: ts,
         process: p.process,
-        level: level(text),
+        level: text.match(LEVEL)?.[1] ?? "",
         event,
         organization,
         port,

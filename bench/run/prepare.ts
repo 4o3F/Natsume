@@ -3,9 +3,9 @@ import { configuration, type Experiment, quote as q } from "./config.ts";
 
 /** Extend the synthetic roster and enroll with logos disabled, below the TLS cap. */
 export async function prepare(devices: number, e: Experiment) {
-  if (![500, 600, 800].includes(devices)) {
+  if (![500, 600, 800, 1200].includes(devices)) {
     throw new Error(
-      "Prepare supports the capacity ladder's 500/600/800 baselines",
+      "Prepare supports the capacity ladder's 500/600/800/1200 baselines",
     );
   }
   const { server: A, loadgen: B, server_url: serverUrl } = e.hosts;

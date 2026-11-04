@@ -117,7 +117,7 @@ export function configuration(encoded: string): Experiment {
       typeof value[key] !== "string" || !/^[A-Za-z0-9_.-]+$/.test(value[key])
     ) throw new Error(`Invalid ${key}`);
   }
-  if (!/^v\d+\.\d+\.\d+$/.test(value.version)) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(value.version)) {
     throw new Error("Invalid version");
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value.date)) throw new Error("Invalid date");

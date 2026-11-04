@@ -154,6 +154,34 @@ Deno.test("parser, duplicated fields, byte MESSAGE and rejected unsafe fields", 
     "",
   );
 });
+Deno.test("extract tolerates level-free Snafu continuation notes", () =>
+  fixture(async (raw, dataset, base) => {
+    const messages = [
+      ' WARN TLS handshake rejected error="transport-canary"',
+      "Caused by this error:",
+      "  1: Connection reset by peer (os error 104)",
+      request(),
+    ];
+    await Deno.writeTextFile(
+      raw,
+      messages.map((MESSAGE, index) =>
+        JSON.stringify({
+          __REALTIME_TIMESTAMP: String(base + index),
+          SYSLOG_IDENTIFIER: "natsume-server",
+          _BOOT_ID: BOOT,
+          _PID: "100",
+          MESSAGE,
+        }) + "\n"
+      ).join(""),
+    );
+    await extract(raw, dataset);
+    const notes = await Array.fromAsync(csvRows(join(dataset, "notes.csv")));
+    equal(notes.map((row) => row.level), ["WARN", "", ""]);
+    equal(notes.map((row) => row.event), ["other", "other", "other"]);
+    equal((await Array.fromAsync(readRequests(dataset))).length, 1);
+    equal(await check(raw, dataset), {});
+    throws(() => parseRequest(request().replace(" INFO ", " ")));
+  }));
 Deno.test("stable aliases, lifecycle, summaries, series and clean leak scan", () =>
   fixture(async (raw, dataset, base) => {
     await populate(raw, dataset, base);

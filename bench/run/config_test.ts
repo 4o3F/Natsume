@@ -41,6 +41,14 @@ Deno.test("nearest rank handles empty and skewed samples", () => {
   assert(stats([1, 2, 3, 100]).p99 === 100);
 });
 
+Deno.test("perf title uses the recorded experiment build label", async () => {
+  const { profileTitle } = await import("./perf.ts");
+  const e = configuration(
+    "name='profile'\nversion='pr17-956b1b8'\ndevices=418" + hosts,
+  );
+  assert(profileTitle(e) === "profile: pr17-956b1b8 N=418");
+});
+
 Deno.test("perf categories count recursive frames once and separate union", async () => {
   const { attribution } = await import("./perf.ts");
   const result = attribution(
@@ -109,5 +117,37 @@ Deno.test("all supplied experiments have valid explicit hosts", async () => {
         await Deno.readTextFile(`bench/run/experiments/${entry.name}`),
       );
     }
+  }
+});
+
+Deno.test("build labels accept releases and variants and reject unsafe names", () => {
+  for (
+    const version of ["v2.10.3", "v2-60fbe1a", "pr17-956b1b8", "A", "1.2-rc"]
+  ) {
+    assert(
+      configuration(`name='label'\nversion='${version}'` + hosts).version ===
+        version,
+    );
+  }
+  for (
+    const version of [
+      "",
+      ".hidden",
+      "-option",
+      "../escape",
+      "a/b",
+      "a_b",
+      "a b",
+      "a;id",
+      "a\nb",
+    ]
+  ) {
+    let rejected = false;
+    try {
+      configuration(`name='label'\nversion='${version}'` + hosts);
+    } catch {
+      rejected = true;
+    }
+    assert(rejected);
   }
 });

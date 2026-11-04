@@ -3,7 +3,7 @@
 set -euo pipefail
 version="$1"
 snapshot="$2"
-[[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+[[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
 [[ "$snapshot" =~ ^[a-zA-Z0-9_.-]+\.tar\.gz$ ]]
 base="/srv/natsume-bench/$version"
 for parent in / /srv /srv/natsume-bench "$base"; do
