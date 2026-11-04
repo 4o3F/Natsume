@@ -42,10 +42,51 @@
       "separateMajorMinor": false
     },
     {
-      "description": "Keep Skia bindings compatible with Slint 1.18 until its Skia dependency is upgraded",
+      "description": "Update the coupled Diesel and SQLite dependencies together",
       "matchManagers": ["cargo"],
-      "matchPackageNames": ["skia-bindings"],
-      "allowedVersions": "<0.154"
+      "matchPackageNames": [
+        "diesel",
+        "diesel_migrations",
+        "libsqlite3-sys"
+      ],
+      "groupName": "diesel and sqlite",
+      "separateMajorMinor": false
+    },
+    {
+      "description": "Update OpenTelemetry and its tracing integration together",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "opentelemetry",
+        "opentelemetry_sdk",
+        "opentelemetry-otlp",
+        "tracing-opentelemetry"
+      ],
+      "groupName": "opentelemetry",
+      "separateMajorMinor": false
+    },
+    {
+      "description": "Update Rustls and the libraries sharing its TLS configuration together",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "rustls",
+        "rustls-pki-types",
+        "tokio-rustls",
+        "tokio-tungstenite",
+        "reqwest"
+      ],
+      "groupName": "rustls integrations",
+      "separateMajorMinor": false
+    },
+    {
+      "description": "Update the coupled private-key format dependencies together",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "pkcs5",
+        "pkcs8",
+        "sec1"
+      ],
+      "groupName": "private key formats",
+      "separateMajorMinor": false
     }
   ]
 }
