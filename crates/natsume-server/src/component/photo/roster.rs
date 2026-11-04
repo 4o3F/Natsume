@@ -15,6 +15,17 @@ impl From<Vec<PhotoTeam>> for PhotoRoster {
     }
 }
 
+impl From<&[PhotoTeam]> for PhotoRoster {
+    fn from(teams: &[PhotoTeam]) -> Self {
+        Self(
+            teams
+                .iter()
+                .map(|team| (team.account_id.clone(), team.account.clone()))
+                .collect(),
+        )
+    }
+}
+
 impl PhotoRoster {
     pub(super) fn account(&self, id: &str) -> Option<&str> {
         self.0.get(id).map(String::as_str)

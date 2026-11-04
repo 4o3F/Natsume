@@ -1298,11 +1298,6 @@ export type PhotoLogo = {
   size_bytes: number;
 };
 
-export type PhotoPage = {
-  entries: PhotoRecord[];
-  next: string | null;
-};
-
 /**  First enrollment request. The one-time code is sensitive. */
 export type PhotoPairRequest = {
   code: string;
@@ -1328,11 +1323,6 @@ export type PhotoPreviewEntry = {
   submission_revision: number;
   current: CurrentPhoto | null;
   active_account_id: string | null;
-};
-
-export type PhotoQuery = {
-  after_account_id: string | null;
-  limit: number | null;
 };
 
 export type PhotoRecord = {

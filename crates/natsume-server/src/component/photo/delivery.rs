@@ -15,6 +15,8 @@ use std::{
 };
 use tokio::sync::OwnedSemaphorePermit;
 
+mod pyrite;
+
 #[derive(Debug, Snafu)]
 pub(crate) enum DeliveryError {
     #[snafu(display("Photo delivery capacity is exhausted"))]
@@ -41,6 +43,14 @@ pub(crate) enum DeliveryError {
     Io { source: std::io::Error },
     #[snafu(display("Photo ZIP export failed"))]
     Zip { source: zip::result::ZipError },
+    #[snafu(display("Photo export image conversion failed"))]
+    Image { source: image::ImageError },
+    #[snafu(display("Photo export roster encoding failed"))]
+    Json { source: serde_json::Error },
+    #[snafu(display("Photo export logo preparation failed"))]
+    Logo {
+        source: crate::component::contest::PhotoLogoError,
+    },
     #[snafu(display("Photo delivery worker failed"))]
     Worker {
         #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
@@ -70,18 +80,6 @@ pub(crate) struct PhotoRecord {
     #[specta(type = specta_typescript::Number)]
     pub image_bytes: u64,
 }
-#[derive(Default, serde::Deserialize, specta::Type)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PhotoQuery {
-    pub after_account_id: Option<String>,
-    pub limit: Option<u16>,
-}
-#[derive(serde::Serialize, specta::Type)]
-pub(crate) struct PhotoPage {
-    pub entries: Vec<PhotoRecord>,
-    pub next: Option<String>,
-}
-
 pub(crate) struct PreparedDownload {
     pub file: File,
     pub length: u64,
@@ -92,33 +90,9 @@ pub(crate) struct PreparedDownload {
 impl PhotoComponent {
     pub(crate) fn photos_in(
         tx: &mut Transaction<'_>,
-        query: &PhotoQuery,
         roster: &PhotoRoster,
-    ) -> Result<PhotoPage> {
-        let limit = query.limit.unwrap_or(50);
-        ensure!(
-            (1..=100).contains(&limit)
-                && query
-                    .after_account_id
-                    .as_ref()
-                    .is_none_or(|id| !id.is_empty() && id.len() <= 512),
-            InvalidSnafu
-        );
-        let mut entries = db::delivery::read(
-            tx,
-            query.after_account_id.as_deref(),
-            None,
-            roster,
-            i64::from(limit) + 1,
-        )
-        .context(PersistenceSnafu)?;
-        let next = if entries.len() > usize::from(limit) {
-            entries.pop();
-            entries.last().map(|entry| entry.account_id.clone())
-        } else {
-            None
-        };
-        Ok(PhotoPage { entries, next })
+    ) -> Result<Vec<PhotoRecord>> {
+        db::delivery::read(tx, None, roster, None).context(PersistenceSnafu)
     }
 
     pub(crate) fn photo_in(
@@ -127,7 +101,7 @@ impl PhotoComponent {
         roster: &PhotoRoster,
     ) -> Result<PhotoRecord> {
         ensure!(!id.is_empty() && id.len() <= 512, InvalidSnafu);
-        db::delivery::read(tx, None, Some(id), roster, 1)
+        db::delivery::read(tx, Some(id), roster, Some(1))
             .context(PersistenceSnafu)?
             .pop()
             .ok_or_else(|| NotFoundSnafu.build())
@@ -140,9 +114,12 @@ impl PhotoComponent {
         let entries = db::delivery::read(
             tx,
             None,
-            None,
             roster,
-            i64::try_from(natsume_photo_protocol::TEAM_LIMIT).map_err(|_| LimitSnafu.build())? + 1,
+            Some(
+                i64::try_from(natsume_photo_protocol::TEAM_LIMIT)
+                    .map_err(|_| LimitSnafu.build())?
+                    + 1,
+            ),
         )
         .context(PersistenceSnafu)?;
         ensure!(
@@ -290,7 +267,10 @@ fn copy(
 }
 
 fn export_name(entry: &PhotoRecord) -> Result<String> {
-    let id = &entry.account;
+    account_name(&entry.account, entry.image_format.extension())
+}
+
+fn account_name(id: &str, extension: &str) -> Result<String> {
     ensure!(
         !id.is_empty()
             && !id.ends_with([' ', '.'])
@@ -321,7 +301,7 @@ fn export_name(entry: &PhotoRecord) -> Result<String> {
         ) && !numbered,
         NamesSnafu
     );
-    let name = format!("{id}.{}", entry.image_format.extension());
+    let name = format!("{id}.{extension}");
     ensure!(
         name.len() <= 255 && name.encode_utf16().count() <= 255,
         NamesSnafu

@@ -1,6 +1,6 @@
 //! Authorized transport with tracked, bounded download producers.
 use crate::{
-    component::photo::{PhotoQuery, PreparedDownload},
+    component::photo::PreparedDownload,
     http::{Routes, error::ApiError, middleware},
     lifecycle::Admission,
     photo_delivery::DeliverPhotoResults,
@@ -8,10 +8,7 @@ use crate::{
 use axum::{
     Json,
     body::Body,
-    extract::{
-        Path, Query, State,
-        rejection::{PathRejection, QueryRejection},
-    },
+    extract::{Path, State, rejection::PathRejection},
     http::{StatusCode, header},
     response::{IntoResponse as _, Response},
     routing::{get, post},
@@ -26,16 +23,14 @@ pub(crate) fn routes() -> Routes<DeliverPhotoResults> {
             middleware::require_admin(get(image)),
         ),
         ("/photo/exports", middleware::require_admin(post(export))),
+        (
+            "/photo/exports/pyrite",
+            middleware::require_admin(post(export_pyrite)),
+        ),
     ]
 }
-async fn list(
-    State(deliver): State<DeliverPhotoResults>,
-    query: Result<Query<PhotoQuery>, QueryRejection>,
-) -> Response {
-    let Ok(Query(query)) = query else {
-        return ApiError::invalid_request("photo_query").into_response();
-    };
-    match deliver.list(query).await {
+async fn list(State(deliver): State<DeliverPhotoResults>) -> Response {
+    match deliver.list().await {
         Ok(value) => Json(value).into_response(),
         Err(error) => failure(error),
     }
@@ -48,13 +43,28 @@ async fn image(
         return ApiError::invalid_request("photo_account_id").into_response();
     };
     match deliver.image(id).await {
-        Ok((ready, admission)) => response(ready, admission, false),
+        Ok((ready, admission)) => response(ready, admission, None),
         Err(error) => failure(error),
     }
 }
 async fn export(State(deliver): State<DeliverPhotoResults>) -> Response {
     match deliver.export().await {
-        Ok((ready, admission)) => response(ready, admission, true),
+        Ok((ready, admission)) => response(
+            ready,
+            admission,
+            Some("attachment; filename=\"team-photos.zip\""),
+        ),
+        Err(error) => failure(error),
+    }
+}
+
+async fn export_pyrite(State(deliver): State<DeliverPhotoResults>) -> Response {
+    match deliver.export_pyrite().await {
+        Ok((ready, admission)) => response(
+            ready,
+            admission,
+            Some("attachment; filename=\"pyrite-assets.zip\""),
+        ),
         Err(error) => failure(error),
     }
 }
@@ -70,7 +80,11 @@ fn failure(error: crate::photo_delivery::Error) -> Response {
     response
 }
 
-fn response(ready: PreparedDownload, admission: Admission, attachment: bool) -> Response {
+fn response(
+    ready: PreparedDownload,
+    admission: Admission,
+    attachment: Option<&'static str>,
+) -> Response {
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
     let length = ready.length;
     let content_type = ready.content_type;
@@ -98,10 +112,10 @@ fn response(ready: PreparedDownload, admission: Admission, attachment: bool) -> 
         header::CONTENT_LENGTH,
         axum::http::HeaderValue::from(length),
     );
-    if attachment {
+    if let Some(attachment) = attachment {
         response.headers_mut().insert(
             header::CONTENT_DISPOSITION,
-            axum::http::HeaderValue::from_static("attachment; filename=\"team-photos.zip\""),
+            axum::http::HeaderValue::from_static(attachment),
         );
     }
     response

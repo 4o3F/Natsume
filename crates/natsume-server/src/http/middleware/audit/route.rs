@@ -42,7 +42,7 @@ pub(in crate::http) fn classify(path: &str) -> Option<AuditRoute> {
         "/photo/submissions" => AuditRoute::PhotoSubmissions,
         "/photo/photos" => AuditRoute::PhotoPhotos,
         "/photo/photos/{account_id}/image" => AuditRoute::PhotoImage,
-        "/photo/exports" => AuditRoute::PhotoExports,
+        "/photo/exports" | "/photo/exports/pyrite" => AuditRoute::PhotoExports,
         "/photo/sources/{source_id}/pairing-code" => AuditRoute::PhotoPairingCode,
         "/photo/sources/{source_id}/reset-enrollment" => AuditRoute::PhotoEnrollmentReset,
         "/photo/sources/{source_id}/state" => AuditRoute::PhotoSourceState,

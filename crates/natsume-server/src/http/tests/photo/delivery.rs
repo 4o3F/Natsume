@@ -17,15 +17,34 @@ use std::{
 };
 use tower::ServiceExt as _;
 
+mod pyrite;
+
 async fn get(f: &Fixture, cookie: &str, path: &str) -> Result<Captured, TestError> {
-    Ok(drive(
-        &f.app,
-        Request::builder()
-            .uri(format!("/api/v2/photo/{path}"))
-            .header(header::COOKIE, cookie)
-            .body(Body::empty())?,
-    )
-    .await?)
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v2/photo/{path}"))
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())?,
+        )
+        .await?;
+    capture(response).await
+}
+
+async fn capture(response: axum::response::Response) -> Result<Captured, TestError> {
+    let status = response.status();
+    let headers = response.headers().clone();
+    // An unpaginated metadata list can exceed the shared fixture's 16 KiB cap.
+    let body = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
+        .await?
+        .to_vec();
+    Ok(Captured {
+        status,
+        headers,
+        body,
+    })
 }
 async fn export(f: &Fixture, cookie: &str) -> Result<Captured, TestError> {
     let response = f
@@ -37,16 +56,7 @@ async fn export(f: &Fixture, cookie: &str) -> Result<Captured, TestError> {
                 .body(Body::empty())?,
         )
         .await?;
-    let status = response.status();
-    let headers = response.headers().clone();
-    let body = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
-        .await?
-        .to_vec();
-    Ok(Captured {
-        status,
-        headers,
-        body,
-    })
+    capture(response).await
 }
 async fn rename(f: &Fixture, id: &'static str, account: &'static str) -> TestResult {
     f.database
@@ -111,7 +121,7 @@ async fn current_photos_keep_stable_identity_and_use_current_export_names() -> T
     );
     rename(&f, "account-a", "renamed-a").await?;
     let listed = value(get(&f, &cookie, "photos").await?)?;
-    assert_eq!(listed["entries"][0]["account"], "renamed-a");
+    assert_eq!(listed[0]["account"], "renamed-a");
     assert_eq!(
         archive(export(&f, &cookie).await?.body)?,
         vec![("renamed-a.png".into(), image)]
@@ -121,12 +131,6 @@ async fn current_photos_keep_stable_identity_and_use_current_export_names() -> T
             .as_array()
             .is_some_and(Vec::is_empty)
     );
-    for query in ["photos?limit=0", "photos?limit=101", "photos?unexpected=1"] {
-        assert_eq!(
-            get(&f, &cookie, query).await?.status,
-            StatusCode::BAD_REQUEST
-        );
-    }
     running.shutdown().await?;
     Ok(())
 }
@@ -161,7 +165,7 @@ async fn stale_target_identity_cannot_replace_a_newly_approved_photo() -> TestRe
         StatusCode::CONFLICT
     );
     assert_eq!(
-        value(get(&f, &cookie, "photos").await?)?["entries"][0]["image_sha256"],
+        value(get(&f, &cookie, "photos").await?)?[0]["image_sha256"],
         json!(b.manifest.results[0].image_sha256)
     );
     running.shutdown().await?;
@@ -361,6 +365,13 @@ async fn export_payload_budget_rejects_before_reading_image_data_and_releases_it
         })
         .await?;
     assert_eq!(archive(export(&f, &cookie).await?.body)?.len(), 166);
+    assert_eq!(
+        value(get(&f, &cookie, "photos").await?)?
+            .as_array()
+            .map(Vec::len),
+        Some(166),
+        "the photo list returns every current record without pagination"
+    );
     running.shutdown().await?;
     Ok(())
 }
@@ -391,14 +402,10 @@ async fn unsafe_export_names_and_case_collisions_are_rejected_without_renaming()
     for name in ["CON", "../escape", "team.", "COM¹", "Case"] {
         rename(&f, "account-a", name).await?;
         if name == "CON" {
-            let page = value(get(&f, &cookie, "photos?limit=1").await?)?;
-            assert_eq!(page["entries"][0]["account"], "CON");
-            assert_eq!(page["next"], "account-a");
-            assert_eq!(
-                value(get(&f, &cookie, "photos?limit=1&after_account_id=account-a").await?)?["entries"]
-                    [0]["account_id"],
-                "account-b"
-            );
+            let photos = value(get(&f, &cookie, "photos").await?)?;
+            assert_eq!(photos.as_array().map(Vec::len), Some(2));
+            assert_eq!(photos[0]["account"], "CON");
+            assert_eq!(photos[1]["account_id"], "account-b");
         }
         if name != "Case" {
             assert_eq!(export(&f, &cookie).await?.status, StatusCode::CONFLICT);
@@ -478,10 +485,7 @@ async fn export_aggregates_independent_registered_sources_and_shared_objects() -
     let second = ready(&f, &cookie, &signed, &image).await?;
     commit(&f, &cookie, second).await?;
     let page = value(get(&f, &cookie, "photos").await?)?;
-    assert_ne!(
-        page["entries"][0]["source_id"],
-        page["entries"][1]["source_id"]
-    );
+    assert_ne!(page[0]["source_id"], page[1]["source_id"]);
     assert_eq!(
         archive(export(&f, &cookie).await?.body)?,
         vec![

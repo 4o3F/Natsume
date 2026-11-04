@@ -718,24 +718,26 @@ async fn photo_upload_is_audited_with_its_own_identity_and_admin_boundary() -> T
 async fn photo_export_has_an_admin_only_audit_fact_without_request_contents() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let mut f = Fixture::new().await?;
-    for (cookie, status) in [
-        (None, StatusCode::UNAUTHORIZED),
-        (Some(f.viewer_cookie.clone()), StatusCode::FORBIDDEN),
-        (Some(f.admin_cookie.clone()), StatusCode::OK),
-    ] {
-        let response = f
-            .request(
-                Method::POST,
-                "/api/v2/photo/exports",
-                cookie.as_deref(),
-                "private-export-canary",
-            )
-            .await?;
-        assert_eq!(response.status(), status);
-        let _bytes = axum::body::to_bytes(response.into_body(), 4096).await?;
-        let records = f.records();
-        let record = request_record(&records, AuditRoute::PhotoExports, status);
-        assert!(!record.details().contains("canary"));
+    for path in ["/api/v2/photo/exports", "/api/v2/photo/exports/pyrite"] {
+        for (cookie, status) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some(f.viewer_cookie.clone()), StatusCode::FORBIDDEN),
+            (Some(f.admin_cookie.clone()), StatusCode::OK),
+        ] {
+            let response = f
+                .request(
+                    Method::POST,
+                    path,
+                    cookie.as_deref(),
+                    "private-export-canary",
+                )
+                .await?;
+            assert_eq!(response.status(), status);
+            let _bytes = axum::body::to_bytes(response.into_body(), 4096).await?;
+            let records = f.records();
+            let record = request_record(&records, AuditRoute::PhotoExports, status);
+            assert!(!record.details().contains("canary"));
+        }
     }
     Ok(())
 }

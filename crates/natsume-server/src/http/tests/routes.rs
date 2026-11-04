@@ -154,6 +154,12 @@ const INVENTORY: &[Route] = &[
         principal: Principal::Operator,
         admin: true,
         method: Method::POST,
+        path: "/photo/exports/pyrite",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
         path: "/photo/sources",
     },
     Route {

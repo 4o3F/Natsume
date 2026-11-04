@@ -2,7 +2,7 @@
 use crate::{
     component::{
         contest::{ContestComponent, ContestError},
-        photo::{DeliveryError, PhotoComponent, PhotoPage, PhotoQuery, PreparedDownload},
+        photo::{DeliveryError, PhotoComponent, PhotoRecord, PhotoRoster, PreparedDownload},
     },
     db::{Database, TransactionError},
     lifecycle::{Admission, ServerLifecycle},
@@ -30,27 +30,30 @@ impl From<crate::db::PersistenceError> for Error {
 pub(crate) struct DeliverPhotoResults {
     database: Database,
     photo: Arc<PhotoComponent>,
+    contest: Arc<ContestComponent>,
     lifecycle: ServerLifecycle,
 }
 impl DeliverPhotoResults {
     pub(crate) const fn new(
         database: Database,
         photo: Arc<PhotoComponent>,
+        contest: Arc<ContestComponent>,
         lifecycle: ServerLifecycle,
     ) -> Self {
         Self {
             database,
             photo,
+            contest,
             lifecycle,
         }
     }
-    pub(crate) async fn list(&self, query: PhotoQuery) -> Result<PhotoPage, Error> {
+    pub(crate) async fn list(&self) -> Result<Vec<PhotoRecord>, Error> {
         self.database
             .read(move |tx| {
                 let roster = ContestComponent::photo_roster_in(tx)
                     .context(RosterSnafu)?
                     .into();
-                PhotoComponent::photos_in(tx, &query, &roster).context(PhotoSnafu)
+                PhotoComponent::photos_in(tx, &roster).context(PhotoSnafu)
             })
             .await
             .map_err(TransactionError::into_error)
@@ -90,6 +93,32 @@ impl DeliverPhotoResults {
         let ready = self
             .photo
             .prepare_export(snapshot, permit, admission.clone())
+            .await
+            .context(PhotoSnafu)?;
+        Ok((ready, admission))
+    }
+
+    pub(crate) async fn export_pyrite(&self) -> Result<(PreparedDownload, Admission), Error> {
+        let permit = self.photo.reserve_export().context(PhotoSnafu)?;
+        let admission = self.lifecycle.admit().context(StoppingSnafu)?;
+        let (teams, entries) = self
+            .database
+            .read(move |tx| {
+                let teams = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = PhotoRoster::from(teams.as_slice());
+                let entries =
+                    PhotoComponent::export_snapshot_in(tx, &roster).context(PhotoSnafu)?;
+                Ok::<_, Error>((teams, entries))
+            })
+            .await
+            .map_err(TransactionError::into_error)?;
+        let logos = tokio::select! {
+            () = admission.stopping() => return Err(Error::Stopping),
+            logos = self.contest.photo_logos() => logos.map_err(|source| DeliveryError::Logo { source }).context(PhotoSnafu)?,
+        };
+        let ready = self
+            .photo
+            .prepare_pyrite_export(teams, entries, logos, permit, admission.clone())
             .await
             .context(PhotoSnafu)?;
         Ok((ready, admission))

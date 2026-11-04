@@ -38,6 +38,7 @@ impl PhotoFeature {
             delivery: crate::photo_delivery::DeliverPhotoResults::new(
                 acceptance_database.clone(),
                 photo.clone(),
+                contest.clone(),
                 lifecycle,
             ),
             acceptance: crate::photo_acceptance::AcceptPhotoResults::new(acceptance_database),
@@ -62,6 +63,7 @@ impl PhotoFeature {
             delivery: crate::photo_delivery::DeliverPhotoResults::new(
                 database.clone(),
                 photo.clone(),
+                contest.clone(),
                 lifecycle,
             ),
             acceptance: crate::photo_acceptance::AcceptPhotoResults::new(database),

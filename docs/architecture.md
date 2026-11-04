@@ -2436,7 +2436,7 @@ admin `POST /photo/imports` 流式写入 application/zip，64 KiB 缓冲，实�
 
 admin `GET /photo/imports/{id}/preview` 查看投影，`POST /photo/imports/{id}/commit` 明确接收。首照 active，不同补拍 pending_review，同图新成果 superseded，原队伍不在当前名单时 needs_association。同 source 的 submission/result 身份不得改变原始内容；重复 commit/换包不重复接收或推进版本。`POST /photo/imports/{id}/decisions` 使用 submission_id、expected_submission_revision 与带 action 标签的 decision；reject 拒绝待处理项，activate 只传目标 account_id，由 Server 当前名单取得 account。空目标 expected_current=null，替换携带预期 source_id/submission_id，检测普通的过时目标；没有独立目标 revision 或原关联版本的 ABA 保证。替换在同一事务中先 supersede 旧提交，再激活新提交并递增该提交 revision。原始队伍仍存在时只能分配给它；原队伍失效时才允许明确改配其他目标。每次接收/决定仍重查来源授权，已接收照片不因来源撤销被删除。
 
-目标身份采用稳定 account_id：同 ID 修改用户名仍有效，导出使用当前用户名；删除后同名重建的新 ID 不继承照片。名单校验在一个共享事务内批量完成。待处理读取和预览通过同一规则把失效 active/pending_review 投影为 needs_association，读取不写状态。`GET /photo/submissions` 使用完整的 source/submission 游标；`GET /photo/photos` 使用 account_id 游标；默认 50、最多 100。Photo 私有 SQL 在 LIMIT 前筛选需处理项或当前有效分配，没有逐行 association 回查，也不要求调用者穿过空 entries 页。
+目标身份采用稳定 account_id：同 ID 修改用户名仍有效，导出使用当前用户名；删除后同名重建的新 ID 不继承照片。名单校验在一个共享事务内批量完成。待处理读取和预览通过同一规则把失效 active/pending_review 投影为 needs_association，读取不写状态。`GET /photo/submissions` 使用完整的 source/submission 游标，默认 50、最多 100；`GET /photo/photos` 不分页，按 account_id 排序一次返回全部有效照片记录的 JSON 数组，不提供分页参数，也不返回 next。Photo 私有 SQL 在 LIMIT 前筛选需处理项或当前有效分配，没有逐行 association 回查，也不要求调用者穿过空 entries 页。
 
 admin `GET /photo/photos/{account_id}/image` 返回已验证照片，`POST /photo/exports` 固定当前有效 active 快照（最多 2000 张），事务外打开文件并生成 ZIP。文件名为当前外部 account 加 .jpg/.png；拒绝路径字符、Windows 保留名、尾部空格/点、超长和保守大小写冲突，缺失或损坏整包失败。STORE、64 KiB 缓冲和实际摘要校验保持协议 8 GiB 预算；无照片输出空 ZIP。导出使用私有 exports 下 O_TMPFILE，文件系统须支持，服务描述符限额须容纳 2000 个对象句柄。一个导出名额、两个单图名额由真实阻塞 IO 和受 ServerLifecycle 跟踪的下载生产者持有，生成/下载各十五分钟，断开或停服释放匿名文件。所有新增写路由具有独立审计分类，不记录请求体、凭据或图像内容；Web 接收界面尚未实现。
 
@@ -2453,6 +2453,10 @@ admin `GET /photo/photos/{account_id}/image` 返回已验证照片，`POST /phot
 先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值， 显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理， 其他有效项继续接收，不按队名、校名或复用账号猜测 identity。 人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。
 
 Server 管理当前成品和待处理候选，不做原片云盘、全量历史、历史回滚或协作编辑。 签名成果包与按 `TeamID.jpg/png` 的外部图片交付不同：Client 导出自身成果，Server 汇总当前成品。 现有导出以 `account` 为外部 Team ID，内部队伍身份沿用 `account_id`，不是座位号或新 UUID。 实际 DOMjudge／Pyrite 的 ID、扩展名与路径仍需核对；检测 Windows 保留名、大小写冲突等， 不能静默改名、覆盖或漏图后声称成功。成品方向、尺寸、格式与元数据策略在确认前确定。
+
+admin `POST /photo/exports/pyrite` 导出 Pyrite CDP 素材 ZIP，复用当前名单与有效 active 成品的同一读事务快照，不新增数据库表。包内包含 `teams/<account>.jpg`、`affiliations/INST-xxx.png`、最小 `config.toml` 和 `roster.json`；即使无图也创建两个图片目录。照片统一 JPEG：已有 JPEG 原样复制并核验摘要，PNG 在原尺寸按质量 95 转 JPEG、透明区域填白，不改变存储原图。校徽由 Contest 持有一个共享图像处理名额，批次目录只扫描一次并按学校去重；PNG 校验后保留原字节，其他格式转换 PNG，缺失或匹配不明确时省略；损坏、读取失败、非法文件名或保守大小写冲突使整包失败。名单包含全部当前 Photo 队伍及中英文学校／队名、外部 id、`INST-xxx` organization_id、可空照片／校徽包内路径，不含密码、密钥或本地路径。沿用磁盘匿名文件、8 GiB 实际写入上限、共享 Photo 导出名额与下载生命周期，审计归入 PhotoExports。生成在单个阻塞任务中完成，tracing 记录照片、校徽、关包及总生成耗时。
+
+Pyrite 当前从 DOMjudge `event-feed.ndjson` 读取学校／队伍名称和比赛记录，不读取附带的 `roster.json`；Natsume 不伪造完整比赛事件流。使用者需另从 DOMjudge 取得完整事件流，核对其中 team.id 等于 account、organization.id 等于 `INST-xxx`，与素材共同组成 CDP。配置仅声明 `[presentation]` 的 `logo_extension = "png"`、`team_photo_extension = "jpg"`；已有 CDP 配置须合并这两项，不覆盖人工配置。名单 JSON 用于资料交付及核对，素材包本身不是可直接滚榜的完整 CDP。
 
 ### 23.7 GUI 及目标环境验证
 

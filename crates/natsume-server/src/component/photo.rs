@@ -12,7 +12,7 @@ mod validation;
 
 pub(crate) use acceptance::{AcceptanceError, ImportPreview, PhotoDecision};
 pub(crate) use acceptance::{PendingPhotoPage, PendingPhotoQuery};
-pub(crate) use delivery::{DeliveryError, PhotoPage, PhotoQuery, PreparedDownload};
+pub(crate) use delivery::{DeliveryError, PhotoRecord, PreparedDownload};
 pub(crate) use enrollment::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState};
 pub(crate) use imports::{ImportError, ImportJob, ImportState};
 pub(crate) use initialization::{InitializationError, Preparation, SnapshotDownload};

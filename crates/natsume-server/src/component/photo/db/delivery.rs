@@ -1,4 +1,4 @@
-//! Current Photo assignments and image metadata, selected before pagination.
+//! Current Photo assignments and image metadata, filtered against the current roster.
 use super::super::{PhotoRoster, delivery::PhotoRecord};
 use super::{PersistenceError, ValueSnafu};
 use crate::{db::Transaction, diesel_schema::photo_submissions as submissions};
@@ -7,10 +7,9 @@ use snafu::ResultExt as _;
 
 pub(in crate::component::photo) fn read(
     tx: &mut Transaction<'_>,
-    after: Option<&str>,
     exact: Option<&str>,
     roster: &PhotoRoster,
-    limit: i64,
+    limit: Option<i64>,
 ) -> Result<Vec<PhotoRecord>, PersistenceError> {
     type Row = (Option<String>, String, String, i64, String, String, i64);
     let mut query = submissions::table
@@ -26,10 +25,9 @@ pub(in crate::component::photo) fn read(
             submissions::image_bytes,
         ))
         .order(submissions::assigned_account_id)
-        .limit(limit)
         .into_boxed();
-    if let Some(after) = after {
-        query = query.filter(submissions::assigned_account_id.gt(after));
+    if let Some(limit) = limit {
+        query = query.limit(limit);
     }
     if let Some(exact) = exact {
         query = query.filter(submissions::assigned_account_id.eq(exact));
