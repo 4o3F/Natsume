@@ -1,22 +1,4 @@
-//! Photo-only enrollment and immutable initialization; no daily online workflow.
-//! `*_in` component operations run inside the caller's shared database transaction;
-//! they do not open connections, start transactions or perform filesystem I/O.
-// One mapping defines the wire and persisted spelling of each Photo state/code.
-macro_rules! string_enum {
-    ($vis:vis enum $name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
-        $vis enum $name { $(#[serde(rename = $value)] $variant),+ }
-        impl $name {
-            pub(super) const fn as_str(self) -> &'static str {
-                match self { $(Self::$variant => $value),+ }
-            }
-            pub(super) fn parse(raw: &str) -> Option<Self> {
-                match raw { $($value => Some(Self::$variant)),+, _ => None }
-            }
-        }
-    };
-}
-
+//! Photo enrollment, initialization and signed results for the offline Client workflow.
 mod acceptance;
 mod db;
 mod delivery;
@@ -30,12 +12,12 @@ mod storage;
 mod transfer;
 mod validation;
 
-pub(crate) use acceptance::{AcceptanceError, PhotoDecision, ResultImportPreview};
-pub(crate) use acceptance::{PendingPhotoPage, PendingPhotoQuery};
-pub(crate) use delivery::{DeliveryError, PhotoRecord, PreparedDownload};
+pub(crate) use acceptance::PendingPhotoQuery;
+pub(crate) use acceptance::{AcceptanceError, PhotoDecision};
+pub(crate) use delivery::{DeliveryError, PreparedDownload};
 pub(crate) use enrollment::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState};
 pub(crate) use imports::ResultImportError;
-pub(crate) use initialization::{InitializationError, Preparation, SnapshotDownload};
+pub(crate) use initialization::InitializationError;
 pub(crate) use roster::PhotoRoster;
 pub(crate) use validation::ValidationError;
 
@@ -65,6 +47,8 @@ pub(crate) enum PhotoStorageError {
 
 pub(crate) struct PhotoComponent {
     database: Database,
+    contest: Arc<super::contest::ContestComponent>,
+    lifecycle: crate::lifecycle::ServerLifecycle,
     storage: storage::PhotoStore,
     results: results_storage::ResultsStore,
     export_slots: Arc<Semaphore>,
@@ -80,10 +64,14 @@ impl PhotoComponent {
         database: Database,
         initializations: &Path,
         results: &Path,
+        contest: Arc<super::contest::ContestComponent>,
+        lifecycle: crate::lifecycle::ServerLifecycle,
     ) -> Result<Self, PhotoStorageError> {
         let results = results_storage::prepare(results).context(ResultsSnafu)?;
         Ok(Self {
             database,
+            contest,
+            lifecycle,
             storage: storage::PhotoStore::open(initializations).context(InitializationSnafu)?,
             results,
             export_slots: Arc::new(Semaphore::new(1)),
@@ -94,4 +82,25 @@ impl PhotoComponent {
             snapshot_download_slots: Arc::new(Semaphore::new(2)),
         })
     }
+}
+
+/// Typed boundary for Photo operations; submodules retain their own failures.
+#[derive(Debug, Snafu)]
+pub(crate) enum PhotoError {
+    #[snafu(context(false), display("Photo enrollment failed"))]
+    Enrollment { source: EnrollmentError },
+    #[snafu(context(false), display("Photo initialization failed"))]
+    Initialization { source: InitializationError },
+    #[snafu(context(false), display("Photo result import failed"))]
+    Import { source: ResultImportError },
+    #[snafu(context(false), display("Photo acceptance failed"))]
+    Acceptance { source: AcceptanceError },
+    #[snafu(context(false), display("Photo delivery failed"))]
+    Delivery { source: DeliveryError },
+}
+
+fn load_roster(
+    tx: &mut crate::db::Transaction<'_>,
+) -> Result<PhotoRoster, super::contest::ContestError> {
+    super::contest::ContestComponent::photo_roster_in(tx).map(PhotoRoster::from)
 }

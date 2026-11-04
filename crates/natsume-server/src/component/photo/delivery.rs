@@ -1,11 +1,15 @@
 //! Current identity projections and bounded, disk-backed image/ZIP delivery.
 use super::{PhotoComponent, PhotoRoster, db, results_storage};
-use crate::{db::Transaction, lifecycle::Admission};
+use crate::{
+    component::contest::ContestComponent,
+    db::{Transaction, TransactionError},
+    lifecycle::Admission,
+};
 use natsume_photo_protocol::{
     Sha256Digest, SourceId,
     results::{PACKAGE_LIMIT, PhotoFormat, RESULT_IMAGES_LIMIT, SubmissionId},
 };
-use snafu::{ResultExt as _, Snafu, ensure};
+use snafu::{OptionExt as _, ResultExt as _, Snafu, ensure};
 use std::{collections::BTreeSet, fs::File, io::Seek as _, time::Instant};
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -13,6 +17,12 @@ mod pyrite;
 
 #[derive(Debug, Snafu)]
 pub(crate) enum DeliveryError {
+    #[snafu(display("Photo roster could not be read"))]
+    Roster {
+        source: crate::component::contest::ContestError,
+    },
+    #[snafu(display("Server is stopping"))]
+    Stopping,
     #[snafu(display("Photo delivery capacity is exhausted"))]
     Busy,
     #[snafu(display("Photo delivery request is invalid"))]
@@ -82,18 +92,11 @@ pub(crate) struct PreparedDownload {
 }
 
 impl PhotoComponent {
-    pub(crate) fn photos_in(
-        tx: &mut Transaction<'_>,
-        roster: &PhotoRoster,
-    ) -> Result<Vec<PhotoRecord>> {
+    fn photos_in(tx: &mut Transaction<'_>, roster: &PhotoRoster) -> Result<Vec<PhotoRecord>> {
         db::delivery::current_photos(tx, roster, None).context(PersistenceSnafu)
     }
 
-    pub(crate) fn photo_in(
-        tx: &mut Transaction<'_>,
-        id: &str,
-        roster: &PhotoRoster,
-    ) -> Result<PhotoRecord> {
+    fn photo_in(tx: &mut Transaction<'_>, id: &str, roster: &PhotoRoster) -> Result<PhotoRecord> {
         ensure!(
             !id.is_empty() && id.len() <= super::limits::ACCOUNT_ID_BYTES,
             InvalidSnafu
@@ -103,7 +106,7 @@ impl PhotoComponent {
             .ok_or_else(|| NotFoundSnafu.build())
     }
 
-    pub(crate) fn export_snapshot_in(
+    fn export_snapshot_in(
         tx: &mut Transaction<'_>,
         roster: &PhotoRoster,
     ) -> Result<Vec<PhotoRecord>> {
@@ -348,4 +351,68 @@ fn finish_export(
         content_type: "application/zip",
         permit,
     })
+}
+
+impl PhotoComponent {
+    pub(crate) async fn list(&self) -> Result<Vec<PhotoRecord>> {
+        self.database
+            .read(move |tx| {
+                let roster = super::load_roster(tx).context(RosterSnafu)?;
+                Self::photos_in(tx, &roster)
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+    pub(crate) async fn image(&self, id: String) -> Result<(PreparedDownload, Admission)> {
+        let admission = self.lifecycle.admit().context(StoppingSnafu)?;
+        let record = self
+            .database
+            .read(move |tx| {
+                let roster = super::load_roster(tx).context(RosterSnafu)?;
+                Self::photo_in(tx, &id, &roster)
+            })
+            .await
+            .map_err(TransactionError::into_error)?;
+        let ready = self.prepare_image(record, admission.clone()).await?;
+        Ok((ready, admission))
+    }
+    pub(crate) async fn export(&self) -> Result<(PreparedDownload, Admission)> {
+        let permit = self.reserve_export()?;
+        let admission = self.lifecycle.admit().context(StoppingSnafu)?;
+        let snapshot = self
+            .database
+            .read(move |tx| {
+                let roster = super::load_roster(tx).context(RosterSnafu)?;
+                Self::export_snapshot_in(tx, &roster)
+            })
+            .await
+            .map_err(TransactionError::into_error)?;
+        let ready = self
+            .prepare_export(snapshot, permit, admission.clone())
+            .await?;
+        Ok((ready, admission))
+    }
+
+    pub(crate) async fn export_pyrite(&self) -> Result<(PreparedDownload, Admission)> {
+        let permit = self.reserve_export()?;
+        let admission = self.lifecycle.admit().context(StoppingSnafu)?;
+        let (teams, entries) = self
+            .database
+            .read(move |tx| {
+                let teams = ContestComponent::photo_roster_in(tx).context(RosterSnafu)?;
+                let roster = PhotoRoster::from(teams.as_slice());
+                let entries = Self::export_snapshot_in(tx, &roster)?;
+                Ok::<_, DeliveryError>((teams, entries))
+            })
+            .await
+            .map_err(TransactionError::into_error)?;
+        let logos = tokio::select! {
+            () = admission.stopping() => return Err(DeliveryError::Stopping),
+            logos = self.contest.photo_logos() => logos.context(LogoSnafu)?,
+        };
+        let ready = self
+            .prepare_pyrite_export(teams, entries, logos, permit, admission.clone())
+            .await?;
+        Ok((ready, admission))
+    }
 }

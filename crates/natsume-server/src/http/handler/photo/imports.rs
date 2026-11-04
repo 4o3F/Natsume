@@ -49,7 +49,7 @@ async fn upload(State(photo): State<Arc<PhotoComponent>>, request: Request) -> R
             return ApiError::invalid_request("photo_upload_length").into_response();
         };
         if length > natsume_photo_protocol::results::PACKAGE_LIMIT {
-            return ApiError::from_photo_import(ResultImportError::Limit).into_response();
+            return ApiError::from_photo(ResultImportError::Limit).into_response();
         }
     }
     let audit = request.extensions().get::<RequestAudit>().cloned();
@@ -85,7 +85,7 @@ async fn upload(State(photo): State<Arc<PhotoComponent>>, request: Request) -> R
             }
             (StatusCode::ACCEPTED, Json(job)).into_response()
         }
-        Err(error) => ApiError::from_photo_import(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }
 
@@ -101,6 +101,6 @@ async fn read(
     };
     match photo.read_import(id).await {
         Ok(job) => Json(job).into_response(),
-        Err(error) => ApiError::from_photo_import(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }

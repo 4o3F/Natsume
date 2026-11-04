@@ -145,7 +145,9 @@ async fn preview_is_read_only_and_reuploads_and_commits_preserve_submission_iden
                 .map_err(PersistenceError::from)
         })
         .await?;
-    let error = crate::photo_acceptance::AcceptPhotoResults::new(f.database.database.clone())
+    let error = f
+        .photo
+        .component()
         .preview(id)
         .await
         .err()

@@ -1,10 +1,10 @@
 //! Authorized transport with tracked, bounded download producers.
+use crate::component::photo::PhotoComponent;
 use crate::component::photo::limits::{IO_BUFFER_BYTES, OPERATION_TIMEOUT};
 use crate::{
     component::photo::PreparedDownload,
     http::{Routes, error::ApiError, middleware},
     lifecycle::Admission,
-    photo_delivery::DeliverPhotoResults,
 };
 use axum::{
     Json,
@@ -15,9 +15,10 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::StreamExt as _;
+use std::sync::Arc;
 use tokio_util::io::ReaderStream;
 
-pub(crate) fn routes() -> Routes<DeliverPhotoResults> {
+pub(crate) fn routes() -> Routes<Arc<PhotoComponent>> {
     vec![
         ("/photo/photos", middleware::require_admin(get(list))),
         (
@@ -31,14 +32,14 @@ pub(crate) fn routes() -> Routes<DeliverPhotoResults> {
         ),
     ]
 }
-async fn list(State(deliver): State<DeliverPhotoResults>) -> Response {
+async fn list(State(deliver): State<Arc<PhotoComponent>>) -> Response {
     match deliver.list().await {
         Ok(value) => Json(value).into_response(),
-        Err(error) => ApiError::from_photo_delivery(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }
 async fn image(
-    State(deliver): State<DeliverPhotoResults>,
+    State(deliver): State<Arc<PhotoComponent>>,
     path: Result<Path<String>, PathRejection>,
 ) -> Response {
     let Ok(Path(id)) = path else {
@@ -46,28 +47,28 @@ async fn image(
     };
     match deliver.image(id).await {
         Ok((ready, admission)) => response(ready, admission, None),
-        Err(error) => ApiError::from_photo_delivery(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }
-async fn export(State(deliver): State<DeliverPhotoResults>) -> Response {
+async fn export(State(deliver): State<Arc<PhotoComponent>>) -> Response {
     match deliver.export().await {
         Ok((ready, admission)) => response(
             ready,
             admission,
             Some("attachment; filename=\"team-photos.zip\""),
         ),
-        Err(error) => ApiError::from_photo_delivery(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }
 
-async fn export_pyrite(State(deliver): State<DeliverPhotoResults>) -> Response {
+async fn export_pyrite(State(deliver): State<Arc<PhotoComponent>>) -> Response {
     match deliver.export_pyrite().await {
         Ok((ready, admission)) => response(
             ready,
             admission,
             Some("attachment; filename=\"pyrite-assets.zip\""),
         ),
-        Err(error) => ApiError::from_photo_delivery(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }
 

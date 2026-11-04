@@ -1,4 +1,5 @@
 //! Thin administrator adapter for acceptance and optimistic decisions.
+use crate::component::photo::PhotoComponent;
 use crate::{
     component::photo::{PendingPhotoQuery, PhotoDecision},
     http::{
@@ -6,7 +7,6 @@ use crate::{
         error::ApiError,
         middleware::{self, audit::canonical_uuid},
     },
-    photo_acceptance::AcceptPhotoResults,
 };
 use axum::{
     Json,
@@ -17,8 +17,9 @@ use axum::{
     response::{IntoResponse as _, Response},
     routing::{get, post},
 };
+use std::sync::Arc;
 
-pub(crate) fn routes() -> Routes<AcceptPhotoResults> {
+pub(crate) fn routes() -> Routes<Arc<PhotoComponent>> {
     vec![
         (
             "/photo/submissions",
@@ -40,7 +41,7 @@ pub(crate) fn routes() -> Routes<AcceptPhotoResults> {
 }
 
 async fn pending(
-    State(accept): State<AcceptPhotoResults>,
+    State(accept): State<Arc<PhotoComponent>>,
     query: Result<Query<PendingPhotoQuery>, QueryRejection>,
 ) -> Response {
     let Ok(Query(query)) = query else {
@@ -48,7 +49,7 @@ async fn pending(
     };
     match accept.pending(query).await {
         Ok(value) => Json(value).into_response(),
-        Err(error) => ApiError::from_photo_acceptance(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }
 
@@ -57,7 +58,7 @@ fn id(path: Result<Path<String>, PathRejection>) -> Option<uuid::Uuid> {
     canonical_uuid(&raw)
 }
 async fn preview(
-    State(accept): State<AcceptPhotoResults>,
+    State(accept): State<Arc<PhotoComponent>>,
     path: Result<Path<String>, PathRejection>,
 ) -> Response {
     let Some(id) = id(path) else {
@@ -65,11 +66,11 @@ async fn preview(
     };
     match accept.preview(id).await {
         Ok(value) => Json(value).into_response(),
-        Err(error) => ApiError::from_photo_acceptance(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }
 async fn commit(
-    State(accept): State<AcceptPhotoResults>,
+    State(accept): State<Arc<PhotoComponent>>,
     path: Result<Path<String>, PathRejection>,
 ) -> Response {
     let Some(id) = id(path) else {
@@ -77,11 +78,11 @@ async fn commit(
     };
     match accept.commit(id).await {
         Ok(value) => Json(value).into_response(),
-        Err(error) => ApiError::from_photo_acceptance(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }
 async fn decide(
-    State(accept): State<AcceptPhotoResults>,
+    State(accept): State<Arc<PhotoComponent>>,
     path: Result<Path<String>, PathRejection>,
     body: Result<Json<PhotoDecision>, JsonRejection>,
 ) -> Response {
@@ -93,6 +94,6 @@ async fn decide(
     };
     match accept.decide(id, decision).await {
         Ok(value) => Json(value).into_response(),
-        Err(error) => ApiError::from_photo_acceptance(error).into_response(),
+        Err(error) => ApiError::from_photo(error).into_response(),
     }
 }

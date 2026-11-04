@@ -93,6 +93,8 @@ After durably saving all local data, Client completes with the initialization ID
 
 The additive migration creates `photo_server_metadata`, `photo_sources` and `photo_initializations`; it changes no existing team, account, seat or printing tables. Binary cache files live under optional absolute `[storage].photo_initializations`, defaulting to the database path with its extension replaced by `.photo`. The service user needs write access there. Back up the database and cache together. Existing deployments need no new mandatory configuration field.
 
+Photo routes share one `Arc<PhotoComponent>`. The component owns initialization, result acceptance and delivery, its database transactions, and the shared Contest/lifecycle dependencies. Acceptance reads the current Contest roster in the same transaction that changes Photo; exports collect their snapshot before file IO. No crate-root Photo forwarding coordinators are used. HTTP uses one Photo error-adapter entry point, preserving domain-specific error classifications internally.
+
 ### Photo result storage foundation
 
 Optional absolute `[storage].photo_results` selects a separate result-storage root. By default, the database extension is replaced by `.photo-results` (for example, `/var/lib/natsume-server/natsume.photo-results`). It must not overlap the initialization directory. Startup creates and validates private, service-owned `0700` directories: `uploads/`, `staging/`, `objects/`, and `exports/`. Symlink roots/subdirectories and directories accessible to other users are rejected; startup does not change existing permissions or delete existing files.

@@ -5,10 +5,34 @@ use snafu::{ResultExt as _, Snafu, ensure};
 use tokio::io::AsyncRead;
 use uuid::Uuid;
 
-string_enum! {
-    pub(crate) enum ResultImportState {
-        Uploading => "uploading", Processing => "processing", Ready => "ready",
-        Committed => "committed", Failed => "failed",
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ResultImportState {
+    Uploading,
+    Processing,
+    Ready,
+    Committed,
+    Failed,
+}
+impl ResultImportState {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Uploading => "uploading",
+            Self::Processing => "processing",
+            Self::Ready => "ready",
+            Self::Committed => "committed",
+            Self::Failed => "failed",
+        }
+    }
+    pub(super) fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "uploading" => Some(Self::Uploading),
+            "processing" => Some(Self::Processing),
+            "ready" => Some(Self::Ready),
+            "committed" => Some(Self::Committed),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
     }
 }
 
@@ -23,11 +47,46 @@ pub(crate) struct ResultImportJob {
     pub failure_code: Option<ResultImportFailure>,
 }
 
-string_enum! {
-    pub(crate) enum ResultImportFailure {
-        Limit => "limit", Input => "input", Storage => "storage", Archive => "archive",
-        Signature => "signature", Authorization => "authorization", Image => "image",
-        Conflict => "conflict", Interrupted => "interrupted",
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ResultImportFailure {
+    Limit,
+    Input,
+    Storage,
+    Archive,
+    Signature,
+    Authorization,
+    Image,
+    Conflict,
+    Interrupted,
+}
+impl ResultImportFailure {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Limit => "limit",
+            Self::Input => "input",
+            Self::Storage => "storage",
+            Self::Archive => "archive",
+            Self::Signature => "signature",
+            Self::Authorization => "authorization",
+            Self::Image => "image",
+            Self::Conflict => "conflict",
+            Self::Interrupted => "interrupted",
+        }
+    }
+    pub(super) fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "limit" => Some(Self::Limit),
+            "input" => Some(Self::Input),
+            "storage" => Some(Self::Storage),
+            "archive" => Some(Self::Archive),
+            "signature" => Some(Self::Signature),
+            "authorization" => Some(Self::Authorization),
+            "image" => Some(Self::Image),
+            "conflict" => Some(Self::Conflict),
+            "interrupted" => Some(Self::Interrupted),
+            _ => None,
+        }
     }
 }
 

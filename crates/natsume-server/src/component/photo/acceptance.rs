@@ -1,6 +1,6 @@
-//! Explicit acceptance of verified results. All decisions run inside the caller's transaction.
+//! Photo-owned acceptance transactions include the current Contest roster check.
 use super::{PhotoComponent, PhotoRoster, db, validation};
-use crate::db::Transaction;
+use crate::db::{Transaction, TransactionError};
 use natsume_photo_protocol::{
     Sha256Digest, SourceId,
     results::{ResultId, SignedResults, SubmissionId, TeamResult},
@@ -11,6 +11,10 @@ use uuid::Uuid;
 
 #[derive(Debug, Snafu)]
 pub(crate) enum AcceptanceError {
+    #[snafu(display("Photo roster could not be read"))]
+    Roster {
+        source: crate::component::contest::ContestError,
+    },
     #[snafu(display("Photo import does not exist"))]
     NotFound,
     #[snafu(display("Photo result or expected revision conflicts"))]
@@ -35,10 +39,34 @@ impl From<crate::db::PersistenceError> for AcceptanceError {
 }
 type Result<T> = std::result::Result<T, AcceptanceError>;
 
-string_enum! {
-    pub(crate) enum SubmissionState {
-        Active => "active", PendingReview => "pending_review", NeedsAssociation => "needs_association",
-        Rejected => "rejected", Superseded => "superseded",
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SubmissionState {
+    Active,
+    PendingReview,
+    NeedsAssociation,
+    Rejected,
+    Superseded,
+}
+impl SubmissionState {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::PendingReview => "pending_review",
+            Self::NeedsAssociation => "needs_association",
+            Self::Rejected => "rejected",
+            Self::Superseded => "superseded",
+        }
+    }
+    pub(super) fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "active" => Some(Self::Active),
+            "pending_review" => Some(Self::PendingReview),
+            "needs_association" => Some(Self::NeedsAssociation),
+            "rejected" => Some(Self::Rejected),
+            "superseded" => Some(Self::Superseded),
+            _ => None,
+        }
     }
 }
 
@@ -265,7 +293,7 @@ fn effective_state(
 }
 
 impl PhotoComponent {
-    pub(crate) fn pending_in(
+    fn pending_in(
         tx: &mut Transaction<'_>,
         query: PendingPhotoQuery,
         roster: &PhotoRoster,
@@ -306,7 +334,7 @@ impl PhotoComponent {
         Ok(PendingPhotoPage { entries, next })
     }
 
-    pub(crate) fn preview_in(
+    fn preview_in(
         tx: &mut Transaction<'_>,
         id: Uuid,
         roster: &PhotoRoster,
@@ -315,7 +343,7 @@ impl PhotoComponent {
         preview(tx, id, committed, &signed, roster)
     }
 
-    pub(crate) fn commit_in(
+    fn commit_in(
         tx: &mut Transaction<'_>,
         id: Uuid,
         roster: &PhotoRoster,
@@ -394,7 +422,7 @@ fn preview(
 }
 
 impl PhotoComponent {
-    pub(crate) fn decide_in(
+    fn decide_in(
         tx: &mut Transaction<'_>,
         id: Uuid,
         decision: PhotoDecision,
@@ -484,5 +512,49 @@ fn matches_current(current: Option<&CurrentPhoto>, expected: Option<&ExpectedPho
                 && current.submission_id == expected.submission_id
         }
         _ => false,
+    }
+}
+
+impl PhotoComponent {
+    pub(crate) async fn pending(&self, query: PendingPhotoQuery) -> Result<PendingPhotoPage> {
+        self.database
+            .read(move |tx| {
+                let roster = super::load_roster(tx).context(RosterSnafu)?;
+                Self::pending_in(tx, query, &roster)
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
+    pub(crate) async fn preview(&self, id: Uuid) -> Result<ResultImportPreview> {
+        self.database
+            .read(move |tx| {
+                let roster = super::load_roster(tx).context(RosterSnafu)?;
+                Self::preview_in(tx, id, &roster)
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+    pub(crate) async fn commit(&self, id: Uuid) -> Result<ResultImportPreview> {
+        self.database
+            .write(move |tx| {
+                let roster = super::load_roster(tx).context(RosterSnafu)?;
+                Self::commit_in(tx, id, &roster)
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+    pub(crate) async fn decide(
+        &self,
+        id: Uuid,
+        decision: PhotoDecision,
+    ) -> Result<ResultImportPreview> {
+        self.database
+            .write(move |tx| {
+                let roster = super::load_roster(tx).context(RosterSnafu)?;
+                Self::decide_in(tx, id, decision, &roster)
+            })
+            .await
+            .map_err(TransactionError::into_error)
     }
 }
