@@ -2,6 +2,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/natsume-loadgen",
   "crates/natsume-photo-protocol",
   "crates/natsume-photo-client/backend",
   "crates/natsume-server",
@@ -77,12 +78,14 @@ ed25519-dalek = { version = "3.0", default-features = false, features = [
 futures-util = { version = "0.3", default-features = false, features = [
   "sink"
 ] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 getrandom = { version = "0.4", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 hkdf = "0.13"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["service", "tokio"] }
 lopdf = { version = "=0.47.0", default-features = false }
+webp = { version = "0.3.1", default-features = false }
 image = { version = "0.25.10", default-features = false, features = [
   "png",
   "jpeg",

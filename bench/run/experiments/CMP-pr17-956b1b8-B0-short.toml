@@ -1,0 +1,25 @@
+name = "CMP-pr17-956b1b8-B0-short"
+fleet_baseline = "experiments/B0-calibrated-logos/fleet"
+baseline = "baseline-calibrated-logos-20261103.tar.gz"
+cold_etag = true
+version = "pr17-956b1b8"
+devices = 418
+scenario = "steady"
+steady_seconds = 600
+warmup_seconds = 120
+ramp_seconds = 5
+sample_seconds = 5
+logo_interval_seconds = 60
+tabs = 2
+
+[panel_rates]
+"/accounts" = 0.022222222222222223
+"/bindings" = 0.11666666666666667
+"/devices" = 10.616666666666667
+"/seats" = 0.1111111111111111
+"/session" = 2.088888888888889
+
+[hosts]
+server = "icpc@10.12.13.166"
+loadgen = "icpc@10.12.13.20"
+server_url = "https://10.12.13.166:8443"

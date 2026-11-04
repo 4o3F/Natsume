@@ -1,0 +1,26 @@
+steady_seconds = 360
+name = "CMP-pr17-956b1b8-B2-N500-on"
+version = "pr17-956b1b8"
+scenario = "capacity"
+devices = 500
+logo_interval_seconds = 60
+require_active = false
+baseline = "baseline-500.tar.gz"
+fleet_baseline = "prepare-500/fleet"
+seats = "prepare-500/fixture/seats.csv"
+
+[[actions]]
+at = 60
+kind = "probe"
+
+[panel_rates]
+"/accounts" = 0.022222222222222223
+"/bindings" = 0.11666666666666667
+"/devices" = 10.616666666666667
+"/seats" = 0.1111111111111111
+"/session" = 2.088888888888889
+
+[hosts]
+server = "icpc@10.12.13.166"
+loadgen = "icpc@10.12.13.20"
+server_url = "https://10.12.13.166:8443"

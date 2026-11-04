@@ -1,0 +1,8 @@
+devices = 600
+ramp = "60s"
+duration = "10m"
+logo_interval = "60s"
+# Restart Server externally at T+300s. Default daemon backoff remains enabled.
+reconnect_initial = "5s"
+reconnect_max = "30s"
+stable_after = "60s"

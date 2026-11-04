@@ -385,7 +385,7 @@ Deno.test("module checks invoke Clippy once and leave Web validation to its own 
     const calls = await Deno.readTextFile(resolve(directory, "calls.log"));
     assert(
       calls ===
-        "cargo clippy -p natsume-server -p natsume-server-setup --all-targets --all-features --frozen -- -D warnings\n",
+        "cargo clippy -p natsume-server -p natsume-server-setup -p natsume-loadgen --all-targets --all-features --frozen -- -D warnings\n",
       `Unexpected Rust commands: ${calls}`,
     );
     const webLog = resolve(directory, "web/calls.log");
@@ -394,7 +394,7 @@ Deno.test("module checks invoke Clippy once and leave Web validation to its own 
     assert(tested.success, new TextDecoder().decode(tested.stderr));
     assert(
       await Deno.readTextFile(resolve(directory, "calls.log")) ===
-        `${calls}cargo test -p natsume-server -p natsume-server-setup --all-features --frozen\n`,
+        `${calls}cargo test -p natsume-server -p natsume-server-setup -p natsume-loadgen --all-features --frozen\n`,
       "Server tests omitted a crate or repeated a Rust command",
     );
     assert(!await exists(webLog), "Server repeated Web unit tests");

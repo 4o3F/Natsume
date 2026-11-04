@@ -158,6 +158,7 @@ async function build(): Promise<void> {
         "--deny-net",
         "tools/build_test.ts",
         "tools/windows_test.ts",
+        "bench/run/",
       ]);
     }
     if (rust) {
@@ -228,6 +229,16 @@ async function build(): Promise<void> {
         "tools/entry.ts",
         "tools/native-deps.ts",
         "tools/release.ts",
+        "bench/analyze/",
+        "bench/run/run.ts",
+        "bench/run/bootstrap.ts",
+        "bench/run/prepare.ts",
+        "bench/run/perf.ts",
+        "bench/run/compare.ts",
+        "bench/run/report.ts",
+        "bench/run/symbols.ts",
+        "bench/run/config_test.ts",
+        "bench/run/sample_test.ts",
       ]);
       await run(Deno.execPath(), ["fmt", "--check"]);
       await run(Deno.execPath(), ["lint"]);
