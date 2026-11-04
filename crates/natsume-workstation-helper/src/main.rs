@@ -82,16 +82,12 @@ mod application {
         {
             return Err(ServiceError::MountNamespaceDescriptor);
         }
-        // systemd passes fd 3 without CLOEXEC. Keep it out of every controlled
-        // UID executable; use the safe fcntl wrapper, never a raw ownership cast.
-        nix::fcntl::fcntl(
-            3,
-            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
-        )
-        .map_err(|_| ServiceError::MountNamespaceDescriptor)?;
         // OpenFile supplies this sole descriptor at fd 3 before capabilities are reduced.
         // Inspecting PID 1's procfs link directly would require CAP_SYS_PTRACE.
         verify_mount_namespace(Path::new("/proc/self/ns/mnt"), Path::new("/proc/self/fd/3"))?;
+        // systemd passes fd 3 without CLOEXEC. Close it after verification, before
+        // exposing privileged operations or starting any controlled UID executable.
+        nix::unistd::close(3).map_err(|_| ServiceError::MountNamespaceDescriptor)?;
         let builder = zbus::connection::Builder::system();
         let connection = timeout(
             SYSTEM_BUS_TIMEOUT,
@@ -199,9 +195,66 @@ mod application {
 
     #[cfg(test)]
     mod tests {
-        use std::os::unix::fs::symlink;
+        use std::{os::unix::fs::symlink, process::Command};
+
+        use snafu::ResultExt as _;
 
         use super::*;
+
+        #[derive(Debug, Snafu)]
+        enum TestError {
+            #[snafu(display("mount namespace test setup failed: {source}"))]
+            Io { source: io::Error },
+        }
+
+        #[tokio::test]
+        async fn closes_inherited_mount_namespace_before_connecting_bus() -> Result<(), TestError> {
+            const CHILD: &str = "NATSUME_TEST_MOUNT_NAMESPACE_FD";
+            if env::var_os(CHILD).is_some() {
+                assert!(
+                    matches!(serve().await, Err(ServiceError::Bus)),
+                    "the inherited namespace must be accepted before the missing bus is rejected"
+                );
+                assert!(
+                    matches!(
+                        fs::metadata("/proc/self/fd/3"),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound
+                    ),
+                    "the namespace descriptor must be closed before connecting to the bus"
+                );
+                return Ok(());
+            }
+
+            // Give only the child fd 3 and systemd's environment, leaving the test
+            // runner's descriptors and environment unchanged.
+            let directory = tempfile::tempdir().context(IoSnafu)?;
+            let status = Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "exec 3</proc/self/ns/mnt; export LISTEN_PID=$$; exec \"$@\"",
+                    "mount-namespace-fd-test",
+                ])
+                .arg(env::current_exe().context(IoSnafu)?)
+                .args([
+                    "--exact",
+                    "application::tests::closes_inherited_mount_namespace_before_connecting_bus",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("LISTEN_FDS", "1")
+                .env("LISTEN_FDNAMES", "host-mount-namespace")
+                .env(
+                    "DBUS_SYSTEM_BUS_ADDRESS",
+                    format!("unix:path={}/missing-bus", directory.path().display()),
+                )
+                .status()
+                .context(IoSnafu)?;
+            assert!(
+                status.success(),
+                "namespace descriptor child test: {status}"
+            );
+            Ok(())
+        }
 
         #[test]
         fn accepts_links_to_same_mount_namespace() -> Result<(), Box<dyn std::error::Error>> {
