@@ -1228,6 +1228,7 @@ Daemon 可以有一个有界 effect executor，但它处理 latest target计划�
 - 新完整 `ServerStateSnapshot` 通过验证后原子替换当前 target；
 - 与current/queued完全相同的target不替换plan；资源返回的Actual与本地重试判断独立，`Ok(snapshot)`不代表已经收敛，Actual去重只控制上报；
 - active lease内保留最近的target；资源明确要求重试时，单一调度器以1秒起步、指数增长至30秒封顶，每档在50%～100%范围内加入抖动；期限从本轮完成时计算，到期且本地执行器空闲后重跑同一target，不依赖新的Server消息或变化Actual；
+- Daemon 通过系统总线订阅 logind 的 `SessionRemoved` 和 systemd 的 `JobRemoved`，后者只匹配 waiting、contest 两个固定准备单元。zbus 校验发送者属于对应服务的当前总线名称所有者。提示只将已有重试期限提前到原期限与 75 毫秒后的较早时间，退避档位保持不变；执行中的提示保留到本轮完成，下一计划启动前清除旧提示。重试沿用 `refresh_plan` 和 `start_plan` 完成全部检查，通知缺失时继续使用指数退避；
 - 相同target不会重置或绕过重试期限，等待Server回应也不阻止到期重试；新target清除旧重试期限并通过原有fence替换计划，断线清除该lease的全部重试权限；
 - 资源自行区分临时依赖故障、等待外部输入和安全拒绝；Helper的Session/Home能力用明确的`Unavailable`与`Rejected`错误交接这一判断，不解析错误文本；未知错误保持拒绝，损坏记录、不受管挂载等不因重试绕过安全检查；
 - 已无本地待重试工作时停止计时，继续observe；Client发布变化Actual后仍允许Server用相同target触发一次重新检查。重试复用既有epoch与durable progress，Session pending只绑定原先捕获的确切会话，completed epoch只在durable completion后推进；

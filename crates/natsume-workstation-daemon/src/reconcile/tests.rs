@@ -45,6 +45,7 @@ pub(crate) struct HelperState {
     pub(crate) termination_calls: Vec<GraphicalSession>,
     pub(crate) home_calls: Vec<u64>,
     pub(crate) terminate_failures: usize,
+    pub(crate) termination_barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     pub(crate) home_failures: usize,
     pub(crate) rejected: bool,
     pub(crate) progress: Option<HomeResetProgress>,
@@ -168,27 +169,35 @@ impl FaultyHelper {
     }
 
     #[zbus(name = "TerminateContestSession")]
-    fn terminate_contest_session(
+    async fn terminate_contest_session(
         &mut self,
         session: GraphicalSession,
     ) -> Result<(), ResourceControlError> {
-        let mut state = self
-            .0
-            .lock()
-            .unwrap_or_else(|e| panic!("fixture lock: {e}"));
-        state.assert_blocked();
-        state.termination_calls.push(session);
-        if state.rejected {
-            Err(ResourceControlError::Rejected(
-                "invalid session target".to_owned(),
-            ))
-        } else if state.termination_calls.len() <= state.terminate_failures {
-            Err(ResourceControlError::Unavailable(
-                "temporary logind failure".to_owned(),
-            ))
-        } else {
-            Ok(())
+        let (result, barrier) = {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            state.assert_blocked();
+            state.termination_calls.push(session);
+            let result = if state.rejected {
+                Err(ResourceControlError::Rejected(
+                    "invalid session target".to_owned(),
+                ))
+            } else if state.termination_calls.len() <= state.terminate_failures {
+                Err(ResourceControlError::Unavailable(
+                    "temporary logind failure".to_owned(),
+                ))
+            } else {
+                Ok(())
+            };
+            (result, state.termination_barrier.take())
+        };
+        if let Some((entered, release)) = barrier {
+            entered.notify_one();
+            release.notified().await;
         }
+        result
     }
 
     #[zbus(name = "IsHomeReady")]
@@ -636,7 +645,7 @@ async fn helper_owner_replacement_preserves_pending_session_and_home_work()
     Ok(())
 }
 
-async fn private_bus(
+pub(super) async fn private_bus(
     directory: &tempfile::TempDir,
 ) -> Result<(tokio::process::Child, String), Box<dyn std::error::Error>> {
     use std::process::Stdio;
@@ -698,6 +707,10 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
+    pub(crate) fn wake_retry(&self) {
+        self.snapshots.retry_wake.notify();
+    }
+
     pub(crate) async fn pause_agent_frames(&self) {
         self.agent_task.abort();
         while !self.agent_task.is_finished() {
@@ -759,6 +772,7 @@ pub(crate) async fn fixture(state: HelperState) -> Result<Fixture, Box<dyn std::
     ));
     presentation.configure("fixture-scope".to_owned())?;
     let snapshots = Arc::new(SnapshotReconciler {
+        retry_wake: RetryWake::new(connection.clone()),
         presentation,
         gateway: gateway::tests::reconciler(&directory),
         binding_input: Arc::clone(&binding_input),

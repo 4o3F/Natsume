@@ -17,6 +17,7 @@ use rustls_pki_types::{CertificateDer, pem::PemObject as _};
 use serde::Deserialize;
 use tokio::{
     net::TcpStream,
+    sync::watch,
     task::JoinHandle,
     time::{Duration, Instant, Interval, MissedTickBehavior, timeout},
 };
@@ -328,6 +329,7 @@ pub(crate) async fn run(
     let _logos = tokio_util::task::AbortOnDropHandle::new(
         snapshots.start_logo_downloads(client, settings.origin()),
     );
+    let _retry_wakes = tokio_util::task::AbortOnDropHandle::new(snapshots.start_retry_wakes());
     diagnostics.complete(DiagnosticStage::ControlConfiguration);
     let mut backoff = ReconnectBackoff::new();
     let mut next_plan = 0;
@@ -482,6 +484,12 @@ impl RetrySchedule {
         }
     }
 
+    fn wake(&mut self, now: Instant) {
+        if let Some(deadline) = &mut self.deadline {
+            *deadline = (*deadline).min(now + Duration::from_millis(75));
+        }
+    }
+
     fn completed(&mut self, target: ObservedTarget, retry: bool) {
         self.target = Some(target);
         self.deadline = if retry {
@@ -520,6 +528,7 @@ async fn run_active(
         None => start_observation(Arc::clone(&snapshots), None),
     });
     let mut retry = RetrySchedule::new();
+    let mut retry_wakes = snapshots.retry_wakes();
     let mut local_change_pending = false;
     let mut awaiting_target = false;
     let mut snapshot_error = None::<SnapshotError>;
@@ -558,7 +567,10 @@ async fn run_active(
                     snapshot_error = Some(error);
                     break;
                 }
-                current = Some(start_plan(Arc::clone(&snapshots), PendingPlan { fence, target: target.clone() }, next_plan));
+                current = Some(start_plan(Arc::clone(&snapshots), PendingPlan { fence, target: target.clone() }, next_plan, &mut retry_wakes));
+            }
+            Ok(()) = retry_wakes.changed(), if idle && retry.deadline.is_some() => {
+                retry.wake(Instant::now());
             }
             message = socket.next() => {
                 let received_at = Instant::now();
@@ -569,6 +581,7 @@ async fn run_active(
                             &mut current,
                             &mut queued,
                             &mut retry,
+                            &mut retry_wakes,
                             awaiting_target,
                             observation.is_some(),
                             *target,
@@ -595,7 +608,7 @@ async fn run_active(
                     break;
                 };
                 if let Some(next) = queued.take() {
-                    current = Some(start_plan(Arc::clone(&snapshots), next, next_plan));
+                    current = Some(start_plan(Arc::clone(&snapshots), next, next_plan, &mut retry_wakes));
                     continue;
                 }
                 let outcome = match result {
@@ -623,7 +636,7 @@ async fn run_active(
             result = observation_finished => {
                 let metadata = observation.take().and_then(|task| task.metadata);
                 if let Some(next) = queued.take() {
-                    current = Some(start_plan(Arc::clone(&snapshots), next, next_plan));
+                    current = Some(start_plan(Arc::clone(&snapshots), next, next_plan, &mut retry_wakes));
                     continue;
                 }
                 let snapshot = match result {
@@ -691,6 +704,7 @@ fn queue_latest_plan(
     current: &mut Option<CurrentPlan>,
     pending: &mut Option<PendingPlan>,
     retry: &mut RetrySchedule,
+    retry_wakes: &mut watch::Receiver<()>,
     awaiting_target: bool,
     observation_running: bool,
     target: ServerStateSnapshot,
@@ -751,7 +765,12 @@ fn queue_latest_plan(
             replaced.fence.cancel();
         }
     } else {
-        *current = Some(start_plan(Arc::clone(snapshots), latest, next_plan));
+        *current = Some(start_plan(
+            Arc::clone(snapshots),
+            latest,
+            next_plan,
+            retry_wakes,
+        ));
     }
     Ok(())
 }
@@ -796,7 +815,9 @@ fn start_plan(
     snapshots: Arc<SnapshotReconciler>,
     pending: PendingPlan,
     next_plan: &mut u64,
+    retry_wakes: &mut watch::Receiver<()>,
 ) -> CurrentPlan {
+    drop(retry_wakes.borrow_and_update());
     let PendingPlan { fence, target } = pending;
     let task_fence = fence.clone();
     *next_plan += 1;
@@ -1875,6 +1896,35 @@ mod tests {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "retain existing fixture call sites"
+    )]
+    fn queue_latest_plan(
+        snapshots: &Arc<SnapshotReconciler>,
+        current: &mut Option<CurrentPlan>,
+        pending: &mut Option<PendingPlan>,
+        retry: &mut RetrySchedule,
+        awaiting_target: bool,
+        observation_running: bool,
+        target: ServerStateSnapshot,
+        last_received: &mut Option<Instant>,
+        next_plan: &mut u64,
+    ) -> Result<(), SnapshotError> {
+        super::queue_latest_plan(
+            snapshots,
+            current,
+            pending,
+            retry,
+            &mut snapshots.retry_wakes(),
+            awaiting_target,
+            observation_running,
+            target,
+            last_received,
+            next_plan,
+        )
+    }
+
     #[tokio::test]
     async fn duplicate_target_does_not_reset_retry_even_when_awaiting_reply()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1890,11 +1940,12 @@ mod tests {
         let delay = retry.delay_ms;
         let (mut current, mut queued) = (None, None);
         for _ in 0..20 {
-            queue_latest_plan(
+            super::queue_latest_plan(
                 &resources.snapshots,
                 &mut current,
                 &mut queued,
                 &mut retry,
+                &mut resources.snapshots.retry_wakes(),
                 true,
                 false,
                 wire.clone(),
@@ -1906,6 +1957,184 @@ mod tests {
         assert_eq!(retry.delay_ms, delay);
         assert!(current.is_none() && queued.is_none());
         Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wake_shortens_only_pending_retry_without_resetting_backoff() {
+        let target = ObservedTarget {
+            state: Arc::new(target(ForegroundTarget::Contest)),
+            metadata: crate::reconcile::observability::tests::context().target,
+        };
+        let mut retry = RetrySchedule::new();
+        let now = Instant::now();
+        retry.wake(now);
+        assert!(retry.deadline.is_none());
+        assert_eq!(retry.delay_ms, 1_000);
+        retry.completed(target.clone(), true);
+        let delay = retry.delay_ms;
+        retry.wake(now);
+        assert_eq!(retry.deadline, Some(now + Duration::from_millis(75)));
+        assert_eq!(retry.delay_ms, delay);
+        tokio::time::advance(Duration::from_millis(25)).await;
+        retry.wake(Instant::now());
+        assert_eq!(retry.deadline, Some(now + Duration::from_millis(75)));
+        retry.deadline = Some(Instant::now() + Duration::from_millis(10));
+        let earlier = retry.deadline;
+        retry.wake(Instant::now());
+        assert_eq!(retry.deadline, earlier);
+        retry.completed(target, false);
+        retry.wake(Instant::now());
+        assert!(retry.deadline.is_none());
+    }
+
+    #[tokio::test]
+    async fn running_plan_hint_survives_duplicate_target_and_wakes_retry() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut active = active_fixture(HelperState {
+            terminate_failures: 1,
+            termination_barrier: Some((Arc::clone(&entered), Arc::clone(&release))),
+            ..HelperState::default()
+        })
+        .await
+        .unwrap_or_else(|e| panic!("active fixture: {e}"));
+        let target = destructive_target();
+        active
+            .target(target.clone())
+            .await
+            .unwrap_or_else(|e| panic!("target: {e}"));
+        timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap_or_else(|error| panic!("plan enters termination: {error}"));
+        active.resources.wake_retry();
+        active
+            .target(target)
+            .await
+            .unwrap_or_else(|e| panic!("duplicate: {e}"));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        release.notify_one();
+        timeout(Duration::from_millis(450), async {
+            loop {
+                let snapshot = active
+                    .next_snapshot()
+                    .await
+                    .unwrap_or_else(|e| panic!("snapshot: {e}"));
+                if snapshot
+                    .actual
+                    .and_then(|a| a.session_control)
+                    .and_then(|s| s.completed_terminate_epoch)
+                    == Some(7)
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|error| panic!("hint retries before the minimum 500 ms backoff: {error}"));
+        let state = active
+            .resources
+            .helper
+            .lock()
+            .unwrap_or_else(|error| panic!("helper state: {error}"));
+        assert_eq!(state.termination_calls.len(), 2);
+        assert_eq!(state.termination_calls[0], state.termination_calls[1]);
+    }
+
+    #[tokio::test]
+    async fn running_plan_hint_does_not_retry_a_rejected_plan() {
+        use crate::reconcile::observability::tests::{Capture, assert_text, subscriber_guard};
+        let _guard = subscriber_guard();
+        let capture = Capture::default();
+        async {
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let mut active = active_fixture(HelperState {
+                rejected: true,
+                termination_barrier: Some((Arc::clone(&entered), Arc::clone(&release))),
+                ..HelperState::default()
+            })
+            .await
+            .unwrap_or_else(|e| panic!("active fixture: {e}"));
+            active
+                .target(destructive_target())
+                .await
+                .unwrap_or_else(|e| panic!("target: {e}"));
+            timeout(Duration::from_secs(2), entered.notified())
+                .await
+                .unwrap_or_else(|error| panic!("plan enters termination: {error}"));
+            active.resources.wake_retry();
+            release.notify_one();
+            active
+                .next_snapshot()
+                .await
+                .unwrap_or_else(|e| panic!("snapshot: {e}"));
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            assert_eq!(
+                active
+                    .resources
+                    .helper
+                    .lock()
+                    .unwrap_or_else(|error| panic!("helper state: {error}"))
+                    .termination_calls
+                    .len(),
+                1
+            );
+            let plans = capture.records("reconcile completed");
+            assert_eq!(plans.len(), 1, "hint must not start another plan");
+            assert_text(&plans[0], "outcome", "completed");
+        }
+        .with_subscriber(capture.subscriber())
+        .await;
+    }
+
+    #[tokio::test]
+    async fn starting_a_new_plan_discards_old_hints() {
+        let resources = fixture(HelperState::default())
+            .await
+            .unwrap_or_else(|e| panic!("fixture: {e}"));
+        let mut wakes = resources.snapshots.retry_wakes();
+        resources.wake_retry();
+        assert!(
+            wakes
+                .has_changed()
+                .unwrap_or_else(|error| panic!("wake sender alive: {error}"))
+        );
+        let mut current = None;
+        super::queue_latest_plan(
+            &resources.snapshots,
+            &mut current,
+            &mut None,
+            &mut RetrySchedule::new(),
+            &mut wakes,
+            false,
+            false,
+            snapshot(),
+            &mut None,
+            &mut 0,
+        )
+        .unwrap_or_else(|error| panic!("start plan: {error}"));
+        assert!(
+            !wakes
+                .has_changed()
+                .unwrap_or_else(|error| panic!("wake sender alive: {error}"))
+        );
+        let plan = current.unwrap_or_else(|| panic!("current plan"));
+        plan.task
+            .await
+            .unwrap_or_else(|error| panic!("plan task: {error}"))
+            .unwrap_or_else(|error| panic!("plan result: {error}"));
+        resources.wake_retry();
+        assert!(
+            wakes
+                .has_changed()
+                .unwrap_or_else(|error| panic!("new hints remain pending: {error}"))
+        );
+        let next_lease = resources.snapshots.retry_wakes();
+        assert!(
+            !next_lease
+                .has_changed()
+                .unwrap_or_else(|error| panic!("new lease starts without old hints: {error}"))
+        );
     }
 
     #[tokio::test(start_paused = true)]

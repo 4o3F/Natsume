@@ -5,7 +5,7 @@ use tokio::io::AsyncReadExt as _;
 use futures_util::StreamExt as _;
 use natsume_workstation_ipc::{
     GraphicalSessionObservation, GraphicalSessionState, ManagedSessionsObservation,
-    ResourceControlError, SessionRole,
+    ResourceControlError, SessionRole, preparation_unit,
 };
 use tokio::time::{Duration, Instant, sleep, timeout};
 use zbus::{Connection, MessageStream, OwnedObjectPath, message::Type};
@@ -49,13 +49,6 @@ pub(crate) async fn preparing(connection: &Connection) -> Result<bool, ResourceC
     Ok(false)
 }
 
-fn unit(role: SessionRole) -> &'static str {
-    match role {
-        SessionRole::Waiting => "natsume-session-prepare@waiting.service",
-        SessionRole::Contest => "natsume-session-prepare@contest.service",
-    }
-}
-
 fn role_observation(
     observation: ManagedSessionsObservation,
     role: SessionRole,
@@ -79,7 +72,7 @@ async fn unit_state(
     .await
     .map_err(|_| unavailable("session preparation service is unavailable"))?;
     let path: OwnedObjectPath = manager
-        .call("LoadUnit", &(unit(role),))
+        .call("LoadUnit", &(preparation_unit(role),))
         .await
         .map_err(|_| unavailable("session preparation service is unavailable"))?;
     fresh_proxy(
@@ -115,7 +108,7 @@ async fn unit_job(
     let _: OwnedObjectPath = manager
         .call(
             if start { "StartUnit" } else { "StopUnit" },
-            &(unit(role), "replace"),
+            &(preparation_unit(role), "replace"),
         )
         .await
         .map_err(|_| unavailable("session preparation transition is unavailable"))?;

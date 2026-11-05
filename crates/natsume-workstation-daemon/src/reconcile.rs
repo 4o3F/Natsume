@@ -20,6 +20,7 @@ mod maintenance;
 pub(crate) mod observability;
 mod power;
 mod presentation;
+mod retry_wake;
 mod runtime;
 mod session;
 
@@ -33,6 +34,7 @@ use configuration::AppliedConfiguration;
 use gateway::{GatewayReconciler, ValidatedGatewayTarget};
 use home::HomeReconciler;
 use power::{PowerReconciler, ValidatedPowerTarget};
+use retry_wake::RetryWake;
 use runtime::{RuntimeReconciler, is_canonical_https_origin};
 use session::{SessionReconciler, ValidatedSessionTarget};
 
@@ -132,6 +134,7 @@ pub(crate) struct SnapshotReconciler {
     home: HomeReconciler,
     power: PowerReconciler,
     caddy: Caddy,
+    retry_wake: RetryWake,
 }
 
 /// Complete Server snapshot after all wire-level validation and parsing has succeeded.
@@ -168,6 +171,7 @@ impl SnapshotReconciler {
             Arc::clone(&binding_input),
         ));
         Ok(Self {
+            retry_wake: RetryWake::new(connection),
             gateway,
             presentation,
             binding_input,
@@ -178,6 +182,14 @@ impl SnapshotReconciler {
             power,
             caddy,
         })
+    }
+
+    pub(crate) fn start_retry_wakes(&self) -> tokio::task::JoinHandle<()> {
+        self.retry_wake.start()
+    }
+
+    pub(crate) fn retry_wakes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.retry_wake.subscribe()
     }
 
     pub(crate) fn configure_presentation(&self, scope: String) -> Result<(), SnapshotError> {

@@ -94,6 +94,15 @@ pub enum SessionRole {
     Contest,
 }
 
+/// Fixed systemd preparation unit for one managed graphical role.
+#[must_use]
+pub const fn preparation_unit(role: SessionRole) -> &'static str {
+    match role {
+        SessionRole::Waiting => "natsume-session-prepare@waiting.service",
+        SessionRole::Contest => "natsume-session-prepare@contest.service",
+    }
+}
+
 /// Lifecycle of one fixed role, independent of foreground and GNOME locking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
