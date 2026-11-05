@@ -1085,6 +1085,11 @@ async fn refresh_target(
             .map(|started| materialized.started_at.saturating_duration_since(started)),
         materialize: materialized.elapsed,
     };
+    let target_digest = materialized
+        .snapshot
+        .target
+        .as_ref()
+        .map(natsume_workstation_protocol::target_digest);
     let envelope = ServerActiveEnvelope {
         session_id: session_id.as_bytes().to_vec(),
         body: Some(server_active_envelope::Body::ServerState(
@@ -1104,9 +1109,12 @@ async fn refresh_target(
                 &events.journal,
                 &events.context(session_id),
             );
-            observation
-                .0
-                .trace_received(device_id, changed, reconcile_elapsed);
+            observation.0.trace_received(
+                device_id,
+                changed,
+                reconcile_elapsed,
+                target_digest.as_deref(),
+            );
             lease.observation = Some(observation);
         }
         if lease.consecutive_failures != 0 {

@@ -282,7 +282,7 @@ async fn accept_snapshot(
     session: Uuid,
     snapshot: ClientStateSnapshot,
     outgoing: &mut mpsc::Receiver<OutboundSnapshot>,
-) {
+) -> OutboundSnapshot {
     assert!(handle.enqueue_client_state(session, snapshot).await.is_ok());
     let outbound = timeout(Duration::from_secs(5), outgoing.recv())
         .await
@@ -299,6 +299,23 @@ async fn accept_snapshot(
         .registry
         .read_connection_state(device_id)
         .await;
+    outbound
+}
+
+fn assert_actual_digest(event: &Trace, outbound: &OutboundSnapshot) {
+    let Some(server_active_envelope::Body::ServerState(snapshot)) = &outbound.envelope.body else {
+        panic!("missing ServerState");
+    };
+    let target = snapshot
+        .target
+        .as_ref()
+        .unwrap_or_else(|| panic!("missing target"));
+    assert_eq!(
+        event.fields.get("target_digest"),
+        Some(&Value::Text(natsume_workstation_protocol::target_digest(
+            target
+        )))
+    );
 }
 
 #[tokio::test]
@@ -337,7 +354,7 @@ async fn actual_event_changed_matches_journal_summaries_and_excludes_rejected_fr
             session.session_state = SessionState::Running.into();
             session.contest_ready = true;
         }
-        accept_snapshot(
+        let outbound = accept_snapshot(
             fixture,
             device_id,
             &handle,
@@ -354,6 +371,7 @@ async fn actual_event_changed_matches_journal_summaries_and_excludes_rejected_fr
         let events = traces.events("actual received");
         assert_eq!(events.len(), index + 1);
         let event = &events[index];
+        assert_actual_digest(event, &outbound);
         assert_eq!(event.level, Level::INFO);
         assert_eq!(
             event.fields.get("changed"),
@@ -429,7 +447,11 @@ async fn backpressure_does_not_publish_a_second_actual_observation() {
     }
     assert_eq!(traces.events("actual received").len(), 1);
     assert!(traces.events("target dispatched").is_empty());
-    assert!(outgoing.recv().await.is_some());
+    let outbound = outgoing
+        .recv()
+        .await
+        .unwrap_or_else(|| panic!("missing target"));
+    assert_actual_digest(&traces.events("actual received")[0], &outbound);
     assert!(outgoing.recv().await.is_none());
 }
 
@@ -474,4 +496,58 @@ async fn transient_ingest_failure_emits_actual_only_after_successful_retry() {
     let events = traces.events("actual received");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].fields.get("changed"), Some(&Value::Boolean(true)));
+    assert_actual_digest(&events[0], &outbound);
+}
+
+#[tokio::test]
+async fn actual_digest_uses_the_resolved_target_even_when_the_report_is_unchanged() {
+    let _guard = SubscriberTestGuard::acquire();
+    let traces = Traces::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(traces.clone()));
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x76; 32])).await;
+    let control = fixture.runtime.device_control();
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, handle) = replace_current_lease(control, device_id, outbound).await;
+    let snapshot = valid_snapshot();
+    let first = accept_snapshot(
+        &fixture,
+        device_id,
+        &handle,
+        session,
+        snapshot.clone(),
+        &mut outgoing,
+    )
+    .await;
+    control
+        .session
+        .set_foreground(device_id, ForegroundTarget::Contest)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let second = accept_snapshot(
+        &fixture,
+        device_id,
+        &handle,
+        session,
+        snapshot,
+        &mut outgoing,
+    )
+    .await;
+    let events = traces.events("actual received");
+    assert_eq!(events.len(), 2);
+    assert_actual_digest(&events[0], &first);
+    assert_actual_digest(&events[1], &second);
+    assert_ne!(
+        events[0].fields.get("target_digest"),
+        events[1].fields.get("target_digest")
+    );
+    assert_eq!(
+        events[0].fields.get("session_foreground"),
+        events[1].fields.get("session_foreground")
+    );
+    assert_eq!(
+        events[1].fields.get("changed"),
+        Some(&Value::Boolean(false))
+    );
 }

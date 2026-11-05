@@ -19,6 +19,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("diesel/business/migrations");
 const DATABASE_CONNECTIONS: u32 = 10;
+const TRANSACTION_WAIT_INFO_THRESHOLD: Duration = Duration::from_millis(100);
 const SQLITE_PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
@@ -407,11 +408,21 @@ impl Database {
         E: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
-        let timing = transaction_timing_span("read");
-        let waiting_since = wait_started(&timing);
+        let mut timing = TransactionTimings::new("read");
+        let waiting_since = Instant::now();
         let reservation = self.reserve_work().await;
-        record_wait(&timing, "db.permit_wait_us", waiting_since);
-        let (permit, deadline) = reservation.map_err(TransactionError::Persistence)?;
+        timing.permit_wait = Some(record_wait(
+            &timing.span,
+            "db.permit_wait_us",
+            waiting_since,
+        ));
+        let (permit, deadline) = match reservation {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                timing.finish(false);
+                return Err(TransactionError::Persistence(error));
+            }
+        };
         let pool = self.pool.clone();
         // A blocking thread inherits neither the scoped dispatcher nor the
         // current span. Capture both at this shared boundary so database work
@@ -424,23 +435,27 @@ impl Database {
             let _permit = permit;
             tracing::dispatcher::with_default(&dispatcher, || {
                 span.in_scope(|| {
-                    let transaction_timing = timing;
-                    let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
-                        TransactionError::Persistence(PersistenceError::WorkBudgetExhausted),
-                    )?;
-                    let waiting_since = wait_started(&transaction_timing);
-                    let connection = pool.get_timeout(remaining);
-                    record_wait(&transaction_timing, "db.pool_wait_us", waiting_since);
-                    let mut connection = connection.map_err(|source| {
-                        TransactionError::Persistence(PersistenceError::Pool {
-                            source,
-                            location: snafu::location!(),
+                    let result = (|| {
+                        let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
+                            TransactionError::Persistence(PersistenceError::WorkBudgetExhausted),
+                        )?;
+                        let waiting_since = Instant::now();
+                        let connection = pool.get_timeout(remaining);
+                        timing.pool_wait =
+                            Some(record_wait(&timing.span, "db.pool_wait_us", waiting_since));
+                        let mut connection = connection.map_err(|source| {
+                            TransactionError::Persistence(PersistenceError::Pool {
+                                source,
+                                location: snafu::location!(),
+                            })
+                        })?;
+                        connection.transaction::<T, TransactionError<E>, _>(|connection| {
+                            let mut transaction = Transaction { connection };
+                            operation(&mut transaction).map_err(TransactionError::Operation)
                         })
-                    })?;
-                    connection.transaction::<T, TransactionError<E>, _>(|connection| {
-                        let mut transaction = Transaction { connection };
-                        operation(&mut transaction).map_err(TransactionError::Operation)
-                    })
+                    })();
+                    timing.finish(result.is_ok());
+                    result
                 })
             })
         })
@@ -458,11 +473,21 @@ impl Database {
         E: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
-        let timing = transaction_timing_span("write");
-        let waiting_since = wait_started(&timing);
+        let mut timing = TransactionTimings::new("write");
+        let waiting_since = Instant::now();
         let reservation = self.reserve_work().await;
-        record_wait(&timing, "db.permit_wait_us", waiting_since);
-        let (permit, deadline) = reservation.map_err(TransactionError::Persistence)?;
+        timing.permit_wait = Some(record_wait(
+            &timing.span,
+            "db.permit_wait_us",
+            waiting_since,
+        ));
+        let (permit, deadline) = match reservation {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                timing.finish(false);
+                return Err(TransactionError::Persistence(error));
+            }
+        };
         let pool = self.pool.clone();
         // A blocking thread inherits neither the scoped dispatcher nor the
         // current span. Capture both at this shared boundary so database work
@@ -473,36 +498,44 @@ impl Database {
             let _permit = permit;
             tracing::dispatcher::with_default(&dispatcher, || {
                 span.in_scope(|| {
-                    let transaction_timing = timing;
-                    let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
-                        TransactionError::Persistence(PersistenceError::WorkBudgetExhausted),
-                    )?;
-                    let waiting_since = wait_started(&transaction_timing);
-                    let connection = pool.get_timeout(remaining);
-                    record_wait(&transaction_timing, "db.pool_wait_us", waiting_since);
-                    let mut connection = connection.map_err(|source| {
-                        TransactionError::Persistence(PersistenceError::Pool {
-                            source,
-                            location: snafu::location!(),
-                        })
-                    })?;
-                    let waiting_since = wait_started(&transaction_timing);
-                    let mut acquired = false;
-                    let result = connection.immediate_transaction::<T, TransactionError<E>, _>(
-                        |connection| {
-                            acquired = true;
-                            record_wait(
-                                &transaction_timing,
+                    let result = (|| {
+                        let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
+                            TransactionError::Persistence(PersistenceError::WorkBudgetExhausted),
+                        )?;
+                        let waiting_since = Instant::now();
+                        let connection = pool.get_timeout(remaining);
+                        timing.pool_wait =
+                            Some(record_wait(&timing.span, "db.pool_wait_us", waiting_since));
+                        let mut connection = connection.map_err(|source| {
+                            TransactionError::Persistence(PersistenceError::Pool {
+                                source,
+                                location: snafu::location!(),
+                            })
+                        })?;
+                        let waiting_since = Instant::now();
+                        let mut acquired = false;
+                        let result = connection.immediate_transaction::<T, TransactionError<E>, _>(
+                            |connection| {
+                                acquired = true;
+                                timing.write_lock_wait = Some(record_wait(
+                                    &timing.span,
+                                    "db.write_lock_wait_us",
+                                    waiting_since,
+                                ));
+                                let mut transaction = Transaction { connection };
+                                operation(&mut transaction).map_err(TransactionError::Operation)
+                            },
+                        );
+                        if !acquired {
+                            timing.write_lock_wait = Some(record_wait(
+                                &timing.span,
                                 "db.write_lock_wait_us",
                                 waiting_since,
-                            );
-                            let mut transaction = Transaction { connection };
-                            operation(&mut transaction).map_err(TransactionError::Operation)
-                        },
-                    );
-                    if !acquired {
-                        record_wait(&transaction_timing, "db.write_lock_wait_us", waiting_since);
-                    }
+                            ));
+                        }
+                        result
+                    })();
+                    timing.finish(result.is_ok());
                     result
                 })
             })
@@ -564,17 +597,56 @@ fn transaction_timing_span(operation: &'static str) -> tracing::Span {
     )
 }
 
-fn wait_started(span: &tracing::Span) -> Option<Instant> {
-    (!span.is_disabled()).then(Instant::now)
+struct TransactionTimings {
+    span: tracing::Span,
+    operation: &'static str,
+    permit_wait: Option<Duration>,
+    pool_wait: Option<Duration>,
+    write_lock_wait: Option<Duration>,
 }
 
-fn record_wait(span: &tracing::Span, field: &'static str, started: Option<Instant>) {
-    if let Some(started) = started {
-        span.record(
-            field,
-            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+impl TransactionTimings {
+    fn new(operation: &'static str) -> Self {
+        Self {
+            span: transaction_timing_span(operation),
+            operation,
+            permit_wait: None,
+            pool_wait: None,
+            write_lock_wait: None,
+        }
+    }
+
+    fn finish(self, success: bool) {
+        let total = self
+            .permit_wait
+            .unwrap_or_default()
+            .saturating_add(self.pool_wait.unwrap_or_default())
+            .saturating_add(self.write_lock_wait.unwrap_or_default());
+        if total <= TRANSACTION_WAIT_INFO_THRESHOLD {
+            return;
+        }
+        tracing::info!(
+            target: "natsume_server::db",
+            code = "db_transaction_wait",
+            "db.operation" = self.operation,
+            "db.result" = if success { "ok" } else { "error" },
+            "db.permit_wait_us" = self.permit_wait.map(duration_micros),
+            "db.pool_wait_us" = self.pool_wait.map(duration_micros),
+            "db.write_lock_wait_us" = self.write_lock_wait.map(duration_micros),
+            "db.total_wait_us" = duration_micros(total),
+            "database transaction wait exceeded threshold"
         );
     }
+}
+
+fn record_wait(span: &tracing::Span, field: &'static str, started: Instant) -> Duration {
+    let elapsed = started.elapsed();
+    span.record(field, duration_micros(elapsed));
+    elapsed
+}
+
+fn duration_micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 fn build_pool(
@@ -736,7 +808,7 @@ pub(crate) mod tests {
         Connection, RunQueryDsl, connection::SimpleConnection, sql_types::BigInt,
         sqlite::SqliteConnection,
     };
-    use snafu::Snafu;
+    use snafu::{ResultExt as _, Snafu};
     use tracing::{
         Instrument as _, Subscriber,
         field::{Field, Visit},
@@ -1586,12 +1658,17 @@ pub(crate) mod tests {
     #[derive(Clone, Default)]
     struct CapturedWaitSpans {
         rows: Arc<Mutex<Vec<WaitEvidence>>>,
+        events: Arc<Mutex<Vec<WaitEvidence>>>,
     }
 
     #[derive(Clone, Default)]
     struct WaitEvidence {
         id: u64,
         operation: String,
+        message: String,
+        code: String,
+        result: String,
+        total_wait_us: Option<u64>,
         permit_wait_us: Option<u64>,
         pool_wait_us: Option<u64>,
         write_lock_wait_us: Option<u64>,
@@ -1605,9 +1682,30 @@ pub(crate) mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone()
         }
+
+        fn events(&self) -> Vec<WaitEvidence> {
+            self.events
+                .lock()
+                .unwrap_or_else(|_| panic!("wait event capture poisoned"))
+                .clone()
+        }
     }
 
     impl<S: Subscriber> Layer<S> for CapturedWaitSpans {
+        fn on_event(&self, event: &tracing::Event<'_>, _context: Context<'_, S>) {
+            if *event.metadata().level() != tracing::Level::INFO {
+                return;
+            }
+            let mut row = WaitEvidence::default();
+            event.record(&mut row);
+            if row.message == "database transaction wait exceeded threshold" {
+                self.events
+                    .lock()
+                    .unwrap_or_else(|_| panic!("wait event capture poisoned"))
+                    .push(row);
+            }
+        }
+
         fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, _context: Context<'_, S>) {
             if attributes.metadata().name() == "db.transaction" {
                 let mut row = WaitEvidence {
@@ -1637,8 +1735,12 @@ pub(crate) mod tests {
 
     impl Visit for WaitEvidence {
         fn record_str(&mut self, field: &Field, value: &str) {
-            if field.name() == "db.operation" {
-                self.operation = value.to_owned();
+            match field.name() {
+                "db.operation" => self.operation = value.to_owned(),
+                "db.result" => self.result = value.to_owned(),
+                "message" => self.message = value.to_owned(),
+                "code" => self.code = value.to_owned(),
+                _ => {}
             }
             self.secret_was_recorded |= value.contains("db-timing-secret-canary");
         }
@@ -1648,13 +1750,191 @@ pub(crate) mod tests {
                 "db.permit_wait_us" => self.permit_wait_us = Some(value),
                 "db.pool_wait_us" => self.pool_wait_us = Some(value),
                 "db.write_lock_wait_us" => self.write_lock_wait_us = Some(value),
+                "db.total_wait_us" => self.total_wait_us = Some(value),
                 _ => {}
             }
         }
 
-        fn record_debug(&mut self, _field: &Field, value: &dyn std::fmt::Debug) {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            }
             self.secret_was_recorded |= format!("{value:?}").contains("db-timing-secret-canary");
         }
+    }
+
+    #[test]
+    fn transaction_wait_events_use_the_total_duration_and_omit_unreached_stages() {
+        let _guard = SubscriberTestGuard::acquire();
+        let captured = CapturedWaitSpans::default();
+        let subscriber = Registry::default()
+            .with(captured.clone())
+            .with(tracing_subscriber::filter::LevelFilter::INFO);
+        tracing::subscriber::with_default(subscriber, || {
+            for (waits, success, emitted) in [
+                ([None, None, None], true, false),
+                ([Some(Duration::from_millis(100)), None, None], true, false),
+                (
+                    [
+                        Some(Duration::from_millis(100) + Duration::from_nanos(1)),
+                        None,
+                        None,
+                    ],
+                    true,
+                    true,
+                ),
+                (
+                    [
+                        Some(Duration::from_millis(40)),
+                        Some(Duration::from_millis(40)),
+                        Some(Duration::from_millis(21)),
+                    ],
+                    true,
+                    true,
+                ),
+                ([Some(Duration::from_millis(101)), None, None], false, true),
+                (
+                    [Some(Duration::ZERO), Some(Duration::from_millis(101)), None],
+                    false,
+                    true,
+                ),
+            ] {
+                let mut timing = super::TransactionTimings::new("write");
+                assert!(timing.span.is_disabled());
+                timing.permit_wait = waits[0];
+                timing.pool_wait = waits[1];
+                timing.write_lock_wait = waits[2];
+                let before = captured.events().len();
+                timing.finish(success);
+                let events = captured.events();
+                assert_eq!(events.len(), before + usize::from(emitted));
+                if emitted {
+                    let event = &events[before];
+                    assert_eq!(event.code, "db_transaction_wait");
+                    assert_eq!(event.operation, "write");
+                    assert_eq!(event.result, if success { "ok" } else { "error" });
+                    assert_eq!(event.permit_wait_us, waits[0].map(super::duration_micros));
+                    assert_eq!(event.pool_wait_us, waits[1].map(super::duration_micros));
+                    assert_eq!(
+                        event.write_lock_wait_us,
+                        waits[2].map(super::duration_micros)
+                    );
+                    assert_eq!(
+                        event.total_wait_us,
+                        Some(super::duration_micros(waits.into_iter().flatten().sum()))
+                    );
+                    assert!(!event.secret_was_recorded);
+                }
+            }
+        });
+        assert!(captured.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn transaction_wait_events_work_at_info_for_success_and_each_acquisition_failure()
+    -> Result<(), crate::test_error::TestError> {
+        let _guard = SubscriberTestGuard::acquire();
+        let fixture = DatabaseFixture::new();
+        let mut database = fixture_database(&fixture).await;
+        let captured = CapturedWaitSpans::default();
+        async {
+            let permits = Arc::clone(&database.work)
+                .acquire_many_owned(DATABASE_CONNECTIONS)
+                .await?;
+            let queued_database = database.clone();
+            let (entered, started) = tokio::sync::oneshot::channel();
+            let queued = tokio::spawn(
+                async move {
+                    let _ = entered.send(());
+                    queued_database
+                        .read(|_| Ok::<_, PersistenceError>("db-timing-secret-canary"))
+                        .await
+                }
+                .with_current_subscriber(),
+            );
+            started.await?;
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(permits);
+            assert_eq!(queued.await??, "db-timing-secret-canary");
+            assert_eq!(captured.events().len(), 1);
+
+            let manager = diesel::r2d2::ConnectionManager::new(diesel_database_url(
+                &DatabaseConfig::new(&fixture.path, false),
+            )?);
+            let short_pool = diesel::r2d2::Pool::builder()
+                .max_size(1)
+                .min_idle(Some(0))
+                .connection_timeout(Duration::from_millis(150))
+                .build(manager)
+                .context(super::database_error::ConnectionFailedSnafu)?;
+            let original_pool = std::mem::replace(&mut database.pool, short_pool);
+            let connections = database.test_exhaust_pool();
+            assert!(matches!(
+                database.read(|_| Ok::<_, PersistenceError>(())).await,
+                Err(TransactionError::Persistence(PersistenceError::Pool { .. }))
+            ));
+            assert_eq!(captured.events().len(), 2);
+            drop(connections);
+            database.pool = original_pool;
+
+            for mut connection in database.test_exhaust_pool() {
+                connection.batch_execute("PRAGMA busy_timeout = 150;")?;
+            }
+            let lock = test_lock_database(&fixture.path)?;
+            assert!(matches!(
+                database.write(|_| Ok::<_, PersistenceError>(())).await,
+                Err(TransactionError::Persistence(
+                    PersistenceError::Query { .. }
+                ))
+            ));
+            assert_eq!(captured.events().len(), 3);
+            drop(lock);
+
+            let _permits = Arc::clone(&database.work)
+                .acquire_many_owned(DATABASE_CONNECTIONS)
+                .await?;
+            let queued_database = database.clone();
+            let (entered, started) = tokio::sync::oneshot::channel();
+            let queued = tokio::spawn(
+                async move {
+                    let _ = entered.send(());
+                    queued_database
+                        .write(|_| Ok::<_, PersistenceError>(()))
+                        .await
+                }
+                .with_current_subscriber(),
+            );
+            started.await?;
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            database.work.close();
+            assert!(matches!(
+                queued.await?,
+                Err(TransactionError::Persistence(
+                    PersistenceError::WorkBudgetExhausted
+                ))
+            ));
+            assert_eq!(captured.events().len(), 4);
+            Ok::<_, crate::test_error::TestError>(())
+        }
+        .with_subscriber(
+            Registry::default()
+                .with(captured.clone())
+                .with(tracing_subscriber::filter::LevelFilter::INFO),
+        )
+        .await?;
+        assert!(captured.snapshot().is_empty());
+        let events = captured.events();
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event.operation, if index < 2 { "read" } else { "write" });
+            assert_eq!(event.result, if index == 0 { "ok" } else { "error" });
+            assert_eq!(event.code, "db_transaction_wait");
+            assert!(event.permit_wait_us.is_some());
+            assert_eq!(event.pool_wait_us.is_some(), index < 3);
+            assert_eq!(event.write_lock_wait_us.is_some(), index == 2);
+            assert!(event.total_wait_us.is_some_and(|wait| wait > 100_000));
+            assert!(!event.secret_was_recorded);
+        }
+        Ok(())
     }
 
     async fn wait_for_timing_stage(

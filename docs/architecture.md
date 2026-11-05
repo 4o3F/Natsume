@@ -1059,7 +1059,7 @@ Device disable、revoke和current control-key replacement不是普通target变�
 
 两套schema位于`diesel/{business,journal}/`，分别嵌入各自migration；业务类型入口仍为`crate::diesel_schema`，日志为`#[path]`引入的`crate::journal_schema`。目录和生成规则见§17.2。
 
-Database在独立的debug级`db.transaction` span中记录静态`db.operation`（read／write）及微秒耗时：`db.permit_wait_us`为异步许可等待，`db.pool_wait_us`为连接池checkout等待，`db.write_lock_wait_us`为IMMEDIATE开始前的等待（失败时记录该次尝试耗时），不包含事务业务执行。未到达的阶段不填写；debug span未启用时跳过额外计时。不记录SQL、bind参数或秘密值，不改变当前request span、许可数量、获取预算或读写共用许可的策略。
+Database 使用私有 `TransactionTimings` 独立采集三段等待时长，并继续向 debug 级 `db.transaction` span 记录静态 `db.operation`（read／write）及微秒耗时：`db.permit_wait_us` 为异步许可等待，`db.pool_wait_us` 为连接池 checkout 等待，`db.write_lock_wait_us` 为 IMMEDIATE 开始前的等待（失败时记录该次尝试耗时）。事务结束或获取失败时，三段已采集等待之和严格大于 `TRANSACTION_WAIT_INFO_THRESHOLD`（100 ms）才输出一次 INFO 事件 `database transaction wait exceeded threshold`，包含固定 `code=db_transaction_wait`、`db.operation`、`db.result`（ok／error）、三段等待和 `db.total_wait_us`；未到达的阶段省略。总等待不计入阻塞执行器排队和事务业务执行时间。阻塞工作在连接归还后、原 dispatcher 与父 span 内输出事件；调用方取消后，已经启动的阻塞工作仍在实际结束时完成记录。事件不记录 SQL、bind 参数、业务结果或错误正文。
 
 ### 12.2 目标表与 mutation owner
 
@@ -1605,6 +1605,8 @@ async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享
 Server、Daemon、Helper 和 Waiting Agent 通过 INFO tracing 事件记录本地执行结果与耗时。完成事件在对应副作用的结果已知后记录，接收和状态变化事件记录所属边界已接受的事实；日志不改变执行顺序、deadline、重试或授权。没有实际工作或状态变化的周期检查、幂等返回及重复帧确认保持静默。事件字段不携带凭据、账号名、Home 路径、文件名或配置内容。
 
 Server 与 Daemon 使用 protocol crate 的同一 `target_digest` 函数关联目标：逐字段构造 `ConcreteTargetState` 投影，将 `binding_access.bound.password` 设为 `None`，保留其余字段的值和 presence，构造时不复制密码；对投影的 `prost` 编码计算 SHA-256，取前 8 bytes 编成 16 位小写十六进制摘要。摘要只用于诊断关联，业务目标比较沿用原有规则。
+
+Server 的 `actual received` 在 Actual 通过校验、组件处理成功且新目标成功入队后记录，包含 `device_id`、`target_digest`、`session_foreground`、`session_state`、`waiting_ready`、`contest_ready`、`completed_terminate_epoch`、`completed_reset_epoch`、`home_state`、`changed` 和 `reconcile_us`；可选值缺失时省略字段。`target_digest` 使用共享函数计算，取 Server 接纳该 Actual 时同轮解析出的目标；并发换目标时，字段随接纳时的 Server 目标变化。
 
 Daemon 在执行尝试实际启动时分配从 1 递增的本地 `plan` 编号，重试分配新编号。计数器跨控制连接重连保留，进程重启后重新开始；关联时同时使用进程实例信息。编号不进入协议，也不改变目标合并或调度决定。
 
