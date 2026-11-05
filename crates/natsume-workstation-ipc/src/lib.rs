@@ -316,6 +316,13 @@ pub trait Privileged1 {
     #[zbus(name = "QueryManagedSessions")]
     fn query_managed_sessions(&self) -> Result<ManagedSessionsObservation, ResourceControlError>;
 
+    /// Validates the current Waiting session identity without a desktop probe.
+    #[zbus(name = "ValidateWaitingSession")]
+    fn validate_waiting_session(
+        &self,
+        session: &GraphicalSession,
+    ) -> Result<bool, ResourceControlError>;
+
     /// Completes local boot preparation before the first business foreground.
     #[zbus(name = "PrepareBootSessions")]
     fn prepare_boot_sessions(

@@ -603,6 +603,8 @@ SessionControlTarget
 
 Helper 的 `QueryManagedSessions` 分别返回 waiting/contest 的精确会话、生命周期、`desktop_ready`、`locked_hint` 和实际前台。Daemon 结合这些系统事实与 Agent 的当前展示确认生成 readiness：比赛需唯一 Running、精确身份、桌面已就绪且未锁屏；waiting 还需当前 Agent lease 对当前 UI revision 的首帧及实际全屏尺寸确认。`ConfirmSessionPresentation` 的参数携带 lease ID、boot/session、revision、首帧标记和宽高；总线调用者连接由 Device1 验证，不能由参数自报。
 
+Device1 的 Agent 鉴权使用 Helper 的 `ValidateWaitingSession` 实时核对 boot、唯一 Waiting 精确会话及 Running 生命周期，并保留恢复排空和 preparation 状态限制；该查询不执行桌面探针。每次调用仍验证总线调用者和适用的租约。绑定提交、维护、前台切换和周期安全观察继续使用完整桌面就绪检查。
+
 Wayland 探针在角色自身 UID 下核对 GNOME SessionManager、compositor 的总线所有者与 PID/start time，并连接同一 compositor 的自有 Wayland socket。协议 roundtrip 必须返回有效输出；前台还检查 Mutter 电源状态和键盘/指针能力。Helper 比较探针前后的 logind 前台及 User.Display，矛盾或超时不报告就绪。
 
 初始化及重建允许短暂取得前台；后台 compositor 可暂停绘制。普通切换激活已有精确会话，在既有有界时限内等待 Mutter 恢复输出与输入并重新核对前台事实，不重启或追逐替代会话。waiting 的激活资格使用健康 compositor 与活着的已鉴权 Agent，不依赖后台尚未产生的新帧；激活后仍须确认当前 UI revision 的全屏帧才允许 Home 维护或报告前台就绪。后台单纯缺帧不消耗 waiting 自动重建预算。
