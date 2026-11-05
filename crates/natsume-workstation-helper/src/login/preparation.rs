@@ -59,6 +59,80 @@ impl State {
     }
 }
 
+#[derive(Default)]
+struct RegistrationObservation {
+    stage: Option<&'static str>,
+    kind: Option<&'static str>,
+    entered: Option<Instant>,
+    stage_started: Option<Instant>,
+    finished: Option<Instant>,
+}
+
+impl RegistrationObservation {
+    fn start_stage(&mut self, stage: &'static str, now: Instant) {
+        self.stage = Some(stage);
+        self.stage_started = Some(now);
+    }
+
+    fn enter(&mut self, now: Instant) {
+        self.entered.get_or_insert(now);
+    }
+
+    fn finish(&mut self, now: Instant) {
+        self.finished.get_or_insert(now);
+    }
+
+    fn timings(&self) -> (Option<u64>, Option<u64>) {
+        let Some((entered, finished)) = self.entered.zip(self.finished) else {
+            return (None, None);
+        };
+        (
+            Some(crate::duration_micros(finished.duration_since(entered))),
+            self.stage_started
+                .map(|started| crate::duration_micros(finished.duration_since(started))),
+        )
+    }
+
+    fn trace_incomplete(
+        &self,
+        role: SessionRole,
+        phase: Phase,
+        error: &ResourceControlError,
+        elapsed: Duration,
+    ) {
+        let (registration_elapsed_us, registration_stage_elapsed_us) = self.timings();
+        tracing::error!(%error, role = role_name(role), ?phase,
+            elapsed_ms = elapsed.as_millis(),
+            registration_stage = self.stage,
+            registration_kind = self.kind.unwrap_or("not_sampled"),
+            registration_elapsed_us, registration_stage_elapsed_us,
+            "Graphical preparation incomplete; resample before retry");
+    }
+
+    fn trace_result(
+        &self,
+        role: SessionRole,
+        elapsed: Duration,
+        prepare_us: Option<Duration>,
+        result: &Result<(), ResourceControlError>,
+        timed_out: bool,
+    ) {
+        let (registration_elapsed_us, registration_stage_elapsed_us) = self.timings();
+        tracing::info!(
+            operation = "prepare",
+            foreground_target = role_name(role),
+            elapsed_us = crate::duration_micros(elapsed),
+            prepare_us = prepare_us.map(crate::duration_micros),
+            result = crate::local_result(result, timed_out),
+            registration_stage = self.stage,
+            registration_kind = self.kind.unwrap_or("not_sampled"),
+            registration_elapsed_us,
+            registration_stage_elapsed_us,
+            "session switch completed"
+        );
+    }
+}
+
 pub(super) fn failed_session(
     root: &Path,
     role: SessionRole,
@@ -116,8 +190,11 @@ async fn probe() -> Result<Option<GreeterStatus>, ResourceControlError> {
 async fn registered_greeter(
     connection: &Connection,
     state: &mut State,
+    registration: &mut RegistrationObservation,
 ) -> Result<LoginContext, ResourceControlError> {
+    registration.start_stage("observer", Instant::now());
     gdm_registration::require_observer(Path::new("/"), connection).await?;
+    registration.start_stage("greeter_lookup", Instant::now());
     if session::greeter(connection, Path::new("/"))
         .await?
         .is_none()
@@ -135,6 +212,7 @@ async fn registered_greeter(
         let _display: zbus::OwnedObjectPath = factory.call("CreateTransientDisplay", &()).await?;
     }
     loop {
+        registration.start_stage("greeter_lookup", Instant::now());
         let Some((id, path)) = session::greeter(connection, Path::new("/")).await? else {
             sleep(Duration::from_millis(100)).await;
             continue;
@@ -144,35 +222,68 @@ async fn registered_greeter(
             .as_ref()
             .is_some_and(|g| g.identity.session != id)
         {
+            registration.kind = Some("greeter_replaced");
             return Err(unavailable(
                 "captured greeter was replaced; resample before retry",
             ));
         }
+        registration.start_stage("greeter_activation", Instant::now());
         session::activate_greeter(connection, &id, &path).await?;
+        registration.enter(Instant::now());
         state.record(Phase::Registration)?;
-        if let Some(current) = probe().await? {
-            if current.identity.session != id
-                || state.greeter.as_ref().is_some_and(|old| *old != current)
-            {
-                return Err(unavailable("captured greeter identity changed"));
-            }
+        registration.start_stage("probe", Instant::now());
+        if let Some(current) = probe().await.inspect_err(|_| {
+            registration.kind = Some("probe_error");
+        })? {
+            check_greeter(state.greeter.as_ref(), &id, &current, registration)?;
             if state.greeter.is_none() {
                 state.greeter = Some(current.clone());
                 state.record(Phase::Registration)?;
             }
-            if let Some(proof) = gdm_registration::proof(Path::new("/"), connection, &id).await? {
-                if proof.greeter != current.identity {
-                    return Err(rejected("GDM registration belongs to another greeter"));
-                }
+            registration.start_stage("proof", Instant::now());
+            let lookup = gdm_registration::proof(Path::new("/"), connection, &id).await?;
+            registration.kind = Some(lookup.kind());
+            if let gdm_registration::ProofLookup::Available(proof) = lookup {
+                check_proof(&proof, &current, registration)?;
                 state.record(Phase::Authentication)?;
+                let completed = Instant::now();
+                registration.start_stage("complete", completed);
+                registration.finish(completed);
                 return Ok(LoginContext {
                     proof,
                     greeter: current,
                 });
             }
+        } else {
+            registration.kind = Some("probe_unavailable");
         }
         sleep(Duration::from_millis(100)).await;
     }
+}
+
+fn check_greeter(
+    captured: Option<&GreeterStatus>,
+    session: &str,
+    current: &GreeterStatus,
+    registration: &mut RegistrationObservation,
+) -> Result<(), ResourceControlError> {
+    if current.identity.session != session || captured.is_some_and(|old| *old != *current) {
+        registration.kind = Some("greeter_replaced");
+        return Err(unavailable("captured greeter identity changed"));
+    }
+    Ok(())
+}
+
+fn check_proof(
+    proof: &gdm_registration::Proof,
+    current: &GreeterStatus,
+    registration: &mut RegistrationObservation,
+) -> Result<(), ResourceControlError> {
+    if proof.greeter != current.identity {
+        registration.kind = Some("proof_mismatch");
+        return Err(rejected("GDM registration belongs to another greeter"));
+    }
+    Ok(())
 }
 
 async fn desktop(connection: &Connection, state: &mut State) -> Result<(), ResourceControlError> {
@@ -228,7 +339,11 @@ async fn desktop(connection: &Connection, state: &mut State) -> Result<(), Resou
     }
 }
 
-async fn prepare(connection: &Connection, state: &mut State) -> Result<(), ResourceControlError> {
+async fn prepare(
+    connection: &Connection,
+    state: &mut State,
+    registration: &mut RegistrationObservation,
+) -> Result<(), ResourceControlError> {
     let current = role_observation(
         session::observe(connection, Path::new("/")).await?,
         state.role,
@@ -245,7 +360,7 @@ async fn prepare(connection: &Connection, state: &mut State) -> Result<(), Resou
     if state.role == SessionRole::Contest {
         admission::require_no_workers(Path::new("/"))?;
     }
-    let context = registered_greeter(connection, state).await?;
+    let context = registered_greeter(connection, state, registration).await?;
     let account = session::account(Path::new("/"), "gdm")?;
     let input = serde_json::to_vec(&context)
         .map_err(|_| unavailable("captured GDM context cannot be encoded"))?;
@@ -312,6 +427,7 @@ pub(super) async fn run(role: SessionRole) -> Result<(), ResourceControlError> {
     let started = Instant::now();
     let mut prepare_us = None;
     let mut timed_out = false;
+    let mut registration = RegistrationObservation::default();
     let result = async {
         if !rustix::process::geteuid().is_root() {
             return Err(rejected("session preparation requires root"));
@@ -329,8 +445,8 @@ pub(super) async fn run(role: SessionRole) -> Result<(), ResourceControlError> {
             .await
             .map_err(|_| unavailable("system bus is unavailable"))?;
         let boot = session::read_boot_id(Path::new("/"))?;
-        let pid =
-            i32::try_from(std::process::id()).map_err(|_| unavailable("preparation PID is invalid"))?;
+        let pid = i32::try_from(std::process::id())
+            .map_err(|_| unavailable("preparation PID is invalid"))?;
         let start = processes::start_time(Path::new("/"), pid)?
             .ok_or_else(|| unavailable("preparation process is unavailable"))?;
         let mut state = State {
@@ -349,12 +465,13 @@ pub(super) async fn run(role: SessionRole) -> Result<(), ResourceControlError> {
             .saturating_sub(Duration::from_secs(5))
             .saturating_sub(begun.elapsed());
         let prepare_started = Instant::now();
-        let (result, hit) = prepare_attempt(work, prepare(&connection, &mut state)).await;
+        let (result, hit) =
+            prepare_attempt(work, prepare(&connection, &mut state, &mut registration)).await;
+        registration.finish(Instant::now());
         prepare_us = Some(prepare_started.elapsed());
         timed_out = hit;
         if let Err(error) = &result {
-            tracing::error!(%error, role = role_name(role), phase = ?state.phase,
-                elapsed_ms = begun.elapsed().as_millis(), "Graphical preparation incomplete; resample before retry");
+            registration.trace_incomplete(role, state.phase, error, begun.elapsed());
             state.record(Phase::Failed)?;
             if role == SessionRole::Contest {
                 let cleanup = async {
@@ -363,8 +480,13 @@ pub(super) async fn run(role: SessionRole) -> Result<(), ResourceControlError> {
                         && !observed.waiting.locked_hint
                         && let Some(waiting) = observed.waiting.session
                     {
-                        session::activate(&connection, Path::new("/"), SessionRole::Waiting, &waiting)
-                            .await?;
+                        session::activate(
+                            &connection,
+                            Path::new("/"),
+                            SessionRole::Waiting,
+                            &waiting,
+                        )
+                        .await?;
                     }
                     Ok::<_, ResourceControlError>(())
                 };
@@ -380,22 +502,199 @@ pub(super) async fn run(role: SessionRole) -> Result<(), ResourceControlError> {
             }
         }
         result
-    }.await;
+    }
+    .await;
     let elapsed = started.elapsed();
-    tracing::info!(
-        operation = "prepare",
-        foreground_target = role_name(role),
-        elapsed_us = crate::duration_micros(elapsed),
-        prepare_us = prepare_us.map(crate::duration_micros),
-        result = crate::local_result(&result, timed_out),
-        "session switch completed"
-    );
+    registration.trace_result(role, elapsed, prepare_us, &result, timed_out);
     result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::{Record, Value};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    use tracing::{Event, Subscriber};
+    use tracing_subscriber::{
+        Layer,
+        layer::{Context, SubscriberExt as _},
+    };
+
+    #[derive(Clone, Default)]
+    struct RegistrationEvents(Arc<Mutex<Vec<Record>>>);
+
+    impl<S: Subscriber> Layer<S> for RegistrationEvents {
+        fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+            let mut record = Record {
+                fields: BTreeMap::default(),
+                level: *event.metadata().level(),
+            };
+            event.record(&mut record);
+            self.0
+                .lock()
+                .unwrap_or_else(|_| panic!("registration event capture poisoned"))
+                .push(record);
+        }
+    }
+
+    fn greeter() -> GreeterStatus {
+        GreeterStatus {
+            identity: gdm_registration::Greeter {
+                session: "registration-identity-canary".into(),
+                uid: 107,
+                pid: 4001,
+                start: 12345,
+            },
+        }
+    }
+
+    fn proof(current: &GreeterStatus) -> gdm_registration::Proof {
+        serde_json::from_value(serde_json::json!({
+            "context": {"boot": "boot-canary", "bus": "bus-canary", "owner": "owner-canary"},
+            "greeter": current.identity,
+        }))
+        .unwrap_or_else(|_| panic!("registration proof fixture is invalid"))
+    }
+
+    #[test]
+    fn registration_timings_keep_the_phase_start_and_freeze_before_later_work() {
+        let started = Instant::now();
+        let mut observation = RegistrationObservation::default();
+        observation.start_stage("observer", started);
+        observation.finish(started + Duration::from_secs(1));
+        assert_eq!(observation.timings(), (None, None));
+
+        let mut observation = RegistrationObservation::default();
+        observation.enter(started);
+        observation.start_stage("probe", started);
+        observation.enter(started + Duration::from_secs(4));
+        observation.start_stage("proof", started + Duration::from_secs(10));
+        observation.finish(started + Duration::from_secs(12));
+        assert_eq!(observation.timings(), (Some(12_000_000), Some(2_000_000)));
+        observation.finish(started + Duration::from_secs(20));
+        assert_eq!(observation.timings(), (Some(12_000_000), Some(2_000_000)));
+
+        let mut successful = RegistrationObservation::default();
+        successful.enter(started);
+        successful.start_stage("complete", started + Duration::from_secs(5));
+        successful.finish(started + Duration::from_secs(5));
+        successful.finish(started + Duration::from_secs(20));
+        assert_eq!(successful.timings(), (Some(5_000_000), Some(0)));
+    }
+
+    #[test]
+    fn greeter_and_proof_mismatches_keep_the_original_errors() {
+        let current = greeter();
+        let mut observation = RegistrationObservation::default();
+        assert!(check_greeter(None, &current.identity.session, &current, &mut observation).is_ok());
+        assert!(
+            check_greeter(
+                Some(&current),
+                &current.identity.session,
+                &current,
+                &mut observation
+            )
+            .is_ok()
+        );
+        assert!(
+            matches!(check_greeter(None, "replacement", &current, &mut observation),
+            Err(ResourceControlError::Unavailable(message)) if message == "captured greeter identity changed")
+        );
+        assert_eq!(observation.kind, Some("greeter_replaced"));
+        let mut captured = current.clone();
+        captured.identity.start += 1;
+        assert!(
+            matches!(check_greeter(Some(&captured), &current.identity.session, &current, &mut observation),
+            Err(ResourceControlError::Unavailable(message)) if message == "captured greeter identity changed")
+        );
+        assert_eq!(observation.kind, Some("greeter_replaced"));
+
+        let mut proof = proof(&current);
+        assert!(check_proof(&proof, &current, &mut observation).is_ok());
+        proof.greeter.pid += 1;
+        assert!(matches!(check_proof(&proof, &current, &mut observation),
+            Err(ResourceControlError::Rejected(message)) if message == "GDM registration belongs to another greeter"));
+        assert_eq!(observation.kind, Some("proof_mismatch"));
+    }
+
+    #[test]
+    fn registration_events_share_frozen_fields_without_logging_identities_or_polls() {
+        let _guard = crate::tests::subscriber_guard();
+        let captured = RegistrationEvents::default();
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(captured.clone()),
+            || {
+                let started = Instant::now();
+                let mut observation = RegistrationObservation::default();
+                observation.enter(started);
+                observation.start_stage("proof", started + Duration::from_secs(10));
+                let current = greeter();
+                let mut proof = proof(&current);
+                proof.greeter.pid += 1;
+                let result = check_proof(&proof, &current, &mut observation);
+                observation.finish(started + Duration::from_secs(12));
+                assert!(
+                    captured
+                        .0
+                        .lock()
+                        .unwrap_or_else(|_| panic!("event capture poisoned"))
+                        .is_empty()
+                );
+                let Err(error) = &result else {
+                    panic!("mismatched proof was accepted")
+                };
+                observation.trace_incomplete(
+                    SessionRole::Contest,
+                    Phase::Registration,
+                    error,
+                    Duration::from_secs(12),
+                );
+                observation.finish(started + Duration::from_secs(20));
+                observation.trace_result(
+                    SessionRole::Contest,
+                    Duration::from_secs(20),
+                    Some(Duration::from_secs(12)),
+                    &result,
+                    false,
+                );
+            },
+        );
+        let records = captured
+            .0
+            .lock()
+            .unwrap_or_else(|_| panic!("event capture poisoned"));
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].level, tracing::Level::ERROR);
+        assert_eq!(records[1].level, tracing::Level::INFO);
+        assert_eq!(
+            records[1].fields.get("result"),
+            Some(&Value::Text("error".into()))
+        );
+        for record in records.iter() {
+            for (field, expected) in [
+                ("registration_stage", Value::Text("proof".into())),
+                ("registration_kind", Value::Text("proof_mismatch".into())),
+                ("registration_elapsed_us", Value::Unsigned(12_000_000)),
+                ("registration_stage_elapsed_us", Value::Unsigned(2_000_000)),
+            ] {
+                assert_eq!(record.fields.get(field), Some(&expected), "field {field}");
+            }
+            let fields = format!("{:?}", record.fields);
+            for canary in [
+                "registration-identity-canary",
+                "boot-canary",
+                "bus-canary",
+                "owner-canary",
+                "4001",
+                "12345",
+            ] {
+                assert!(!fields.contains(canary), "identity leaked: {canary}");
+            }
+        }
+    }
 
     #[tokio::test]
     async fn preparation_attempt_keeps_result_and_identifies_only_its_own_timeout() {
@@ -406,8 +705,20 @@ mod tests {
             prepare_attempt(Duration::from_secs(40), async { Err(rejected("fixture")) }).await;
         assert!(matches!(result, Err(ResourceControlError::Rejected(_))));
         assert!(!hit);
-        let (result, hit) = prepare_attempt(Duration::from_millis(1), std::future::pending()).await;
+        let mut observation = RegistrationObservation::default();
+        let (result, hit) = prepare_attempt(Duration::from_millis(1), async {
+            let started = Instant::now();
+            observation.enter(started);
+            observation.start_stage("proof", started);
+            observation.kind = Some("proof_missing");
+            std::future::pending().await
+        })
+        .await;
+        observation.finish(Instant::now());
         assert!(hit);
+        assert_eq!(observation.stage, Some("proof"));
+        assert_eq!(observation.kind, Some("proof_missing"));
+        assert!(observation.timings().0.is_some_and(|elapsed| elapsed > 0));
         assert!(
             matches!(&result, Err(ResourceControlError::Unavailable(message)) if message == "preparation_timeout: registration or desktop initialization did not complete")
         );
@@ -436,6 +747,12 @@ mod tests {
             ));
             assert!(!events[0].fields.contains_key("prepare_us"));
             assert!(!events[0].fields.contains_key("activate_us"));
+            assert!(!events[0].fields.contains_key("registration_elapsed_us"));
+            assert!(
+                !events[0]
+                    .fields
+                    .contains_key("registration_stage_elapsed_us")
+            );
         }
         .with_subscriber(capture.subscriber())
         .await;

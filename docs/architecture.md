@@ -619,6 +619,8 @@ Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm
 
 整个准备由固定 root unit 在既有 40 秒内执行并记录阶段，退出或未知结果后重读真实会话。GDM 继续拥有 worker、display 和桌面；缺失注册回执不授权终止不明 greeter，也不能凭 SessionManager Running 提前开始登录。失败保留明确阶段和错误，有条件时返回 waiting；调用者退出不代表已开始的 GDM 登录被取消。
 
+Registration 的既有失败事件与 prepare 结果事件附带 `registration_stage`、`registration_kind`、`registration_elapsed_us` 和 `registration_stage_elapsed_us`。阶段与分类使用固定值，区分 probe 不可用或错误、proof 缺失、缓存不匹配、GDM owner 缺失、重复 proof、身份不匹配和 greeter 替换。计时从进入 Registration 开始，在成功离开、失败或超时时冻结，两条事件复用冻结值；未进入 Registration 的路径省略计时字段。新增字段只包含固定分类和数值，轮询不增加事件。
+
 系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属见[运行环境要求](client-environment.zh-CN.md#系统与桌面)，具体适配由镜像项目负责。
 
 镜像还应通过 logind 的 `NAutoVTs=0` 禁止在普通空闲 VT 上自动启动 getty，并用 `ReserveVT=6` 保留独立管理员控制台，防止图形会话重建时与 agetty 争用终端。
