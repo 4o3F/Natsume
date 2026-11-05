@@ -553,6 +553,7 @@ impl SessionReconciler {
             return Ok(ReconcileOutcome {
                 actual: self.observe().await?,
                 retry: waiting.retry,
+                progress: false,
             });
         }
         if !self.prepare_boot(Some(cancellation), context).await? {
@@ -632,6 +633,7 @@ impl SessionReconciler {
         let actual = self.observe().await?;
         Ok(ReconcileOutcome {
             retry: !foreground_is_ready(effective, &actual) || !actual.contest_ready,
+            progress: false,
             actual,
         })
     }

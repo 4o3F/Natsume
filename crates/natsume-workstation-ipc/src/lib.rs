@@ -236,6 +236,7 @@ pub enum HomeResetPhase {
     Applied,
     Verified,
     RecoveryRequired,
+    InProgress,
 }
 
 /// Re-sampled helper-side progress for one Home reset epoch.
@@ -403,6 +404,28 @@ pub trait Privileged1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_reset_phase_dbus_values_remain_stable() {
+        use zbus::wire::{LE, serialized::Context, to_bytes};
+
+        for (phase, value) in [
+            (HomeResetPhase::Draining, 0_u32),
+            (HomeResetPhase::Prepared, 1),
+            (HomeResetPhase::Applied, 2),
+            (HomeResetPhase::Verified, 3),
+            (HomeResetPhase::RecoveryRequired, 4),
+            (HomeResetPhase::InProgress, 5),
+        ] {
+            let encoded = to_bytes(Context::new(LE, 0), &phase)
+                .unwrap_or_else(|error| panic!("phase encoding failed: {error}"));
+            assert_eq!(encoded.bytes(), value.to_le_bytes());
+            let (decoded, _) = encoded
+                .deserialize::<HomeResetPhase>()
+                .unwrap_or_else(|error| panic!("phase decoding failed: {error}"));
+            assert_eq!(decoded, phase);
+        }
+    }
 
     #[test]
     fn local_control_types_have_stable_dbus_signatures() {

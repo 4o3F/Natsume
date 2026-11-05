@@ -211,6 +211,7 @@ fn phase_name(phase: HomeResetPhase) -> &'static str {
         HomeResetPhase::Applied => "applied",
         HomeResetPhase::Verified => "verified",
         HomeResetPhase::RecoveryRequired => "recovery_required",
+        HomeResetPhase::InProgress => "in_progress",
     }
 }
 
@@ -221,6 +222,7 @@ fn parse_phase(value: &str) -> Option<HomeResetPhase> {
         "applied" => Some(HomeResetPhase::Applied),
         "verified" => Some(HomeResetPhase::Verified),
         "recovery_required" => Some(HomeResetPhase::RecoveryRequired),
+        "in_progress" => Some(HomeResetPhase::InProgress),
         _ => None,
     }
 }
@@ -333,12 +335,12 @@ pub(super) fn prepare(root: &Path, epoch: u64) -> Result<(), ResourceControlErro
         if progress.reset_epoch == epoch {
             return match progress.phase {
                 HomeResetPhase::Prepared => prepare_generation(root, epoch, &home_metadata),
-                HomeResetPhase::Applied | HomeResetPhase::Verified
+                HomeResetPhase::Applied | HomeResetPhase::InProgress | HomeResetPhase::Verified
                     if generation_is_complete(root, epoch, &home_metadata) =>
                 {
                     Ok(())
                 }
-                HomeResetPhase::Applied | HomeResetPhase::Verified => {
+                HomeResetPhase::Applied | HomeResetPhase::InProgress | HomeResetPhase::Verified => {
                     write_progress(root, epoch, HomeResetPhase::RecoveryRequired)?;
                     Err(unavailable("Home reset recovery is required"))
                 }
@@ -475,7 +477,7 @@ pub(super) fn apply(root: &Path, epoch: u64) -> Result<(), ResourceControlError>
             mount_generation(root, epoch)?;
             write_progress(root, epoch, HomeResetPhase::Applied)
         }
-        HomeResetPhase::Applied | HomeResetPhase::Verified => Ok(()),
+        HomeResetPhase::Applied | HomeResetPhase::InProgress | HomeResetPhase::Verified => Ok(()),
     }
 }
 
@@ -493,7 +495,6 @@ fn record_verification(
         });
     }
     if phase != HomeResetPhase::Verified {
-        remove_other_generations(root, epoch)?;
         write_progress(root, epoch, HomeResetPhase::Verified)?;
     }
     Ok(HomeResetProgress {
@@ -519,7 +520,11 @@ pub(super) fn recover(root: &Path, epoch: u64) -> Result<(), ResourceControlErro
         }
         Some(progress) if progress.reset_epoch == epoch => {
             mount_generation(root, epoch)?;
-            write_progress(root, epoch, HomeResetPhase::Applied)
+            if progress.phase == HomeResetPhase::InProgress {
+                Ok(())
+            } else {
+                write_progress(root, epoch, HomeResetPhase::Applied)
+            }
         }
         Some(_) => Err(rejected("another Home reset epoch is in progress")),
         None if generation_layout_exists(root, epoch) => {
@@ -629,6 +634,42 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn progress_phases_preserve_the_two_line_format() {
+        let root = fixture();
+        for (phase, name) in [
+            (HomeResetPhase::Draining, "draining"),
+            (HomeResetPhase::Prepared, "prepared"),
+            (HomeResetPhase::Applied, "applied"),
+            (HomeResetPhase::Verified, "verified"),
+            (HomeResetPhase::RecoveryRequired, "recovery_required"),
+            (HomeResetPhase::InProgress, "in_progress"),
+        ] {
+            super::write_progress(root.path(), 7, phase)
+                .unwrap_or_else(|error| panic!("progress write failed: {error}"));
+            assert_eq!(
+                fs::read_to_string(super::marker_path(root.path()))
+                    .unwrap_or_else(|error| panic!("progress read failed: {error}")),
+                format!("7\n{name}\n")
+            );
+            assert_eq!(
+                query(root.path())
+                    .unwrap_or_else(|error| panic!("progress query failed: {error}"))
+                    .map(|progress| (progress.reset_epoch, progress.phase)),
+                Some((7, phase))
+            );
+        }
+        for invalid in [
+            "7\nin_progress\nextra\n",
+            "7\nunknown\n",
+            "0\nin_progress\n",
+        ] {
+            fs::write(super::marker_path(root.path()), invalid)
+                .unwrap_or_else(|error| panic!("invalid fixture write failed: {error}"));
+            assert!(query(root.path()).is_err());
+        }
+    }
+
+    #[test]
     fn corrupt_progress_is_rejected_instead_of_retrying() {
         let directory = fixture();
         for content in [b"not a marker".as_slice(), b"\xff".as_slice()] {
@@ -674,6 +715,8 @@ pub(super) mod tests {
 
         prepare(fixture.path(), 8).unwrap_or_else(|error| panic!("prepare failed: {error}"));
         apply(fixture.path(), 8).unwrap_or_else(|error| panic!("apply failed: {error}"));
+        super::remove_other_generations(fixture.path(), 8)
+            .unwrap_or_else(|error| panic!("removal failed: {error}"));
         record_verification(fixture.path(), 8, true)
             .unwrap_or_else(|error| panic!("verification failed: {error}"));
 
@@ -835,6 +878,7 @@ pub(super) mod tests {
 
             fs::write(&mountinfo, format!("{lower}{}", overlay("rw", "rw")))?;
             recover(root.path(), 7)?;
+            super::remove_other_generations(root.path(), 7)?;
             assert_eq!(verify(root.path(), 7)?.phase, HomeResetPhase::Verified);
             assert!(!old.exists());
         }

@@ -47,6 +47,7 @@ use natsume_workstation_ipc::{
 /// Closed root capabilities exposed to the Device Daemon.
 pub struct PrivilegedService {
     filesystem_root: PathBuf,
+    home_reset_task: Option<home::window::ResetTask>,
 }
 
 impl PrivilegedService {
@@ -55,6 +56,7 @@ impl PrivilegedService {
     pub fn production() -> Self {
         Self {
             filesystem_root: PathBuf::from("/"),
+            home_reset_task: None,
         }
     }
 
@@ -153,6 +155,7 @@ impl PrivilegedService {
             &self.filesystem_root,
             connection,
             &mut observation,
+            &mut self.home_reset_task,
         ))
         .await;
         let elapsed = started.elapsed();
@@ -365,7 +368,12 @@ impl PrivilegedService {
 
     #[zbus(name = "QueryHomeReset")]
     fn query_home_reset(&self) -> Result<Option<HomeResetProgress>, ResourceControlError> {
-        home::window::query(&self.filesystem_root)
+        let progress = home::window::query(&self.filesystem_root)?;
+        Ok(self
+            .home_reset_task
+            .as_ref()
+            .and_then(home::window::ResetTask::progress)
+            .or(progress))
     }
 
     #[zbus(name = "VerifyHomeReset")]
@@ -381,6 +389,7 @@ impl PrivilegedService {
             connection,
             reset_epoch,
             &mut worked,
+            &mut self.home_reset_task,
         ))
         .await;
         trace_home_request(
@@ -405,6 +414,7 @@ impl PrivilegedService {
             &self.filesystem_root,
             connection,
             reset_epoch,
+            &mut self.home_reset_task,
         ))
         .await;
         trace_home_request(
@@ -528,6 +538,7 @@ pub(crate) mod tests {
         fn fixture(filesystem_root: &Path) -> Self {
             Self {
                 filesystem_root: filesystem_root.to_owned(),
+                home_reset_task: None,
             }
         }
     }

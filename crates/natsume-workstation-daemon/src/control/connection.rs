@@ -490,12 +490,15 @@ impl RetrySchedule {
         }
     }
 
-    fn completed(&mut self, target: ObservedTarget, retry: bool) {
+    fn completed(&mut self, target: ObservedTarget, retry: bool, progress: bool) {
         self.target = Some(target);
         self.deadline = if retry {
             let jitter = getrandom::u32().unwrap_or(u32::MAX);
-            let millis = self.delay_ms / 2 + jitter % (self.delay_ms / 2 + 1);
-            self.delay_ms = (self.delay_ms * 2).min(30_000);
+            let ceiling = if progress { 1_000 } else { self.delay_ms };
+            let millis = ceiling / 2 + jitter % (ceiling / 2 + 1);
+            if !progress {
+                self.delay_ms = (self.delay_ms * 2).min(30_000);
+            }
             Some(Instant::now() + Duration::from_millis(u64::from(millis)))
         } else {
             self.delay_ms = 1_000;
@@ -622,7 +625,7 @@ async fn run_active(
                         break;
                     }
                 };
-                retry.completed(finished.target, outcome.retry);
+                retry.completed(finished.target, outcome.retry, outcome.progress);
                 if local_change_pending {
                     local_change_pending = false;
                     observation = Some(start_observation(Arc::clone(&snapshots), retry.target.clone()));
@@ -1935,7 +1938,7 @@ mod tests {
             metadata: TargetMetadata::new(wire.target.as_ref().ok_or("target")?),
         };
         let mut retry = RetrySchedule::new();
-        retry.completed(target, true);
+        retry.completed(target, true, false);
         let deadline = retry.deadline;
         let delay = retry.delay_ms;
         let (mut current, mut queued) = (None, None);
@@ -1970,7 +1973,7 @@ mod tests {
         retry.wake(now);
         assert!(retry.deadline.is_none());
         assert_eq!(retry.delay_ms, 1_000);
-        retry.completed(target.clone(), true);
+        retry.completed(target.clone(), true, false);
         let delay = retry.delay_ms;
         retry.wake(now);
         assert_eq!(retry.deadline, Some(now + Duration::from_millis(75)));
@@ -1982,7 +1985,7 @@ mod tests {
         let earlier = retry.deadline;
         retry.wake(Instant::now());
         assert_eq!(retry.deadline, earlier);
-        retry.completed(target, false);
+        retry.completed(target, false, false);
         retry.wake(Instant::now());
         assert!(retry.deadline.is_none());
     }
@@ -2146,12 +2149,50 @@ mod tests {
         let mut retry = RetrySchedule::new();
         for ceiling in [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000] {
             let now = Instant::now();
-            retry.completed(target.clone(), true);
+            retry.completed(target.clone(), true, false);
             let delay = retry.deadline.unwrap_or_else(|| panic!("retry deadline")) - now;
             assert!(delay >= Duration::from_millis(ceiling / 2));
             assert!(delay <= Duration::from_millis(ceiling));
         }
-        retry.completed(target, false);
+        retry.completed(target, false, false);
+        assert!(retry.deadline.is_none());
+        assert_eq!(retry.delay_ms, 1_000);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn home_progress_polling_preserves_error_backoff_and_wake_semantics() {
+        let target = ObservedTarget {
+            state: Arc::new(target(ForegroundTarget::Contest)),
+            metadata: crate::reconcile::observability::tests::context().target,
+        };
+        let mut retry = RetrySchedule::new();
+        for expected_ceiling in [1_000, 2_000, 4_000] {
+            let now = Instant::now();
+            retry.completed(target.clone(), true, false);
+            let delay = retry
+                .deadline
+                .unwrap_or_else(|| panic!("error retry deadline"))
+                - now;
+            assert!(delay >= Duration::from_millis(expected_ceiling / 2));
+            assert!(delay <= Duration::from_millis(expected_ceiling));
+            let retained_delay = retry.delay_ms;
+            for _ in 0..20 {
+                let now = Instant::now();
+                retry.completed(target.clone(), true, true);
+                let deadline = retry
+                    .deadline
+                    .unwrap_or_else(|| panic!("progress retry deadline"));
+                let delay = deadline - now;
+                assert!(delay >= Duration::from_millis(500));
+                assert!(delay <= Duration::from_millis(1_000));
+                assert_eq!(retry.delay_ms, retained_delay);
+                retry.wake(now);
+                assert_eq!(retry.deadline, Some(now + Duration::from_millis(75)));
+                assert_eq!(retry.delay_ms, retained_delay);
+                tokio::time::advance(delay).await;
+            }
+        }
+        retry.completed(target, false, true);
         assert!(retry.deadline.is_none());
         assert_eq!(retry.delay_ms, 1_000);
     }

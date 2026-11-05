@@ -396,6 +396,7 @@ impl GatewayReconciler {
             return Ok(ReconcileOutcome {
                 actual: GatewayMaterialState::RecoveryRequired,
                 retry: installation.retry,
+                progress: false,
             });
         };
         check_cancellation(cancellation)?;

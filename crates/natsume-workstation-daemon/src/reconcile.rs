@@ -67,6 +67,8 @@ pub(crate) enum SnapshotError {
 pub(crate) struct ReconcileOutcome<T> {
     pub(crate) actual: T,
     pub(crate) retry: bool,
+    /// Enables bounded polling only after Helper reports Home reset `InProgress`.
+    pub(crate) progress: bool,
 }
 
 impl<T> ReconcileOutcome<T> {
@@ -74,6 +76,7 @@ impl<T> ReconcileOutcome<T> {
         Self {
             actual,
             retry: false,
+            progress: false,
         }
     }
 
@@ -81,6 +84,14 @@ impl<T> ReconcileOutcome<T> {
         Self {
             actual,
             retry: true,
+            progress: false,
+        }
+    }
+
+    fn home_progress(actual: T) -> Self {
+        Self {
+            progress: true,
+            ..Self::retry(actual)
         }
     }
 
@@ -89,6 +100,7 @@ impl<T> ReconcileOutcome<T> {
         Self {
             actual,
             retry: retryable_control_error(error),
+            progress: false,
         }
     }
 }
@@ -329,8 +341,14 @@ impl SnapshotReconciler {
             || session_actual.retry
             || home_actual.retry
             || power_actual.retry;
+        let progress = gateway_material.progress
+            || runtime_actual.progress
+            || session_actual.progress
+            || home_actual.progress
+            || power_actual.progress;
         ReconcileOutcome {
             retry,
+            progress,
             actual: ClientStateSnapshot {
                 input: Some(input),
                 actual: Some(ActualState {
