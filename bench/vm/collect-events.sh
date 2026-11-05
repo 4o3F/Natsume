@@ -26,8 +26,8 @@ ssh = [
 ]
 filter_code = r"""
 import json,re,sys
-EVENTS={'target dispatched','actual received','target received','reconcile completed','session step completed','actual sent','session switch completed','home reset completed','home recovery','frame presented','startup milestone','home step completed','caddy load completed','binding eligibility changed'}
-FIELD=re.compile(r'\b([a-z][a-z0-9_]*)(?:=)("[^"\n]*"|[^\s,}]+)')
+EVENTS={'target dispatched','actual received','target received','reconcile completed','session step completed','actual sent','session switch completed','home reset completed','home reset background completed','database transaction wait exceeded threshold','home recovery','frame presented','startup milestone','home step completed','caddy load completed','binding eligibility changed'}
+FIELD=re.compile(r'\b(db\.(?:operation|result|permit_wait_us|pool_wait_us|write_lock_wait_us|total_wait_us)|[a-z][a-z0-9_]*)(?:=)("[^"\n]*"|[^\s,}]+)')
 for line in sys.stdin:
  try: row=json.loads(line)
  except ValueError: continue
@@ -52,6 +52,13 @@ for line in sys.stdin:
   elif key=='reset_epoch' and value.isdigit():out[key]=int(value)
   elif key=='home_state' and value in {'steady','resetting','recovery_required'}:out[key]=value
   elif key=='session_state' and value in {'running','none','starting','terminating','ambiguous','error'}:out[key]=value
+  elif key=='phase' and value in {'remove_generations','verify','publish_permit'}:out[key]=value
+  elif key=='error_category' and value in {'rejected','unavailable','task_stopped','incomplete'}:out[key]=value
+  elif key=='registration_stage' and value in {'observer','greeter_lookup','greeter_activation','probe','proof','complete'}:out[key]=value
+  elif key=='registration_kind' and value in {'not_sampled','greeter_replaced','probe_error','probe_unavailable','proof_missing','proof_mismatch','proof_cache_mismatch','gdm_unavailable','proof_ambiguous','registered'}:out[key]=value
+  elif key=='code' and value=='db_transaction_wait':out[key]=value
+  elif key=='db.operation' and value in {'read','write'}:out[key]=value
+  elif key=='db.result' and value in {'ok','error'}:out[key]=value
  print(json.dumps(out,separators=(',',':')))
 """
 if source == "server" and len(sys.argv) in [4, 5]:

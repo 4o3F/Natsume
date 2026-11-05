@@ -11,6 +11,7 @@ from bench_env import configured
 
 CFG = configured()
 import datetime
+import os
 import json
 import pathlib
 import re
@@ -20,14 +21,17 @@ import sys
 import time
 
 script_dir = pathlib.Path(sys.argv.pop(1))
-if len(sys.argv) not in [4, 5]:
-    raise SystemExit("Usage: c1-run.sh 1|2 COUNT OUTPUT [COOLDOWN_SECONDS]")
+if len(sys.argv) not in [4, 5, 6]:
+    raise SystemExit("Usage: c1-run.sh 1|2 COUNT OUTPUT [COOLDOWN_SECONDS [KINDS]]")
 slot, count, output = sys.argv[1:4]
 if slot not in ["1", "2"]:
     raise SystemExit("VM slot must be 1 or 2")
 server, host, work = (CFG["A"], CFG["B"], CFG["VM_ROOT"])
 vm, device, seat = (CFG["VM" + slot], CFG["DEVICE" + slot], CFG["SEAT" + slot])
-cooldown = float(sys.argv[4]) if len(sys.argv) == 5 else 3.0
+cooldown = float(sys.argv[4]) if len(sys.argv) >= 5 else 3.0
+kinds = sys.argv[5] if len(sys.argv) == 6 else "contest,waiting,terminate,home_reset,binding"
+if not kinds or any(k not in {"contest", "waiting", "terminate", "home_reset", "binding"} for k in kinds.split(",")):
+    raise SystemExit("invalid operation kinds")
 if not all(
     (
         re.fullmatch("[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9.-]*", h)
@@ -60,7 +64,8 @@ ssh = [
 collector = script_dir / "collect-events.sh"
 remote = r"""
 import datetime,http.cookiejar,json,pathlib,socket,ssl,sys,time,urllib.error,urllib.request,uuid
-work,vm,device,seat,iteration,cooldown,origin=sys.argv[1:]
+work,vm,device,seat,iteration,cooldown,origin,kinds=sys.argv[1:]
+kinds=set(kinds.split(","))
 iteration=int(iteration);cooldown=float(cooldown)
 base=pathlib.Path('@BENCH_AUTH_DIR@')
 opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(base/'control-ca.crt'))))
@@ -94,10 +99,12 @@ def enter_seat():
  s.close()
 wait()
 for kind,action,mode in [('contest',{'kind':'set_foreground','foreground_target':'contest'},'contest'),('waiting',{'kind':'set_foreground','foreground_target':'waiting'},'waiting'),('terminate',{'kind':'terminate_session'},'waiting'),('home_reset',{'kind':'reset_home'},'waiting')]:
+ if kind not in kinds:continue
  operation=str(uuid.uuid4());before=time.time_ns()//1000
  api('POST','/target-submissions',{'operation_id':operation,'scope':{'kind':'devices','device_ids':[device]},'action':action})
  submitted=time.time_ns()//1000;final=wait(mode=mode,after_ms=before//1000-50)
  emit(kind,operation,before,submitted,final);time.sleep(cooldown)
+if 'binding' not in kinds:raise SystemExit(0)
 operation=str(uuid.uuid4());before=time.time_ns()//1000
 api('DELETE','/devices/'+device+'/binding');submitted=time.time_ns()//1000
 final=wait(False,after_ms=before//1000-50)
@@ -108,6 +115,8 @@ emit('binding',operation,rebind,submitted,final,'rebind',before)
 time.sleep(cooldown)
 """
 for sample in range(1, count + 1):
+    if time.time() > float(os.environ.get("NATSUME_C1_DEADLINE", "inf")):
+        raise SystemExit("sampling deadline reached between complete cycles")
     since = datetime.datetime.fromtimestamp(
         time.time() - 2, datetime.timezone.utc
     ).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -124,6 +133,7 @@ for sample in range(1, count + 1):
             str(sample),
             str(cooldown),
             CFG["SERVER_URL"] + "/api/v2",
+            kinds,
         ]
     )
     result = subprocess.run(
@@ -133,16 +143,40 @@ for sample in range(1, count + 1):
     operations.write_text(result.stdout)
     if result.returncode:
         raise SystemExit(f"{vm} cycle {sample} failed; remote stderr withheld")
-    for source, args in [
-        ("server", ["server", server, since, device]),
-        ("guest", ["guest", host, work, vm, since]),
-    ]:
-        with (destination / f"{sample:03d}-{source}.jsonl").open("w") as stream:
-            status = subprocess.run(
-                ["sh", str(collector), *args], stdout=stream, stderr=subprocess.PIPE
+    with (destination / f"{sample:03d}-server.jsonl").open("w") as stream:
+        status = subprocess.run(
+            ["sh", str(collector), "server", server, since, device],
+            stdout=stream, stderr=subprocess.PIPE,
+        )
+    if status.returncode:
+        raise SystemExit("server collection failed; stderr withheld")
+    bundle = subprocess.run(
+        ["sh", str(script_dir / "collect-cycle.sh"), host, work, vm, since],
+        capture_output=True, text=True,
+    )
+    if bundle.returncode == 0:
+        grouped = {label: [] for label in ["guest", "retry", "wake"]}
+        for line in bundle.stdout.splitlines():
+            item = json.loads(line)
+            grouped[item["source"]].append(item["row"])
+        for label, records in grouped.items():
+            (destination / f"{sample:03d}-{label}.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in records)
             )
-        if status.returncode:
-            raise SystemExit(f"{source} collection failed; stderr withheld")
+    else:
+        # The individual collectors remain a fallback for QGA transport failures.
+        for label, script, args in [
+            ("guest", "collect-events.sh", ["guest", host, work, vm, since]),
+            ("retry", "collect-retry.sh", [host, work, vm, since]),
+            ("wake", "collect-wake.sh", [host, work, vm, since]),
+        ]:
+            with (destination / f"{sample:03d}-{label}.jsonl").open("w") as stream:
+                status = subprocess.run(
+                    ["sh", str(script_dir / script), *args],
+                    stdout=stream, stderr=subprocess.PIPE,
+                )
+            if status.returncode:
+                raise SystemExit(f"{label} collection failed; stderr withheld")
     rows = [
         json.loads(line)
         for line in (destination / f"{sample:03d}-server.jsonl")

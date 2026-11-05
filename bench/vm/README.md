@@ -141,7 +141,7 @@ Home 为 recovery_required 时先按 [运行环境契约](../../docs/client-envi
 
 | 实验 | 入口与参数 | 前提与行为 |
 | --- | --- | --- |
-| C1 收敛时延 | `c1-run.sh 1\|2 COUNT OUTPUT [COOLDOWN_SECONDS]` | 选择统一配置的 VM 槽位；两机顺序执行；每轮 Contest、Waiting、terminate、Home reset、解绑后经 Agent 回绑；默认冷却 3s |
+| C1 收敛时延 | `c1-run.sh 1\|2 COUNT OUTPUT [COOLDOWN_SECONDS [KINDS]]` | 选择统一配置的 VM 槽位；两机顺序执行；每轮 Contest、Waiting、terminate、Home reset、解绑后经 Agent 回绑；`KINDS` 为逗号分隔的 `contest,waiting,terminate,home_reset,binding` 子集；默认冷却 3s |
 | C3 Home 写入量 | `c3-run.sh OUTPUT [--combined\|--large-small]` | VM1 运行且已绑定；empty/100MB/1GB/100k 小文件；可加组合或 500k/1M 条件，保持已有次数与种子 |
 | C5 资源占用 | `c5-run.sh OUTPUT` | VM2 已绑定；Waiting/Contest/编译各 300s，logo 600s；替换公开合成校徽后恢复原内容 |
 | C6 开机 / C2 冷热切换 | `c6-run.sh C6_OUTPUT C2_OUTPUT` | VM2 关机、A bench 运行；10 次冷启动，各首次往返再加 4 次热往返；临时 host unit 结束后移除 |
@@ -153,7 +153,7 @@ Home 为 recovery_required 时先按 [运行环境契约](../../docs/client-envi
 | CR6 GDM 准备超时 | `gdm-run.sh OUTPUT` | VM2 关机；开机与 terminate 后各暂停一次 gdm greeter compositor，35s 超时后按 PID/start 恢复 |
 | CR7 Home 准入 | `admission-run.sh OUTPUT` | VM1 运行；500k 文件，基线/Applied/Verified 的只读锁、permit/window 检查及前后 IsHomeReady |
 
-C1 已统一到配置，不再接收独立 A/B/路径/设备/座位位置参数。例如 `sh bench/vm/c1-run.sh 1 20 OUTPUT 3` 和 `sh bench/vm/c1-run.sh 2 5 OTHER_OUTPUT 3` 分别选择 DEVICE1/SEAT1 和 DEVICE2/SEAT2。原采样次数、收敛判断、冷却和输出字段保留。
+C1 已统一到配置，不再接收独立 A/B/路径/设备/座位位置参数。例如 `sh bench/vm/c1-run.sh 1 20 OUTPUT 3` 和 `sh bench/vm/c1-run.sh 2 5 OTHER_OUTPUT 3` 分别选择 DEVICE1/SEAT1 和 DEVICE2/SEAT2。原采样次数、收敛判断、冷却和输出字段保留。设置 `NATSUME_C1_DEADLINE`（Unix 秒）后，运行器只在完整轮次之间检查截止时间并停止。每轮除 `NNN-server.jsonl` 外写出 `NNN-guest.jsonl`、`NNN-retry.jsonl` 和 `NNN-wake.jsonl`。
 
 CR6 的 60s 连续故障冷却与每 boot 一次预算属于 Waiting 自动重建；Contest 准备失败仍按原 plan retry 重试。CR7 的 GATE_ALLOWED/BLOCKED 是只读守卫结果，真实 PAM worker 身份和窗口内完整认证未由该探针覆盖。按每次实验实际观测给出判定。
 
@@ -161,7 +161,7 @@ CR6 的 60s 连续故障冷却与每 boot 一次预算属于 Waiting 自动重�
 
 `install-template.sh`、`clone-vm.sh`、`install-client.sh`、`qga.sh`、`apply-image-policy.sh` 保留各自明确的位置参数，路径与名称由调用方提供。它们拒绝不可信目录和不合法名字；安装操作只能对关机或明确处于维护状态的实验工位执行。来宾内固定账号 teams/waiting、产品路径 `/etc/natsume`、systemd 单元和 D-Bus 名称来自镜像/Client 契约，未改成任意参数。
 
-`collect-events.sh server A SINCE [DEVICE_ID]` 与 `collect-events.sh guest B VM_ROOT VM SINCE` 在源端筛选事件。`collect-home.sh B VM_ROOT VM SINCE [UNTIL]` 导出 Home 的固定分项，`collect-retry.sh` 具有相同的 guest 参数，保留固定错误分类。`network-operations.sh DEVICE FROM_MS [TO_MS]` 只导出选定的运营事件、时间和固定 reason；`target.sh DEVICE ACTION [waiting|contest]` 在 B 提交并等待原有收敛条件。
+`collect-events.sh server A SINCE [DEVICE_ID]` 与 `collect-events.sh guest B VM_ROOT VM SINCE` 在源端筛选事件。`collect-home.sh B VM_ROOT VM SINCE [UNTIL]` 导出 Home 的固定分项，`collect-retry.sh` 具有相同的 guest 参数，保留固定错误分类和 Registration 的 stage/kind。`collect-wake.sh` 参数相同，只导出 logind `Removed session` 编号和准备单元 Finished/Deactivated 的时间。`collect-cycle.sh B VM_ROOT VM SINCE [UNTIL]` 在 guest 内只读一次 journal，复用上述三个过滤器，压缩后经 QGA 返回；失败时 C1 退回逐个采集。`network-operations.sh DEVICE FROM_MS [TO_MS]` 只导出选定的运营事件、时间和固定 reason；`target.sh DEVICE ACTION [waiting|contest]` 在 B 提交并等待原有收敛条件。
 
 `helper-cpu.sh`、`c5-sample.sh`、`c6-probe.sh`、`network-probe.sh`、`observe-home.sh` 和故障探针由 QGA 在 guest 执行。`network-clock.sh` 在 B 通过 guest-get-time 输出数值校准；`network-link.sh VM off|on` 控制 net0。独立运行时先根据脚本 Usage 提供参数，勿将任意命令或未过滤日志作为 QGA 返回内容。
 

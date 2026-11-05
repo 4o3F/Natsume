@@ -39,6 +39,8 @@ for line in sys.stdin:
   elif k=='code' and v=='waiting_restore_unconfirmed':o['kind']='waiting_restore_unconfirmed'
   elif k=='code' and v=='LOCAL_DEACTIVATION_FAILED':o['kind']='local_deactivation_failed'
   elif k=='phase' and v in ['Greeter','Registration','Authentication','Desktop','Ready','Failed']:o[k]=v
+  elif k=='registration_stage' and v in ['observer','greeter_lookup','greeter_activation','probe','proof','complete']:o[k]=v
+  elif k=='registration_kind' and v in ['not_sampled','greeter_replaced','probe_error','probe_unavailable','proof_missing','proof_mismatch','proof_cache_mismatch','gdm_unavailable','proof_ambiguous','registered']:o[k]=v
   elif k.endswith('_retry') and k in ['gateway_retry','runtime_retry','session_retry','home_retry','power_retry','caddy_retry'] and v in ['true','false']:o[k]=v=='true'
  if event in PREFIXES and 'error=' in m:
   tail=m.split('error=',1)[1].lstrip('"')
