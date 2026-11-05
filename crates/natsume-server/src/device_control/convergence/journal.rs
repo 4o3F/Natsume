@@ -103,6 +103,7 @@ impl ObservedActualState {
         device_id: DeviceId,
         changed: bool,
         reconcile: Duration,
+        target_digest: Option<&str>,
     ) {
         let session_foreground = match self.session_control.foreground {
             SessionForeground::Unknown => "unknown",
@@ -127,6 +128,7 @@ impl ObservedActualState {
         };
         tracing::info!(
             device_id = %device_id.as_text(),
+            target_digest,
             session_foreground,
             session_state,
             waiting_ready = self.session_control.waiting_ready,

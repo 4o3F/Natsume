@@ -45,6 +45,7 @@ pub(crate) struct HelperState {
     pub(crate) termination_calls: Vec<GraphicalSession>,
     pub(crate) home_calls: Vec<u64>,
     pub(crate) terminate_failures: usize,
+    pub(crate) termination_barrier: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     pub(crate) home_failures: usize,
     pub(crate) rejected: bool,
     pub(crate) progress: Option<HomeResetProgress>,
@@ -53,6 +54,7 @@ pub(crate) struct HelperState {
     pub(crate) waiting_resume_calls: usize,
     pub(crate) waiting_resume_result: Option<Result<bool, ResourceControlError>>,
     pub(crate) home_verify_failure: bool,
+    pub(crate) home_in_progress: Option<u64>,
     pub(crate) waiting_recovery_calls: Vec<Option<GraphicalSession>>,
 }
 
@@ -168,27 +170,35 @@ impl FaultyHelper {
     }
 
     #[zbus(name = "TerminateContestSession")]
-    fn terminate_contest_session(
+    async fn terminate_contest_session(
         &mut self,
         session: GraphicalSession,
     ) -> Result<(), ResourceControlError> {
-        let mut state = self
-            .0
-            .lock()
-            .unwrap_or_else(|e| panic!("fixture lock: {e}"));
-        state.assert_blocked();
-        state.termination_calls.push(session);
-        if state.rejected {
-            Err(ResourceControlError::Rejected(
-                "invalid session target".to_owned(),
-            ))
-        } else if state.termination_calls.len() <= state.terminate_failures {
-            Err(ResourceControlError::Unavailable(
-                "temporary logind failure".to_owned(),
-            ))
-        } else {
-            Ok(())
+        let (result, barrier) = {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            state.assert_blocked();
+            state.termination_calls.push(session);
+            let result = if state.rejected {
+                Err(ResourceControlError::Rejected(
+                    "invalid session target".to_owned(),
+                ))
+            } else if state.termination_calls.len() <= state.terminate_failures {
+                Err(ResourceControlError::Unavailable(
+                    "temporary logind failure".to_owned(),
+                ))
+            } else {
+                Ok(())
+            };
+            (result, state.termination_barrier.take())
+        };
+        if let Some((entered, release)) = barrier {
+            entered.notify_one();
+            release.notified().await;
         }
+        result
     }
 
     #[zbus(name = "IsHomeReady")]
@@ -260,7 +270,9 @@ impl FaultyHelper {
                 "verify-failure-canary".to_owned(),
             ));
         }
-        let phase = if state.home_calls.len() > state.home_failures && !state.rejected {
+        let phase = if state.home_in_progress == Some(epoch) {
+            HomeResetPhase::InProgress
+        } else if state.home_calls.len() > state.home_failures && !state.rejected {
             HomeResetPhase::Verified
         } else {
             HomeResetPhase::RecoveryRequired
@@ -636,7 +648,7 @@ async fn helper_owner_replacement_preserves_pending_session_and_home_work()
     Ok(())
 }
 
-async fn private_bus(
+pub(super) async fn private_bus(
     directory: &tempfile::TempDir,
 ) -> Result<(tokio::process::Child, String), Box<dyn std::error::Error>> {
     use std::process::Stdio;
@@ -698,6 +710,10 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
+    pub(crate) fn wake_retry(&self) {
+        self.snapshots.retry_wake.notify();
+    }
+
     pub(crate) async fn pause_agent_frames(&self) {
         self.agent_task.abort();
         while !self.agent_task.is_finished() {
@@ -759,6 +775,7 @@ pub(crate) async fn fixture(state: HelperState) -> Result<Fixture, Box<dyn std::
     ));
     presentation.configure("fixture-scope".to_owned())?;
     let snapshots = Arc::new(SnapshotReconciler {
+        retry_wake: RetryWake::new(connection.clone()),
         presentation,
         gateway: gateway::tests::reconciler(&directory),
         binding_input: Arc::clone(&binding_input),
@@ -1575,6 +1592,217 @@ async fn pending_epochs_block_ready_before_helper_effects_and_wait_for_completio
         );
     }
     Ok(())
+}
+
+async fn home_progress_plan(
+    fixture: &Fixture,
+    target: &ValidatedSnapshot,
+) -> ReconcileOutcome<ClientStateSnapshot> {
+    let fence = CancellationToken::new();
+    fixture
+        .snapshots
+        .begin_plan(&fence)
+        .unwrap_or_else(|error| panic!("begin Home progress plan: {error}"));
+    fixture
+        .snapshots
+        .reconcile(target, fence, &plan_context())
+        .await
+        .unwrap_or_else(|error| panic!("reconcile Home progress plan: {error}"))
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep progress, failure, observation and durable completion assertions in one fixture"
+)]
+async fn home_progress_retains_completion_and_access_barriers_until_verified() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let (fixture, mut target) = ready_fixture()
+        .await
+        .unwrap_or_else(|error| panic!("Home progress fixture: {error}"));
+    target.home_epoch = Some(6);
+    let initial = home_progress_plan(&fixture, &target).await;
+    assert_eq!(
+        initial
+            .actual
+            .actual
+            .and_then(|actual| actual.home)
+            .and_then(|home| home.completed_reset_epoch),
+        Some(6)
+    );
+    let completion = fixture.directory.path().join("home-completion.json");
+    let previous = std::fs::read(&completion)
+        .unwrap_or_else(|error| panic!("read previous completion: {error}"));
+    {
+        let mut state = fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|error| panic!("fixture lock: {error}"));
+        state.home_in_progress = Some(7);
+        state.session_after_home = Some(GraphicalSessionState::None);
+        state.preparation_calls.clear();
+    }
+    target.home_epoch = Some(7);
+    for failed in [false, false, true, false] {
+        fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|error| panic!("fixture lock: {error}"))
+            .home_verify_failure = failed;
+        let outcome = home_progress_plan(&fixture, &target).await;
+        assert!(outcome.retry);
+        assert_eq!(outcome.progress, !failed);
+        let actual = outcome
+            .actual
+            .actual
+            .unwrap_or_else(|| panic!("missing actual"));
+        let home = actual.home.unwrap_or_else(|| panic!("missing Home"));
+        assert_eq!(
+            home.state,
+            i32::from(if failed {
+                HomeState::RecoveryRequired
+            } else {
+                HomeState::Resetting
+            })
+        );
+        assert_eq!(home.completed_reset_epoch, Some(6));
+        assert!(
+            !actual
+                .session_control
+                .unwrap_or_else(|| panic!("missing Session"))
+                .contest_ready
+        );
+        let observed = fixture
+            .snapshots
+            .home
+            .observe(None)
+            .await
+            .unwrap_or_else(|error| panic!("observe Home progress: {error}"));
+        assert_eq!(observed, home);
+        assert_eq!(
+            std::fs::read(&completion)
+                .unwrap_or_else(|error| panic!("read pending completion: {error}")),
+            previous
+        );
+        assert!(matches!(
+            fixture.snapshots.caddy.observe().await.mode,
+            Some(caddy::CaddyModeArtifact::Blocked { .. })
+        ));
+        let state = fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|error| panic!("fixture lock: {error}"));
+        assert_eq!(state.home_calls, [6, 7]);
+        assert_eq!(state.preparation_calls, []);
+    }
+    {
+        let mut state = fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|error| panic!("fixture lock: {error}"));
+        state.home_in_progress = None;
+        state.session_state = Some(GraphicalSessionState::Running);
+    }
+    let observed = fixture
+        .snapshots
+        .home
+        .observe(None)
+        .await
+        .unwrap_or_else(|error| panic!("observe completed Helper work: {error}"));
+    assert_eq!(observed.state, i32::from(HomeState::RecoveryRequired));
+    assert_eq!(observed.completed_reset_epoch, Some(6));
+    assert_eq!(
+        std::fs::read(&completion)
+            .unwrap_or_else(|error| panic!("read unadvanced completion: {error}")),
+        previous
+    );
+    let outcome = home_progress_plan(&fixture, &target).await;
+    assert!(!outcome.progress);
+    let home = outcome
+        .actual
+        .actual
+        .and_then(|actual| actual.home)
+        .unwrap_or_else(|| panic!("missing completed Home"));
+    assert_eq!(home.state, i32::from(HomeState::Steady));
+    assert_eq!(home.completed_reset_epoch, Some(7));
+    assert!(matches!(
+        fixture.snapshots.caddy.observe().await.mode,
+        Some(caddy::CaddyModeArtifact::Ready { .. })
+    ));
+    let inode = std::fs::metadata(&completion)
+        .unwrap_or_else(|error| panic!("completion metadata: {error}"))
+        .ino();
+    let replay = home_progress_plan(&fixture, &target).await;
+    assert_eq!(
+        replay.actual.actual.and_then(|actual| actual.home),
+        Some(home)
+    );
+    assert_eq!(
+        std::fs::metadata(&completion)
+            .unwrap_or_else(|error| panic!("replayed completion metadata: {error}"))
+            .ino(),
+        inode
+    );
+    assert_eq!(
+        fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|error| panic!("fixture lock: {error}"))
+            .home_calls,
+        [6, 7]
+    );
+}
+
+#[tokio::test]
+async fn unavailable_home_phases_do_not_request_background_progress_polling() {
+    for phase in [
+        HomeResetPhase::Draining,
+        HomeResetPhase::Prepared,
+        HomeResetPhase::Applied,
+    ] {
+        let fixture = fixture(HelperState {
+            progress: Some(HomeResetProgress {
+                reset_epoch: 7,
+                phase,
+            }),
+            home_failures: usize::MAX,
+            home_verify_failure: true,
+            ..HelperState::default()
+        })
+        .await
+        .unwrap_or_else(|error| panic!("Home failure fixture: {error}"));
+        let mut target = validate_server_snapshot(snapshot())
+            .unwrap_or_else(|error| panic!("Home failure target: {error}"));
+        target.home_epoch = Some(7);
+        for _ in 0..3 {
+            let outcome = home_progress_plan(&fixture, &target).await;
+            assert!(outcome.retry, "phase {phase:?} must retry Unavailable");
+            assert!(
+                !outcome.progress,
+                "phase {phase:?} must retain error backoff"
+            );
+            let home = outcome
+                .actual
+                .actual
+                .and_then(|actual| actual.home)
+                .unwrap_or_else(|| panic!("missing Home"));
+            assert_eq!(home.state, i32::from(HomeState::RecoveryRequired));
+            assert_eq!(home.completed_reset_epoch, None);
+        }
+        let state = fixture
+            .helper
+            .lock()
+            .unwrap_or_else(|error| panic!("fixture lock: {error}"));
+        assert_eq!(
+            state.home_calls.len(),
+            if phase == HomeResetPhase::Applied {
+                0
+            } else {
+                3
+            }
+        );
+    }
 }
 
 #[tokio::test]

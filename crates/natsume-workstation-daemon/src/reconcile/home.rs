@@ -73,10 +73,15 @@ impl HomeReconciler {
             // A durable Helper window owns its captured epoch independently of
             // the current transport/Target. Finish it before considering new work.
             let finished = finish_progress(&proxy, &progress, context).await?;
-            if !finished.actual {
+            if finished.actual != HomeResetPhase::Verified {
                 return Ok(ReconcileOutcome {
-                    actual: recovery_required(completed),
+                    actual: if finished.actual == HomeResetPhase::InProgress {
+                        resetting(completed)
+                    } else {
+                        recovery_required(completed)
+                    },
                     retry: finished.retry,
+                    progress: finished.progress,
                 });
             }
             verified_epoch = Some(progress.reset_epoch);
@@ -137,10 +142,15 @@ impl HomeReconciler {
             phase: HomeResetPhase::Prepared,
         };
         let finished = finish_progress(&proxy, &prepared, context).await?;
-        if !finished.actual {
+        if finished.actual != HomeResetPhase::Verified {
             return Ok(ReconcileOutcome {
-                actual: recovery_required(completed),
+                actual: if finished.actual == HomeResetPhase::InProgress {
+                    resetting(completed)
+                } else {
+                    recovery_required(completed)
+                },
                 retry: finished.retry,
+                progress: finished.progress,
             });
         }
         let completed = advance_completion(&self.artifact_path, completed, epoch)?;
@@ -195,11 +205,9 @@ impl HomeReconciler {
             HomeResetPhase::RecoveryRequired | HomeResetPhase::Verified => {
                 recovery_required(completed)
             }
+            HomeResetPhase::InProgress => resetting(completed),
             HomeResetPhase::Draining | HomeResetPhase::Prepared | HomeResetPhase::Applied => {
-                HomeActualState {
-                    state: HomeState::Resetting.into(),
-                    completed_reset_epoch: completed,
-                }
+                resetting(completed)
             }
         })
     }
@@ -209,15 +217,15 @@ async fn finish_progress(
     proxy: &Privileged1Proxy<'_>,
     progress: &HomeResetProgress,
     context: Option<&PlanContext>,
-) -> Result<ReconcileOutcome<bool>, SnapshotError> {
+) -> Result<ReconcileOutcome<HomeResetPhase>, SnapshotError> {
     if invalid_epoch(progress.reset_epoch) {
-        return Ok(ReconcileOutcome::idle(false));
+        return Ok(ReconcileOutcome::idle(HomeResetPhase::RecoveryRequired));
     }
     // This epoch is already owned by Helper. A rejected mount/template can be
     // repaired without changing Target or the observed RecoveryRequired state.
     // Keep the existing bounded backoff alive; Helper still checks every retry.
     let pending_error = |error: &ResourceControlError| {
-        let mut outcome = ReconcileOutcome::control_error(false, error);
+        let mut outcome = ReconcileOutcome::control_error(HomeResetPhase::RecoveryRequired, error);
         outcome.retry |= matches!(error, ResourceControlError::Rejected(_));
         outcome
     };
@@ -240,7 +248,7 @@ async fn finish_progress(
             )
             .await
         }
-        HomeResetPhase::Applied | HomeResetPhase::Verified => Ok(()),
+        HomeResetPhase::Applied | HomeResetPhase::Verified | HomeResetPhase::InProgress => Ok(()),
     };
     if let Err(error) = applied {
         return Ok(pending_error(&error));
@@ -257,12 +265,12 @@ async fn finish_progress(
         Err(error) => return Ok(pending_error(&error)),
     };
     if verified.reset_epoch != progress.reset_epoch {
-        return Ok(ReconcileOutcome::idle(false));
+        return Ok(ReconcileOutcome::idle(HomeResetPhase::RecoveryRequired));
     }
-    Ok(if verified.phase == HomeResetPhase::Verified {
-        ReconcileOutcome::idle(true)
-    } else {
-        ReconcileOutcome::retry(false)
+    Ok(match verified.phase {
+        HomeResetPhase::Verified => ReconcileOutcome::idle(HomeResetPhase::Verified),
+        HomeResetPhase::InProgress => ReconcileOutcome::home_progress(HomeResetPhase::InProgress),
+        phase => ReconcileOutcome::retry(phase),
     })
 }
 
@@ -318,6 +326,13 @@ fn advance_completion(
 fn steady(completed_reset_epoch: Option<u64>) -> HomeActualState {
     HomeActualState {
         state: HomeState::Steady.into(),
+        completed_reset_epoch,
+    }
+}
+
+fn resetting(completed_reset_epoch: Option<u64>) -> HomeActualState {
+    HomeActualState {
+        state: HomeState::Resetting.into(),
         completed_reset_epoch,
     }
 }

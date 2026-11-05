@@ -1334,6 +1334,23 @@ pub(super) mod tests {
             &session,
             9
         ));
+        for stale in [
+            GraphicalSession {
+                logind_session_id: "replacement".to_owned(),
+                ..session.clone()
+            },
+            GraphicalSession {
+                boot_id: "550e8400-e29b-41d4-a716-446655440001".to_owned(),
+                ..session.clone()
+            },
+        ] {
+            assert!(!registration_matches(
+                Some(&registered),
+                "current",
+                &stale,
+                9
+            ));
+        }
     }
 
     #[test]

@@ -53,6 +53,26 @@ pub(crate) struct Proof {
     pub(crate) greeter: Greeter,
 }
 
+pub(crate) enum ProofLookup {
+    Available(Proof),
+    Missing,
+    CacheMismatch,
+    GdmUnavailable,
+    Ambiguous,
+}
+
+impl ProofLookup {
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Self::Available(_) => "registered",
+            Self::Missing => "proof_missing",
+            Self::CacheMismatch => "proof_cache_mismatch",
+            Self::GdmUnavailable => "gdm_unavailable",
+            Self::Ambiguous => "proof_ambiguous",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cache {
@@ -136,13 +156,25 @@ pub(crate) async fn proof(
     root: &Path,
     connection: &Connection,
     session: &str,
-) -> Result<Option<Proof>, ResourceControlError> {
+) -> Result<ProofLookup, ResourceControlError> {
     let now = current_context(root, connection).await?;
-    let Some(cache) = runtime::read::<Cache>(root, RECORD)? else {
-        return Ok(None);
+    lookup_proof(root, now, runtime::read::<Cache>(root, RECORD)?, session)
+}
+
+fn lookup_proof(
+    root: &Path,
+    now: Context,
+    cache: Option<Cache>,
+    session: &str,
+) -> Result<ProofLookup, ResourceControlError> {
+    let Some(cache) = cache else {
+        return Ok(ProofLookup::Missing);
     };
-    if !cache.matches(&now) || now.owner.is_none() {
-        return Ok(None);
+    if !cache.matches(&now) {
+        return Ok(ProofLookup::CacheMismatch);
+    }
+    if now.owner.is_none() {
+        return Ok(ProofLookup::GdmUnavailable);
     }
     let uid = session::account(root, "gdm")?.uid;
     let matches: Vec<_> = cache
@@ -157,11 +189,12 @@ pub(crate) async fn proof(
         })
         .collect();
     match matches.as_slice() {
-        [greeter] => Ok(Some(Proof {
+        [greeter] => Ok(ProofLookup::Available(Proof {
             context: now,
             greeter: greeter.clone(),
         })),
-        _ => Ok(None),
+        [] => Ok(ProofLookup::Missing),
+        _ => Ok(ProofLookup::Ambiguous),
     }
 }
 
@@ -395,6 +428,19 @@ pub(crate) async fn observe(root: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use snafu::Snafu;
+
+    #[derive(Debug, Snafu)]
+    enum TestError {
+        #[snafu(context(false))]
+        Io { source: std::io::Error },
+        #[snafu(context(false))]
+        Control { source: ResourceControlError },
+        #[snafu(context(false))]
+        Pid { source: std::num::TryFromIntError },
+        #[snafu(display("test process birth time is missing"))]
+        MissingProcess,
+    }
 
     fn context() -> Context {
         Context {
@@ -402,6 +448,115 @@ mod tests {
             bus: "bus".into(),
             owner: Some(":1.20".into()),
         }
+    }
+
+    fn cache(receipts: Vec<Greeter>) -> Cache {
+        Cache {
+            version: 1,
+            context: context(),
+            observer_pid: 100,
+            observer_start: 1,
+            connected: true,
+            subscription: "stream".into(),
+            receipts,
+        }
+    }
+
+    #[test]
+    fn proof_lookup_preserves_cache_guard_order_before_reading_the_account() -> Result<(), TestError>
+    {
+        let root = tempfile::tempdir()?;
+        let mut invalid = cache(Vec::new());
+        invalid.version = 2;
+        let mut replaced = cache(Vec::new());
+        replaced.context.bus = "replacement".into();
+        let mut absent_owner = context();
+        absent_owner.owner = None;
+        let mut unavailable = cache(Vec::new());
+        unavailable.context = absent_owner.clone();
+        let mut invalid_without_owner = cache(Vec::new());
+        invalid_without_owner.version = 2;
+        for (now, cached, expected) in [
+            (context(), None, "proof_missing"),
+            (context(), Some(invalid), "proof_cache_mismatch"),
+            (context(), Some(replaced), "proof_cache_mismatch"),
+            (absent_owner.clone(), Some(unavailable), "gdm_unavailable"),
+            (
+                absent_owner,
+                Some(invalid_without_owner),
+                "proof_cache_mismatch",
+            ),
+        ] {
+            assert_eq!(
+                lookup_proof(root.path(), now, cached, "c1")?.kind(),
+                expected
+            );
+        }
+        assert!(matches!(
+            lookup_proof(root.path(), context(), Some(cache(Vec::new())), "c1"),
+            Err(ResourceControlError::Unavailable(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn proof_lookup_requires_one_exact_live_receipt() -> Result<(), TestError> {
+        use std::fs;
+
+        let root = tempfile::tempdir()?;
+        fs::create_dir(root.path().join("etc"))?;
+        fs::write(
+            root.path().join("etc/passwd"),
+            "gdm:x:107:107::/:/bin/false\n",
+        )?;
+        let pid = i32::try_from(std::process::id())?;
+        let directory = root.path().join("proc").join(pid.to_string());
+        fs::create_dir_all(&directory)?;
+        fs::write(directory.join("stat"), fs::read("/proc/self/stat")?)?;
+        let live = Greeter {
+            session: "c1".into(),
+            uid: 107,
+            pid,
+            start: processes::start_time(root.path(), pid)?.ok_or(TestError::MissingProcess)?,
+        };
+        let mut wrong_session = live.clone();
+        wrong_session.session = "c2".into();
+        let mut wrong_uid = live.clone();
+        wrong_uid.uid += 1;
+        let mut invalid_pid = live.clone();
+        invalid_pid.pid = 1;
+        let mut invalid_start = live.clone();
+        invalid_start.start = 0;
+        let mut stale = live.clone();
+        stale.start += 1;
+        let mut missing = live.clone();
+        missing.pid += 1;
+        for (receipts, expected) in [
+            (Vec::new(), "proof_missing"),
+            (vec![wrong_session], "proof_missing"),
+            (vec![wrong_uid], "proof_missing"),
+            (vec![invalid_pid], "proof_missing"),
+            (vec![invalid_start], "proof_missing"),
+            (vec![stale.clone()], "proof_missing"),
+            (vec![missing], "proof_missing"),
+            (vec![live.clone(), live.clone()], "proof_ambiguous"),
+            (vec![live.clone(); CAPACITY + 1], "proof_cache_mismatch"),
+            (vec![stale, live.clone()], "registered"),
+            (vec![live.clone()], "registered"),
+        ] {
+            let lookup = lookup_proof(root.path(), context(), Some(cache(receipts)), "c1")?;
+            assert_eq!(lookup.kind(), expected);
+            if let ProofLookup::Available(proof) = lookup {
+                assert_eq!(proof.greeter, live);
+                assert_eq!(proof.context, context());
+            }
+        }
+        fs::write(directory.join("stat"), "invalid process status")?;
+        assert_eq!(
+            lookup_proof(root.path(), context(), Some(cache(vec![live])), "c1")?.kind(),
+            "proof_missing"
+        );
+        Ok(())
     }
 
     #[test]

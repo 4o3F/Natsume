@@ -47,6 +47,7 @@ use natsume_workstation_ipc::{
 /// Closed root capabilities exposed to the Device Daemon.
 pub struct PrivilegedService {
     filesystem_root: PathBuf,
+    home_reset_task: Option<home::window::ResetTask>,
 }
 
 impl PrivilegedService {
@@ -55,6 +56,7 @@ impl PrivilegedService {
     pub fn production() -> Self {
         Self {
             filesystem_root: PathBuf::from("/"),
+            home_reset_task: None,
         }
     }
 
@@ -153,6 +155,7 @@ impl PrivilegedService {
             &self.filesystem_root,
             connection,
             &mut observation,
+            &mut self.home_reset_task,
         ))
         .await;
         let elapsed = started.elapsed();
@@ -184,6 +187,20 @@ impl PrivilegedService {
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<ManagedSessionsObservation, ResourceControlError> {
         bounded_session_operation(login::observe(connection, &self.filesystem_root)).await
+    }
+
+    #[zbus(name = "ValidateWaitingSession")]
+    async fn validate_waiting_session(
+        &self,
+        session: GraphicalSession,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<bool, ResourceControlError> {
+        bounded_session_operation(login::validate_waiting_session(
+            connection,
+            &self.filesystem_root,
+            &session,
+        ))
+        .await
     }
 
     #[zbus(name = "PrepareBootSessions")]
@@ -351,7 +368,12 @@ impl PrivilegedService {
 
     #[zbus(name = "QueryHomeReset")]
     fn query_home_reset(&self) -> Result<Option<HomeResetProgress>, ResourceControlError> {
-        home::window::query(&self.filesystem_root)
+        let progress = home::window::query(&self.filesystem_root)?;
+        Ok(self
+            .home_reset_task
+            .as_ref()
+            .and_then(home::window::ResetTask::progress)
+            .or(progress))
     }
 
     #[zbus(name = "VerifyHomeReset")]
@@ -367,6 +389,7 @@ impl PrivilegedService {
             connection,
             reset_epoch,
             &mut worked,
+            &mut self.home_reset_task,
         ))
         .await;
         trace_home_request(
@@ -391,6 +414,7 @@ impl PrivilegedService {
             &self.filesystem_root,
             connection,
             reset_epoch,
+            &mut self.home_reset_task,
         ))
         .await;
         trace_home_request(
@@ -514,6 +538,7 @@ pub(crate) mod tests {
         fn fixture(filesystem_root: &Path) -> Self {
             Self {
                 filesystem_root: filesystem_root.to_owned(),
+                home_reset_task: None,
             }
         }
     }
@@ -556,6 +581,268 @@ pub(crate) mod tests {
         }
         let service = PrivilegedService::fixture(fixture.path());
         (fixture, service)
+    }
+
+    type IdentitySession = (String, u32, String, String, zbus::OwnedObjectPath);
+
+    #[derive(Clone)]
+    struct IdentityFacts {
+        sessions: Vec<IdentitySession>,
+        kind: &'static str,
+        class: &'static str,
+        state: &'static str,
+        preparation: &'static str,
+        remote: bool,
+        locked: bool,
+        listing_error: bool,
+        desktop_queries: usize,
+    }
+
+    #[derive(Clone)]
+    struct IdentitySystem(Arc<Mutex<IdentityFacts>>);
+
+    impl IdentitySystem {
+        fn facts(&self) -> MutexGuard<'_, IdentityFacts> {
+            self.0
+                .lock()
+                .unwrap_or_else(|error| panic!("identity fixture lock: {error}"))
+        }
+    }
+
+    struct IdentityLogind(IdentitySystem);
+    struct IdentityProperties(IdentitySystem);
+    struct IdentitySystemd;
+    struct IdentityPreparation(IdentitySystem);
+
+    #[zbus::interface(name = "org.freedesktop.login1.Manager")]
+    impl IdentityLogind {
+        fn list_sessions(&self) -> zbus::fdo::Result<Vec<IdentitySession>> {
+            let facts = self.0.facts();
+            if facts.listing_error {
+                return Err(zbus::fdo::Error::Failed(
+                    "fixture logind failure".to_owned(),
+                ));
+            }
+            Ok(facts.sessions.clone())
+        }
+
+        fn get_user(&self, uid: u32) -> zbus::fdo::Result<zbus::OwnedObjectPath> {
+            assert_eq!(uid, 1002);
+            self.0.facts().desktop_queries += 1;
+            Err(zbus::fdo::Error::Failed(
+                "unexpected desktop query".to_owned(),
+            ))
+        }
+
+        fn get_seat(&self, seat: &str) -> zbus::fdo::Result<zbus::OwnedObjectPath> {
+            assert_eq!(seat, "seat0");
+            self.0.facts().desktop_queries += 1;
+            Err(zbus::fdo::Error::Failed(
+                "unexpected foreground query".to_owned(),
+            ))
+        }
+    }
+
+    #[zbus::interface(name = "org.freedesktop.login1.Session")]
+    impl IdentityProperties {
+        #[zbus(property)]
+        fn remote(&self) -> bool {
+            self.0.facts().remote
+        }
+        #[zbus(property)]
+        fn class(&self) -> &str {
+            self.0.facts().class
+        }
+        #[zbus(property, name = "Type")]
+        fn kind(&self) -> &str {
+            self.0.facts().kind
+        }
+        #[zbus(property)]
+        fn state(&self) -> &str {
+            self.0.facts().state
+        }
+        #[zbus(property)]
+        fn locked_hint(&self) -> bool {
+            self.0.facts().locked
+        }
+    }
+
+    #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
+    impl IdentitySystemd {
+        #[expect(
+            clippy::unused_self,
+            reason = "D-Bus methods require an interface receiver"
+        )]
+        fn load_unit(&self, name: &str) -> zbus::OwnedObjectPath {
+            assert_eq!(
+                name,
+                natsume_workstation_ipc::preparation_unit(SessionRole::Waiting)
+            );
+            zbus::OwnedObjectPath::try_from("/identity/unit")
+                .unwrap_or_else(|error| panic!("identity unit path: {error}"))
+        }
+    }
+
+    #[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
+    impl IdentityPreparation {
+        #[zbus(property)]
+        fn active_state(&self) -> &str {
+            self.0.facts().preparation
+        }
+    }
+
+    async fn waiting_identity_fixture(
+        fixture: &TempDir,
+        client: &zbus::Connection,
+    ) -> (IdentitySystem, GraphicalSession) {
+        let boot = "550e8400-e29b-41d4-a716-446655440000";
+        write_fixture(
+            fixture.path(),
+            "proc/sys/kernel/random/boot_id",
+            boot.as_bytes(),
+        );
+        write_fixture(fixture.path(), "proc/uptime", b"100.00 0.00\n");
+        write_fixture(
+            fixture.path(),
+            "etc/passwd",
+            b"waiting:x:1002:1002::/home/waiting:/bin/bash\n",
+        );
+        let baseline = IdentityFacts {
+            sessions: vec![(
+                "w1".to_owned(),
+                1002,
+                "waiting".to_owned(),
+                "seat0".to_owned(),
+                zbus::OwnedObjectPath::try_from("/identity/session")
+                    .unwrap_or_else(|error| panic!("identity session path: {error}")),
+            )],
+            kind: "wayland",
+            class: "user",
+            state: "online",
+            preparation: "inactive",
+            remote: false,
+            locked: false,
+            listing_error: false,
+            desktop_queries: 0,
+        };
+        let system = IdentitySystem(Arc::new(Mutex::new(baseline.clone())));
+        let objects = client.object_server();
+        objects
+            .at("/org/freedesktop/login1", IdentityLogind(system.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("logind fixture: {error}"));
+        objects
+            .at("/identity/session", IdentityProperties(system.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("session fixture: {error}"));
+        objects
+            .at("/org/freedesktop/systemd1", IdentitySystemd)
+            .await
+            .unwrap_or_else(|error| panic!("systemd fixture: {error}"));
+        objects
+            .at("/identity/unit", IdentityPreparation(system.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("unit fixture: {error}"));
+        let expected = GraphicalSession {
+            logind_session_id: "w1".to_owned(),
+            boot_id: boot.to_owned(),
+        };
+        (system, expected)
+    }
+
+    async fn check_waiting_identity(
+        fixture: &TempDir,
+        client: &zbus::Connection,
+        proxy: &Privileged1Proxy<'_>,
+    ) {
+        let (system, expected) = waiting_identity_fixture(fixture, client).await;
+        let baseline = system.facts().clone();
+        let boot = &expected.boot_id;
+        for case in [
+            "valid",
+            "locked",
+            "active",
+            "wrong-session",
+            "wrong-boot",
+            "missing",
+            "duplicate",
+            "uid",
+            "user",
+            "seat",
+            "x11",
+            "remote",
+            "class",
+            "opening",
+            "closing",
+            "unknown",
+            "activating",
+            "preparing",
+            "deactivating",
+            "logind-error",
+        ] {
+            *system.facts() = baseline.clone();
+            let mut claimed = expected.clone();
+            {
+                let mut facts = system.facts();
+                match case {
+                    "locked" => facts.locked = true,
+                    "active" => facts.state = "active",
+                    "wrong-session" => claimed.logind_session_id = "w2".to_owned(),
+                    "wrong-boot" => {
+                        claimed.boot_id = "550e8400-e29b-41d4-a716-446655440001".to_owned();
+                    }
+                    "missing" => facts.sessions.clear(),
+                    "duplicate" => {
+                        let session = facts.sessions[0].clone();
+                        facts.sessions.push(session);
+                    }
+                    "uid" => facts.sessions[0].1 = 1003,
+                    "user" => facts.sessions[0].2 = "other".to_owned(),
+                    "seat" => facts.sessions[0].3 = "seat1".to_owned(),
+                    "x11" => facts.kind = "x11",
+                    "remote" => facts.remote = true,
+                    "class" => facts.class = "greeter",
+                    "opening" => facts.state = "opening",
+                    "closing" => facts.state = "closing",
+                    "unknown" => facts.state = "unknown",
+                    "activating" => facts.preparation = "activating",
+                    "preparing" => facts.preparation = "active",
+                    "deactivating" => facts.preparation = "deactivating",
+                    "logind-error" => facts.listing_error = true,
+                    "valid" => {}
+                    _ => panic!("unknown identity case: {case}"),
+                }
+            }
+            let result = proxy.validate_waiting_session(&claimed).await;
+            if case == "logind-error" {
+                assert!(matches!(result, Err(ResourceControlError::Unavailable(_))));
+            } else {
+                assert_eq!(
+                    result.unwrap_or_else(|error| panic!("{case}: {error}")),
+                    matches!(case, "valid" | "locked" | "active"),
+                    "{case}"
+                );
+            }
+            assert_eq!(system.facts().desktop_queries, 0, "{case}");
+        }
+        *system.facts() = baseline;
+        for (record, fails) in [
+            (format!("1\n{boot}\nw1\ndraining\n50\n"), false),
+            ("corrupt\n".to_owned(), true),
+        ] {
+            write_fixture(
+                fixture.path(),
+                "run/natsume-privileged/waiting-recovery",
+                record.as_bytes(),
+            );
+            let result = proxy.validate_waiting_session(&expected).await;
+            if fails {
+                assert!(matches!(result, Err(ResourceControlError::Rejected(_))));
+            } else {
+                assert!(!result.unwrap_or_else(|error| panic!("draining identity: {error}")));
+            }
+        }
+        assert_eq!(system.facts().desktop_queries, 0);
     }
 
     #[tokio::test]
@@ -761,6 +1048,7 @@ pub(crate) mod tests {
             .unwrap_or_else(|e| panic!("record: {e}")),
             spent
         );
+        check_waiting_identity(&fixture, &client, &proxy).await;
     }
     #[tokio::test]
     async fn bounded_attempt_retains_the_eight_second_deadline_and_result_classification() {

@@ -61,6 +61,7 @@ impl PowerReconciler {
             return Ok(ReconcileOutcome {
                 actual: actual(PowerState::Idle, prior.map(|a| a.epoch)),
                 retry: false,
+                progress: false,
             });
         };
         if let Some(prior) = prior.as_ref().filter(|value| value.epoch >= epoch) {
@@ -74,6 +75,7 @@ impl PowerReconciler {
                     Some(epoch),
                 ),
                 retry: false,
+                progress: false,
             });
         }
         if unix_ms().ok_or(SnapshotError::Artifact)?
@@ -84,6 +86,7 @@ impl PowerReconciler {
             return Ok(ReconcileOutcome {
                 actual: actual(PowerState::Expired, Some(epoch)),
                 retry: false,
+                progress: false,
             });
         }
         check_cancellation(cancellation)?;
@@ -108,6 +111,7 @@ impl PowerReconciler {
             Ok(ReconcileOutcome {
                 actual: actual(PowerState::Accepted, Some(epoch)),
                 retry: false,
+                progress: false,
             })
         } else {
             persist(
@@ -120,6 +124,7 @@ impl PowerReconciler {
             Ok(ReconcileOutcome {
                 actual: actual(PowerState::Error, Some(epoch)),
                 retry: false,
+                progress: false,
             })
         }
     }

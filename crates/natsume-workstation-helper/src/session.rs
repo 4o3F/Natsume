@@ -486,6 +486,21 @@ pub async fn probe_desktop(role: SessionRole) -> Result<bool, ResourceControlErr
     Ok(foreground)
 }
 
+pub(crate) async fn observe_waiting_identity(
+    connection: &Connection,
+    root: &Path,
+) -> Result<GraphicalSessionObservation, ResourceControlError> {
+    timeout(OBSERVATION_TIMEOUT, async {
+        let boot = read_boot_id(root)?;
+        let sessions = local_graphical_sessions(connection, root, SessionRole::Waiting).await?;
+        let mut waiting = observe_sessions(&sessions, boot);
+        crate::waiting::observe(root, &mut waiting)?;
+        Ok(waiting)
+    })
+    .await
+    .map_err(|_| unavailable("graphical session observation timed out"))?
+}
+
 pub(crate) async fn observe(
     connection: &Connection,
     root: &Path,

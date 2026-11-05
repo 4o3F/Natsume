@@ -94,6 +94,15 @@ pub enum SessionRole {
     Contest,
 }
 
+/// Fixed systemd preparation unit for one managed graphical role.
+#[must_use]
+pub const fn preparation_unit(role: SessionRole) -> &'static str {
+    match role {
+        SessionRole::Waiting => "natsume-session-prepare@waiting.service",
+        SessionRole::Contest => "natsume-session-prepare@contest.service",
+    }
+}
+
 /// Lifecycle of one fixed role, independent of foreground and GNOME locking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -227,6 +236,7 @@ pub enum HomeResetPhase {
     Applied,
     Verified,
     RecoveryRequired,
+    InProgress,
 }
 
 /// Re-sampled helper-side progress for one Home reset epoch.
@@ -306,6 +316,13 @@ pub trait Privileged1 {
 
     #[zbus(name = "QueryManagedSessions")]
     fn query_managed_sessions(&self) -> Result<ManagedSessionsObservation, ResourceControlError>;
+
+    /// Validates the current Waiting session identity without a desktop probe.
+    #[zbus(name = "ValidateWaitingSession")]
+    fn validate_waiting_session(
+        &self,
+        session: &GraphicalSession,
+    ) -> Result<bool, ResourceControlError>;
 
     /// Completes local boot preparation before the first business foreground.
     #[zbus(name = "PrepareBootSessions")]
@@ -387,6 +404,28 @@ pub trait Privileged1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_reset_phase_dbus_values_remain_stable() {
+        use zbus::wire::{LE, serialized::Context, to_bytes};
+
+        for (phase, value) in [
+            (HomeResetPhase::Draining, 0_u32),
+            (HomeResetPhase::Prepared, 1),
+            (HomeResetPhase::Applied, 2),
+            (HomeResetPhase::Verified, 3),
+            (HomeResetPhase::RecoveryRequired, 4),
+            (HomeResetPhase::InProgress, 5),
+        ] {
+            let encoded = to_bytes(Context::new(LE, 0), &phase)
+                .unwrap_or_else(|error| panic!("phase encoding failed: {error}"));
+            assert_eq!(encoded.bytes(), value.to_le_bytes());
+            let (decoded, _) = encoded
+                .deserialize::<HomeResetPhase>()
+                .unwrap_or_else(|error| panic!("phase decoding failed: {error}"));
+            assert_eq!(decoded, phase);
+        }
+    }
 
     #[test]
     fn local_control_types_have_stable_dbus_signatures() {

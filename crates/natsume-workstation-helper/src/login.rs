@@ -4,8 +4,8 @@ use tokio::io::AsyncReadExt as _;
 
 use futures_util::StreamExt as _;
 use natsume_workstation_ipc::{
-    GraphicalSessionObservation, GraphicalSessionState, ManagedSessionsObservation,
-    ResourceControlError, SessionRole,
+    GraphicalSession, GraphicalSessionObservation, GraphicalSessionState,
+    ManagedSessionsObservation, ResourceControlError, SessionRole, preparation_unit,
 };
 use tokio::time::{Duration, Instant, sleep, timeout};
 use zbus::{Connection, MessageStream, OwnedObjectPath, message::Type};
@@ -49,13 +49,6 @@ pub(crate) async fn preparing(connection: &Connection) -> Result<bool, ResourceC
     Ok(false)
 }
 
-fn unit(role: SessionRole) -> &'static str {
-    match role {
-        SessionRole::Waiting => "natsume-session-prepare@waiting.service",
-        SessionRole::Contest => "natsume-session-prepare@contest.service",
-    }
-}
-
 fn role_observation(
     observation: ManagedSessionsObservation,
     role: SessionRole,
@@ -79,7 +72,7 @@ async fn unit_state(
     .await
     .map_err(|_| unavailable("session preparation service is unavailable"))?;
     let path: OwnedObjectPath = manager
-        .call("LoadUnit", &(unit(role),))
+        .call("LoadUnit", &(preparation_unit(role),))
         .await
         .map_err(|_| unavailable("session preparation service is unavailable"))?;
     fresh_proxy(
@@ -115,7 +108,7 @@ async fn unit_job(
     let _: OwnedObjectPath = manager
         .call(
             if start { "StartUnit" } else { "StopUnit" },
-            &(unit(role), "replace"),
+            &(preparation_unit(role), "replace"),
         )
         .await
         .map_err(|_| unavailable("session preparation transition is unavailable"))?;
@@ -132,27 +125,47 @@ pub(crate) async fn observe(
         (SessionRole::Contest, &mut observed.contest),
     ] {
         let preparation = unit_state(connection, role).await?;
-        if unit_busy(&preparation)
-            && matches!(
-                current.state,
-                GraphicalSessionState::None
-                    | GraphicalSessionState::Starting
-                    | GraphicalSessionState::Running
-            )
-        {
-            current.state = GraphicalSessionState::Starting;
-            current.desktop_ready = false;
-        } else if current.state == GraphicalSessionState::None {
-            current.state = match preparation.as_str() {
-                "activating" | "active" => GraphicalSessionState::Starting,
-                "deactivating" => GraphicalSessionState::Terminating,
-                "failed" => GraphicalSessionState::Error,
-                "inactive" => GraphicalSessionState::None,
-                _ => return Err(unavailable("session preparation state is indeterminate")),
-            };
-        }
+        apply_preparation_state(current, &preparation)?;
     }
     Ok(observed)
+}
+
+fn apply_preparation_state(
+    current: &mut GraphicalSessionObservation,
+    preparation: &str,
+) -> Result<(), ResourceControlError> {
+    if unit_busy(preparation)
+        && matches!(
+            current.state,
+            GraphicalSessionState::None
+                | GraphicalSessionState::Starting
+                | GraphicalSessionState::Running
+        )
+    {
+        current.state = GraphicalSessionState::Starting;
+        current.desktop_ready = false;
+    } else if current.state == GraphicalSessionState::None {
+        current.state = match preparation {
+            "activating" | "active" => GraphicalSessionState::Starting,
+            "deactivating" => GraphicalSessionState::Terminating,
+            "failed" => GraphicalSessionState::Error,
+            "inactive" => GraphicalSessionState::None,
+            _ => return Err(unavailable("session preparation state is indeterminate")),
+        };
+    }
+    Ok(())
+}
+
+pub(crate) async fn validate_waiting_session(
+    connection: &Connection,
+    root: &Path,
+    expected: &GraphicalSession,
+) -> Result<bool, ResourceControlError> {
+    let mut observed = session::observe_waiting_identity(connection, root).await?;
+    let preparation = unit_state(connection, SessionRole::Waiting).await?;
+    apply_preparation_state(&mut observed, &preparation)?;
+    Ok(observed.state == GraphicalSessionState::Running
+        && observed.session.as_ref() == Some(expected))
 }
 
 pub(crate) async fn start(
@@ -593,4 +606,60 @@ pub async fn probe_greeter() -> Result<GreeterStatus, ResourceControlError> {
     greeter_status(&connection)
         .await
         .ok_or_else(|| unavailable("greeter desktop is not yet available"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preparation_preserves_the_existing_lifecycle_mapping() {
+        use GraphicalSessionState::{Ambiguous, Error, None, Running, Starting, Terminating};
+
+        let states = [None, Starting, Running, Terminating, Ambiguous, Error];
+        let preparing = [Starting, Starting, Starting, Terminating, Ambiguous, Error];
+        for (preparation, expected, desktop_ready) in [
+            ("inactive", states, [true; 6]),
+            (
+                "activating",
+                preparing,
+                [false, false, false, true, true, true],
+            ),
+            ("active", preparing, [false, false, false, true, true, true]),
+            (
+                "deactivating",
+                preparing,
+                [false, false, false, true, true, true],
+            ),
+            (
+                "failed",
+                [Error, Starting, Running, Terminating, Ambiguous, Error],
+                [true; 6],
+            ),
+            ("unknown", states, [true; 6]),
+        ] {
+            for ((state, expected), ready) in states.into_iter().zip(expected).zip(desktop_ready) {
+                let mut observed = GraphicalSessionObservation {
+                    state,
+                    session: Some(GraphicalSession {
+                        logind_session_id: "w1".to_owned(),
+                        boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+                    }),
+                    desktop_ready: true,
+                    locked_hint: true,
+                };
+                let identity = observed.session.clone();
+                let result = apply_preparation_state(&mut observed, preparation);
+                if state == None && preparation == "unknown" {
+                    assert!(matches!(result, Err(ResourceControlError::Unavailable(_))));
+                } else {
+                    result.unwrap_or_else(|error| panic!("{state:?}/{preparation}: {error}"));
+                    assert_eq!(observed.state, expected, "{state:?}/{preparation}");
+                    assert_eq!(observed.desktop_ready, ready, "{state:?}/{preparation}");
+                }
+                assert_eq!(observed.session, identity);
+                assert!(observed.locked_hint);
+            }
+        }
+    }
 }

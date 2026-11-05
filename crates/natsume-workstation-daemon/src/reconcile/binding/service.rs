@@ -43,14 +43,7 @@ impl DeviceService {
         let Ok(proxy) = Privileged1Proxy::new(&self.privileged_connection).await else {
             return false;
         };
-        matches!(
-            proxy.query_managed_sessions().await,
-            Ok(observation)
-                if matches!(
-                    observation.waiting.state,
-                    GraphicalSessionState::Running
-                ) && observation.waiting.session.as_ref() == Some(session)
-        )
+        matches!(proxy.validate_waiting_session(session).await, Ok(true))
     }
 
     async fn authenticated(
@@ -239,5 +232,155 @@ impl DeviceService {
         );
         drop(registered);
         result.map_err(|_| service_error("Binding submission was rejected"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Mutex, time::Duration};
+
+    use natsume_workstation_ipc::{
+        ManagedSessionsObservation, PRIVILEGED1_PATH, ResourceControlError,
+    };
+
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    enum IdentityReply {
+        Accept,
+        Reject,
+        Error,
+        Timeout,
+    }
+
+    struct HelperCalls {
+        identity: usize,
+        full: usize,
+        reply: IdentityReply,
+    }
+
+    struct IdentityHelper(Arc<Mutex<HelperCalls>>);
+    struct LegacyHelper(Arc<Mutex<HelperCalls>>);
+
+    #[zbus::interface(name = "org.natsume.Privileged1")]
+    impl IdentityHelper {
+        async fn validate_waiting_session(
+            &self,
+            session: GraphicalSession,
+        ) -> Result<bool, ResourceControlError> {
+            assert_eq!(session.logind_session_id, "w1");
+            assert_eq!(session.boot_id, "550e8400-e29b-41d4-a716-446655440000");
+            let reply = {
+                let mut calls = self
+                    .0
+                    .lock()
+                    .unwrap_or_else(|error| panic!("helper calls: {error}"));
+                calls.identity += 1;
+                calls.reply
+            };
+            match reply {
+                IdentityReply::Accept => Ok(true),
+                IdentityReply::Reject => Ok(false),
+                IdentityReply::Error => Err(ResourceControlError::Unavailable(
+                    "fixture identity failure".to_owned(),
+                )),
+                IdentityReply::Timeout => std::future::pending().await,
+            }
+        }
+
+        fn query_managed_sessions(
+            &self,
+        ) -> Result<ManagedSessionsObservation, ResourceControlError> {
+            self.0
+                .lock()
+                .unwrap_or_else(|error| panic!("helper calls: {error}"))
+                .full += 1;
+            Err(ResourceControlError::Unavailable(
+                "unexpected full query".to_owned(),
+            ))
+        }
+    }
+
+    #[zbus::interface(name = "org.natsume.Privileged1")]
+    impl LegacyHelper {
+        fn query_managed_sessions(
+            &self,
+        ) -> Result<ManagedSessionsObservation, ResourceControlError> {
+            self.0
+                .lock()
+                .unwrap_or_else(|error| panic!("helper calls: {error}"))
+                .full += 1;
+            Err(ResourceControlError::Unavailable(
+                "unexpected legacy query".to_owned(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_identity_uses_only_the_narrow_method_and_rejects_missing_or_failed_checks() {
+        let directory =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("service fixture: {error}"));
+        let calls = Arc::new(Mutex::new(HelperCalls {
+            identity: 0,
+            full: 0,
+            reply: IdentityReply::Accept,
+        }));
+        let (server_stream, client_stream) =
+            tokio::net::UnixStream::pair().unwrap_or_else(|error| panic!("service peer: {error}"));
+        let server_builder = zbus::connection::Builder::unix_stream(
+            server_stream
+                .into_std()
+                .unwrap_or_else(|error| panic!("server stream: {error}")),
+        )
+        .server(zbus::Guid::generate())
+        .p2p()
+        .serve_at(PRIVILEGED1_PATH, IdentityHelper(Arc::clone(&calls)));
+        let client_builder = zbus::connection::Builder::unix_stream(
+            client_stream
+                .into_std()
+                .unwrap_or_else(|error| panic!("client stream: {error}")),
+        )
+        .p2p()
+        .method_timeout(Duration::from_millis(100));
+        let (server, client) = tokio::join!(server_builder.build(), client_builder.build());
+        let server = server.unwrap_or_else(|error| panic!("helper server: {error}"));
+        let service = DeviceService {
+            provider: Arc::new(super::super::tests::input_provider(&directory)),
+            privileged_connection: client.unwrap_or_else(|error| panic!("helper client: {error}")),
+        };
+        let session = GraphicalSession {
+            logind_session_id: "w1".to_owned(),
+            boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+        };
+        for reply in [
+            IdentityReply::Accept,
+            IdentityReply::Reject,
+            IdentityReply::Error,
+            IdentityReply::Timeout,
+        ] {
+            calls
+                .lock()
+                .unwrap_or_else(|error| panic!("helper calls: {error}"))
+                .reply = reply;
+            assert_eq!(
+                service.exact_current_session(&session).await,
+                matches!(reply, IdentityReply::Accept)
+            );
+        }
+        let objects = server.object_server();
+        objects
+            .remove::<IdentityHelper, _>(PRIVILEGED1_PATH)
+            .await
+            .unwrap_or_else(|error| panic!("remove current helper: {error}"));
+        objects
+            .at(PRIVILEGED1_PATH, LegacyHelper(Arc::clone(&calls)))
+            .await
+            .unwrap_or_else(|error| panic!("legacy helper: {error}"));
+        assert!(!service.exact_current_session(&session).await);
+        let calls = calls
+            .lock()
+            .unwrap_or_else(|error| panic!("helper calls: {error}"));
+        assert_eq!(calls.identity, 4);
+        assert_eq!(calls.full, 0);
     }
 }

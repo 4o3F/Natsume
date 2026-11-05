@@ -1,4 +1,10 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use snafu::{ResultExt as _, Snafu};
+use tokio::task::JoinHandle;
 
 use natsume_workstation_ipc::{
     GraphicalSession, GraphicalSessionState, HomeResetPhase, HomeResetProgress,
@@ -27,6 +33,125 @@ impl RecoveryAction {
             Self::Baseline => "baseline",
         }
     }
+}
+
+pub(crate) struct ResetTask {
+    epoch: u64,
+    handle: JoinHandle<Result<(), ResetError>>,
+}
+
+impl ResetTask {
+    pub(crate) fn progress(&self) -> Option<HomeResetProgress> {
+        (!self.handle.is_finished()).then_some(HomeResetProgress {
+            reset_epoch: self.epoch,
+            phase: HomeResetPhase::InProgress,
+        })
+    }
+}
+
+#[derive(Debug, Snafu)]
+enum ResetError {
+    #[snafu(display("Home reset background operation failed"))]
+    Operation { source: ResourceControlError },
+    #[snafu(display("Home reset background task stopped"))]
+    Join { source: tokio::task::JoinError },
+    #[snafu(display("Home reset completion could not be verified"))]
+    Incomplete,
+}
+
+impl ResetError {
+    fn category(&self) -> &'static str {
+        match self {
+            Self::Operation {
+                source: ResourceControlError::Rejected(_),
+            } => "rejected",
+            Self::Operation { .. } => "unavailable",
+            Self::Join { .. } => "task_stopped",
+            Self::Incomplete => "incomplete",
+        }
+    }
+
+    fn into_control(self) -> ResourceControlError {
+        match self {
+            Self::Operation { source } => source,
+            Self::Join { .. } | Self::Incomplete => {
+                unavailable("Home reset background work is incomplete")
+            }
+        }
+    }
+}
+
+async fn task_running(
+    task: &mut Option<ResetTask>,
+    epoch: u64,
+) -> Result<bool, ResourceControlError> {
+    let Some(current) = task.as_ref() else {
+        return Ok(false);
+    };
+    if !current.handle.is_finished() {
+        if current.epoch != epoch {
+            return Err(rejected("another Home reset epoch is in progress"));
+        }
+        return Ok(true);
+    }
+    if let Some(finished) = task.take() {
+        finished
+            .handle
+            .await
+            .context(JoinSnafu)
+            .inspect_err(|error| {
+                tracing::warn!(
+                    reset_epoch = finished.epoch,
+                    phase = "join",
+                    error_category = error.category(),
+                    "home reset background task unavailable"
+                );
+            })
+            .and_then(|result| result)
+            .map_err(ResetError::into_control)?;
+    }
+    Ok(false)
+}
+
+fn start_task(
+    root: &Path,
+    epoch: u64,
+    mutation: admission::MutationGuard,
+    guard: admission::MaintenanceGuard,
+    remove: impl FnOnce(&Path, u64) -> Result<(), ResourceControlError> + Send + 'static,
+) -> Result<ResetTask, ResourceControlError> {
+    super::write_progress(root, epoch, HomeResetPhase::InProgress)?;
+    let root: PathBuf = root.to_owned();
+    let handle = tokio::task::spawn_blocking(move || {
+        let _mutation = mutation;
+        let started = std::time::Instant::now();
+        let mut phase = "remove_generations";
+        let result = (|| {
+            remove(&root, epoch).context(OperationSnafu)?;
+            phase = "verify";
+            super::cleanup::require_policy(&root).context(OperationSnafu)?;
+            snafu::ensure!(
+                super::cleanup::complete(&root, epoch).context(OperationSnafu)?
+                    && super::mounted_generation(&root, epoch).context(OperationSnafu)?,
+                IncompleteSnafu
+            );
+            let verified = super::verify(&root, epoch).context(OperationSnafu)?;
+            snafu::ensure!(verified.phase == HomeResetPhase::Verified, IncompleteSnafu);
+            phase = "publish_permit";
+            drop(guard);
+            finish(&root, epoch).context(OperationSnafu)
+        })();
+        tracing::info!(
+            reset_epoch = epoch,
+            phase,
+            elapsed_us = crate::duration_micros(started.elapsed()),
+            result = if result.is_ok() { "ok" } else { "error" },
+            error_category = result.as_ref().err().map(ResetError::category),
+            "home reset background completed"
+        );
+        result
+    });
+    Ok(ResetTask { epoch, handle })
 }
 
 const WINDOW: &str = "login-window";
@@ -289,15 +414,31 @@ pub(crate) async fn recover(
     root: &Path,
     connection: &Connection,
     epoch: u64,
+    task: &mut Option<ResetTask>,
 ) -> Result<(), ResourceControlError> {
-    let _mutation = admission::mutation(root)?;
-    recover_owned(root, connection, epoch).await
+    super::require_epoch(epoch)?;
+    if task_running(task, epoch).await? {
+        return Ok(());
+    }
+    let mutation = admission::mutation(root)?;
+    recover_owned(
+        root,
+        connection,
+        epoch,
+        mutation,
+        task,
+        super::remove_other_generations,
+    )
+    .await
 }
 
 async fn recover_owned(
     root: &Path,
     connection: &Connection,
     epoch: u64,
+    mutation: admission::MutationGuard,
+    task: &mut Option<ResetTask>,
+    remove: impl FnOnce(&Path, u64) -> Result<(), ResourceControlError> + Send + 'static,
 ) -> Result<(), ResourceControlError> {
     let owned = require_epoch(root, epoch)?;
     if verified_mount(root, epoch)? {
@@ -337,12 +478,11 @@ async fn recover_owned(
         super::prepare(root, epoch)?;
     }
     super::recover(root, epoch)?;
-    let verified = super::verify(root, epoch)?;
-    if verified.phase != HomeResetPhase::Verified {
+    if !super::mounted_generation(root, epoch)? {
         return Err(unavailable("Home mount recovery did not verify"));
     }
-    drop(guard);
-    finish(root, epoch)
+    *task = Some(start_task(root, epoch, mutation, guard, remove)?);
+    Ok(())
 }
 
 pub(crate) async fn verify(
@@ -350,6 +490,26 @@ pub(crate) async fn verify(
     connection: &Connection,
     epoch: u64,
     worked: &mut bool,
+    task: &mut Option<ResetTask>,
+) -> Result<HomeResetProgress, ResourceControlError> {
+    verify_with_removal(
+        root,
+        connection,
+        epoch,
+        worked,
+        task,
+        super::remove_other_generations,
+    )
+    .await
+}
+
+async fn verify_with_removal(
+    root: &Path,
+    connection: &Connection,
+    epoch: u64,
+    worked: &mut bool,
+    task: &mut Option<ResetTask>,
+    remove: impl FnOnce(&Path, u64) -> Result<(), ResourceControlError> + Send + 'static,
 ) -> Result<HomeResetProgress, ResourceControlError> {
     // GDM preparation holds the mutation lock while it waits for the desktop.
     // Observing a completed, still mounted generation needs no mutation. Check
@@ -357,6 +517,12 @@ pub(crate) async fn verify(
     // incomplete publication must still take the lock and finish below.
     super::require_epoch(epoch)?;
     super::cleanup::require_policy(root)?;
+    if task_running(task, epoch).await? {
+        return Ok(HomeResetProgress {
+            reset_epoch: epoch,
+            phase: HomeResetPhase::InProgress,
+        });
+    }
     if admission::require_open(root).is_ok()
         && verified_mount(root, epoch)?
         && admission::require_open(root).is_ok()
@@ -367,7 +533,7 @@ pub(crate) async fn verify(
         });
     }
     *worked = true;
-    let _mutation = admission::mutation(root)?;
+    let mutation = admission::mutation(root)?;
     let owned = require_epoch(root, epoch)?;
     if query(root)?.is_some_and(|p| p.reset_epoch == epoch && p.phase == HomeResetPhase::Draining) {
         return Ok(HomeResetProgress {
@@ -384,6 +550,19 @@ pub(crate) async fn verify(
         }
         None
     };
+    let phase = super::require_target_progress(root, epoch)?;
+    if phase != HomeResetPhase::Prepared
+        && phase != HomeResetPhase::Verified
+        && super::mounted_generation(root, epoch)?
+    {
+        let guard =
+            guard.ok_or_else(|| rejected("Home maintenance window has not been prepared"))?;
+        *task = Some(start_task(root, epoch, mutation, guard, remove)?);
+        return Ok(HomeResetProgress {
+            reset_epoch: epoch,
+            phase: HomeResetPhase::InProgress,
+        });
+    }
     let progress = super::verify(root, epoch)?;
     drop(guard);
     if progress.phase == HomeResetPhase::Verified {
@@ -418,14 +597,50 @@ pub(crate) async fn restore_home(
     root: &Path,
     connection: &Connection,
     observation: &mut RecoveryObservation,
+    task: &mut Option<ResetTask>,
 ) -> Result<(), ResourceControlError> {
-    let _mutation = admission::mutation(root)?;
+    restore_with_removal(
+        root,
+        connection,
+        observation,
+        task,
+        super::remove_other_generations,
+    )
+    .await
+}
+
+async fn restore_with_removal(
+    root: &Path,
+    connection: &Connection,
+    observation: &mut RecoveryObservation,
+    task: &mut Option<ResetTask>,
+    remove: impl FnOnce(&Path, u64) -> Result<(), ResourceControlError> + Send + 'static,
+) -> Result<(), ResourceControlError> {
+    if task.as_ref().and_then(ResetTask::progress).is_some()
+        && let Some(progress) = query(root)?
+    {
+        observation.action = Some(RecoveryAction::Resume);
+        observation.reset_epoch = Some(progress.reset_epoch);
+        if task_running(task, progress.reset_epoch).await? {
+            return Ok(());
+        }
+    }
+    let mutation = admission::mutation(root)?;
     admission::close(root)?;
     super::cleanup::require_policy(root)?;
     if let Some(progress) = query(root)? {
         observation.action = Some(RecoveryAction::Resume);
         observation.reset_epoch = Some(progress.reset_epoch);
-        return recover_owned(root, connection, progress.reset_epoch).await;
+        task_running(task, progress.reset_epoch).await?;
+        return recover_owned(
+            root,
+            connection,
+            progress.reset_epoch,
+            mutation,
+            task,
+            remove,
+        )
+        .await;
     }
     observation.action = Some(RecoveryAction::Baseline);
     // A fresh image has no remote reset epoch. Validate its baseline without
@@ -535,7 +750,7 @@ mod tests {
                 .build(),
         )?;
         assert!(matches!(
-            verify(root.path(), &connection, 7, &mut false).await,
+            verify(root.path(), &connection, 7, &mut false, &mut None).await,
             Err(ResourceControlError::Unavailable(_))
         ));
         assert_eq!(
@@ -592,6 +807,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the legacy completion checks across all entry points together"
+    )]
     async fn legacy_verified_cannot_bypass_any_entry_point_or_existing_permit()
     -> Result<(), TestError> {
         let root = verified_fixture()?;
@@ -622,16 +841,21 @@ mod tests {
                 .is_err()
         );
         assert!(
-            verify(root.path(), &connection, 7, &mut false)
+            verify(root.path(), &connection, 7, &mut false, &mut None)
                 .await
                 .is_err()
         );
-        assert!(recover(root.path(), &connection, 7).await.is_err());
+        assert!(
+            recover(root.path(), &connection, 7, &mut None)
+                .await
+                .is_err()
+        );
         assert!(
             restore_home(
                 root.path(),
                 &connection,
-                &mut RecoveryObservation::default()
+                &mut RecoveryObservation::default(),
+                &mut None
             )
             .await
             .is_err()
@@ -661,16 +885,21 @@ mod tests {
                 .is_err()
         );
         assert!(
-            verify(root.path(), &connection, 7, &mut false)
+            verify(root.path(), &connection, 7, &mut false, &mut None)
                 .await
                 .is_err()
         );
-        assert!(recover(root.path(), &connection, 7).await.is_err());
+        assert!(
+            recover(root.path(), &connection, 7, &mut None)
+                .await
+                .is_err()
+        );
         assert!(
             restore_home(
                 root.path(),
                 &connection,
-                &mut RecoveryObservation::default()
+                &mut RecoveryObservation::default(),
+                &mut None
             )
             .await
             .is_err()
@@ -747,14 +976,17 @@ mod tests {
             prepare(root.path(), &connection, 7, &waiting).await?;
             apply(root.path(), &connection, 7, &mut false).await?;
             assert_eq!(
-                verify(root.path(), &connection, 7, &mut false).await?.phase,
+                verify(root.path(), &connection, 7, &mut false, &mut None)
+                    .await?
+                    .phase,
                 HomeResetPhase::Verified
             );
-            recover(root.path(), &connection, 7).await?;
+            recover(root.path(), &connection, 7, &mut None).await?;
             restore_home(
                 root.path(),
                 &connection,
                 &mut RecoveryObservation::default(),
+                &mut None,
             )
             .await?;
             assert_eq!(
@@ -776,7 +1008,7 @@ mod tests {
             maintaining: true,
         }
         .persist(root.path())?;
-        recover(root.path(), &connection, 7).await?;
+        recover(root.path(), &connection, 7, &mut None).await?;
         assert!(Window::read(root.path())?.is_none());
         admission::require_open(root.path())?;
         assert_eq!(
@@ -787,7 +1019,7 @@ mod tests {
         fs::write(root.path().join("etc/natsume/contest-reset-policy"), "2\n")?;
         assert!(admission::require_open(root.path()).is_err());
         assert!(
-            verify(root.path(), &connection, 7, &mut false)
+            verify(root.path(), &connection, 7, &mut false, &mut None)
                 .await
                 .is_err()
         );
@@ -805,6 +1037,7 @@ mod tests {
         let (connection, _peer) = peer().await.unwrap_or_else(|e| panic!("peer: {e}"));
         let mut service = crate::PrivilegedService {
             filesystem_root: root.path().to_owned(),
+            home_reset_task: None,
         };
         let capture = Capture::default();
         async {
@@ -913,6 +1146,7 @@ mod tests {
             let capture = Capture::default();
             let mut service = crate::PrivilegedService {
                 filesystem_root: root.path().to_owned(),
+                home_reset_task: None,
             };
             async {
                 let result = service.recover_local_home(&connection).await;
@@ -945,6 +1179,440 @@ mod tests {
             .await;
         }
     }
+    struct AbsentLogind {
+        sessions: ListedSessions,
+        uid: u32,
+    }
+    struct InactiveSystemd {
+        unit: zbus::OwnedObjectPath,
+        job: zbus::OwnedObjectPath,
+    }
+    struct InactiveUnit {
+        state: &'static str,
+    }
+
+    #[derive(Debug, zbus::DBusError)]
+    #[zbus(prefix = "org.freedesktop.login1")]
+    enum UserError {
+        NoSuchUser(String),
+    }
+
+    #[zbus::interface(name = "org.freedesktop.login1.Manager")]
+    impl AbsentLogind {
+        fn list_sessions(&self) -> ListedSessions {
+            self.sessions.clone()
+        }
+
+        fn get_user(&self, uid: u32) -> Result<zbus::OwnedObjectPath, UserError> {
+            assert_eq!(uid, self.uid);
+            Err(UserError::NoSuchUser("absent".to_owned()))
+        }
+    }
+
+    #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
+    impl InactiveSystemd {
+        fn load_unit(&self, name: &str) -> zbus::OwnedObjectPath {
+            assert_ne!(name, "");
+            self.unit.clone()
+        }
+
+        fn stop_unit(&self, name: &str, mode: &str) -> zbus::OwnedObjectPath {
+            assert_ne!(name, "");
+            assert_eq!(mode, "replace");
+            self.job.clone()
+        }
+    }
+
+    #[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
+    impl InactiveUnit {
+        #[zbus(property)]
+        fn active_state(&self) -> &str {
+            self.state
+        }
+    }
+
+    async fn maintenance_peer() -> Result<(Connection, Connection), TestError> {
+        let (left, right) = tokio::net::UnixStream::pair()?;
+        let helper = zbus::connection::Builder::unix_stream(left.into_std()?)
+            .server(zbus::Guid::generate())
+            .p2p()
+            .serve_at("/reset/ready", InactiveUnit { state: "inactive" });
+        let uid = if rustix::process::geteuid().is_root() {
+            1001
+        } else {
+            rustix::process::geteuid().as_raw()
+        };
+        let system = zbus::connection::Builder::unix_stream(right.into_std()?)
+            .p2p()
+            .serve_at(
+                "/org/freedesktop/login1",
+                AbsentLogind {
+                    sessions: Vec::new(),
+                    uid,
+                },
+            )
+            .serve_at(
+                "/org/freedesktop/systemd1",
+                InactiveSystemd {
+                    unit: zbus::OwnedObjectPath::try_from("/reset/unit")
+                        .unwrap_or_else(|error| panic!("unit path: {error}")),
+                    job: zbus::OwnedObjectPath::try_from("/reset/job")
+                        .unwrap_or_else(|error| panic!("job path: {error}")),
+                },
+            )
+            .serve_at("/reset/unit", InactiveUnit { state: "inactive" });
+        Ok(tokio::try_join!(helper.build(), system.build())?)
+    }
+
+    fn pending_fixture(phase: HomeResetPhase) -> Result<tempfile::TempDir, TestError> {
+        let root = verified_fixture()?;
+        super::super::write_state(root.path(), "cleanup-complete", "2\n7\n")?;
+        super::super::write_progress(root.path(), 7, phase)?;
+        Window {
+            epoch: 7,
+            boot: BOOT.to_owned(),
+            contest_id: Some("captured".to_owned()),
+            maintaining: true,
+        }
+        .persist(root.path())?;
+        let workers = root.path().join("run/natsume-privileged/contest-workers");
+        fs::create_dir_all(&workers)?;
+        fs::set_permissions(workers, fs::Permissions::from_mode(0o700))?;
+        let old = super::super::generation_directory(root.path(), 6).join("upper");
+        fs::create_dir_all(&old)?;
+        fs::write(old.join("old"), b"previous generation")?;
+        fs::write(
+            root.path().join("home/teams/current"),
+            b"current generation",
+        )?;
+        admission::close(root.path())?;
+        Ok(root)
+    }
+
+    async fn wait_for_task(task: Option<&ResetTask>) {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while task.is_some_and(|task| !task.handle.is_finished()) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|error| panic!("background task did not finish: {error}"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_verification_keeps_one_task_and_queries_responsive() -> Result<(), TestError>
+    {
+        use natsume_workstation_ipc::{PRIVILEGED1_PATH, Privileged1Proxy};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+
+        let root = pending_fixture(HomeResetPhase::Applied)?;
+        let (helper, client) = maintenance_peer().await?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (release, blocked) = mpsc::channel();
+        let mut task = None;
+        let progress = verify_with_removal(
+            root.path(),
+            &helper,
+            7,
+            &mut false,
+            &mut task,
+            move |root, epoch| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _sent = started.send(());
+                let _released = blocked.recv();
+                super::super::remove_other_generations(root, epoch)
+            },
+        )
+        .await?;
+        assert_eq!(progress.phase, HomeResetPhase::InProgress);
+        entered
+            .await
+            .unwrap_or_else(|error| panic!("deletion did not start: {error}"));
+        let service = crate::PrivilegedService {
+            filesystem_root: root.path().to_owned(),
+            home_reset_task: task,
+        };
+        helper.object_server().at(PRIVILEGED1_PATH, service).await?;
+        let proxy = Privileged1Proxy::new(&client).await?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let (left, right, query, ready) = tokio::join!(
+                proxy.verify_home_reset(7),
+                proxy.verify_home_reset(7),
+                proxy.query_home_reset(),
+                proxy.is_home_ready()
+            );
+            assert_eq!(left?.phase, HomeResetPhase::InProgress);
+            assert_eq!(right?.phase, HomeResetPhase::InProgress);
+            assert_eq!(query?.map(|p| p.phase), Some(HomeResetPhase::InProgress));
+            assert!(!ready?);
+            proxy.recover_home_reset(7).await?;
+            proxy.recover_local_home().await?;
+            assert!(proxy.verify_home_reset(8).await.is_err());
+            Ok::<_, TestError>(())
+        })
+        .await
+        .unwrap_or_else(|error| panic!("queries blocked behind deletion: {error}"))?;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(admission::mutation(root.path()).is_err());
+        assert!(admission::maintenance(root.path()).is_err());
+        assert!(admission::require_open(root.path()).is_err());
+        release
+            .send(())
+            .unwrap_or_else(|error| panic!("release deletion: {error}"));
+        let interface = helper
+            .object_server()
+            .interface::<_, crate::PrivilegedService>(PRIVILEGED1_PATH)
+            .await?;
+        {
+            let service = interface.get().await;
+            wait_for_task(service.home_reset_task.as_ref()).await;
+        }
+        assert_eq!(
+            proxy.verify_home_reset(7).await?.phase,
+            HomeResetPhase::Verified
+        );
+        assert!(!super::super::generation_directory(root.path(), 6).exists());
+        assert!(Window::read(root.path())?.is_none());
+        admission::require_open(root.path())?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_restore_closes_admission_until_background_completion() -> Result<(), TestError>
+    {
+        let root = pending_fixture(HomeResetPhase::Applied)?;
+        let permit = root.path().join("run/natsume-privileged/contest-permit");
+        fs::write(&permit, BOOT)?;
+        let (connection, _peer) = maintenance_peer().await?;
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let mut observation = RecoveryObservation::default();
+        let mut task = None;
+        restore_with_removal(
+            root.path(),
+            &connection,
+            &mut observation,
+            &mut task,
+            move |root, epoch| {
+                let _sent = entered.send(());
+                let _released = blocked.recv();
+                super::super::remove_other_generations(root, epoch)
+            },
+        )
+        .await?;
+        started
+            .await
+            .unwrap_or_else(|error| panic!("deletion did not start: {error}"));
+        assert_eq!(observation.reset_epoch, Some(7));
+        assert!(!permit.exists());
+        assert!(admission::require_open(root.path()).is_err());
+        assert_eq!(
+            query(root.path())?.map(|p| p.phase),
+            Some(HomeResetPhase::InProgress)
+        );
+        restore_home(root.path(), &connection, &mut observation, &mut task).await?;
+        let window = fs::read(super::super::state_directory(root.path()).join(WINDOW))?;
+        Window {
+            epoch: 8,
+            boot: BOOT.to_owned(),
+            contest_id: None,
+            maintaining: true,
+        }
+        .persist(root.path())?;
+        super::super::write_progress(root.path(), 8, HomeResetPhase::InProgress)?;
+        assert!(matches!(
+            restore_home(root.path(), &connection, &mut observation, &mut task).await,
+            Err(ResourceControlError::Rejected(_))
+        ));
+        fs::write(
+            super::super::state_directory(root.path()).join(WINDOW),
+            window,
+        )?;
+        super::super::write_progress(root.path(), 7, HomeResetPhase::InProgress)?;
+        release
+            .send(())
+            .unwrap_or_else(|error| panic!("release deletion: {error}"));
+        wait_for_task(task.as_ref()).await;
+        assert_eq!(
+            verify(root.path(), &connection, 7, &mut false, &mut task)
+                .await?
+                .phase,
+            HomeResetPhase::Verified
+        );
+        admission::require_open(root.path())?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_restore_with_invalid_policy_withdraws_existing_permit() -> Result<(), TestError>
+    {
+        let root = verified_fixture()?;
+        super::super::write_state(root.path(), "cleanup-complete", "2\n7\n")?;
+        admission::open(root.path())?;
+        fs::write(
+            root.path().join("etc/natsume/contest-reset-policy"),
+            "invalid\n",
+        )?;
+        let (connection, _peer) = peer().await?;
+        assert!(
+            restore_home(
+                root.path(),
+                &connection,
+                &mut RecoveryObservation::default(),
+                &mut None
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            !root
+                .path()
+                .join("run/natsume-privileged/contest-permit")
+                .exists()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_removal_stays_pending_and_recovery_retries_the_same_epoch()
+    -> Result<(), TestError> {
+        let root = pending_fixture(HomeResetPhase::Applied)?;
+        let (connection, _peer) = maintenance_peer().await?;
+        let mut task = None;
+        assert_eq!(
+            verify_with_removal(
+                root.path(),
+                &connection,
+                7,
+                &mut false,
+                &mut task,
+                |root, _epoch| {
+                    fs::remove_file(super::super::generation_directory(root, 6).join("upper/old"))
+                        .map_err(|_| unavailable("fixture partial deletion failed"))?;
+                    Err(unavailable("fixture removal failure"))
+                }
+            )
+            .await?
+            .phase,
+            HomeResetPhase::InProgress
+        );
+        wait_for_task(task.as_ref()).await;
+        assert_eq!(
+            query(root.path())?.map(|p| (p.reset_epoch, p.phase)),
+            Some((7, HomeResetPhase::InProgress))
+        );
+        assert!(Window::read(root.path())?.is_some());
+        assert!(admission::require_open(root.path()).is_err());
+        assert!(
+            !root
+                .path()
+                .join("run/natsume-privileged/contest-permit")
+                .exists()
+        );
+        assert!(matches!(
+            verify(root.path(), &connection, 7, &mut false, &mut task).await,
+            Err(ResourceControlError::Unavailable(_))
+        ));
+        assert!(task.is_none());
+        recover(root.path(), &connection, 7, &mut task).await?;
+        wait_for_task(task.as_ref()).await;
+        assert_eq!(
+            verify(root.path(), &connection, 7, &mut false, &mut task)
+                .await?
+                .phase,
+            HomeResetPhase::Verified
+        );
+        assert!(!super::super::generation_directory(root.path(), 6).exists());
+        assert_eq!(
+            fs::read(root.path().join("home/teams/current"))?,
+            b"current generation"
+        );
+        admission::require_open(root.path())?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lost_mount_after_removal_prevents_completion_publication() -> Result<(), TestError> {
+        let root = pending_fixture(HomeResetPhase::Applied)?;
+        let (connection, _peer) = maintenance_peer().await?;
+        let mut task = None;
+        verify_with_removal(
+            root.path(),
+            &connection,
+            7,
+            &mut false,
+            &mut task,
+            |root, epoch| {
+                super::super::remove_other_generations(root, epoch)?;
+                fs::write(root.join("proc/self/mountinfo"), "")
+                    .map_err(|_| unavailable("fixture mount loss failed"))
+            },
+        )
+        .await?;
+        wait_for_task(task.as_ref()).await;
+        assert_eq!(
+            query(root.path())?.map(|p| p.phase),
+            Some(HomeResetPhase::InProgress)
+        );
+        assert!(Window::read(root.path())?.is_some());
+        assert!(
+            !root
+                .path()
+                .join("run/natsume-privileged/contest-permit")
+                .exists()
+        );
+        assert!(matches!(
+            verify(root.path(), &connection, 7, &mut false, &mut task).await,
+            Err(ResourceControlError::Unavailable(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_resumes_persisted_boundaries_without_waiting_for_verify()
+    -> Result<(), TestError> {
+        let (connection, _peer) = maintenance_peer().await?;
+        for phase in [HomeResetPhase::Applied, HomeResetPhase::InProgress] {
+            for removal_complete in [false, true] {
+                let root = pending_fixture(phase)?;
+                if removal_complete {
+                    super::super::remove_other_generations(root.path(), 7)?;
+                } else {
+                    fs::remove_file(
+                        super::super::generation_directory(root.path(), 6).join("upper/old"),
+                    )?;
+                }
+                let captured = fs::read(super::super::state_directory(root.path()).join(WINDOW))?;
+                let mut service = crate::PrivilegedService {
+                    filesystem_root: root.path().to_owned(),
+                    home_reset_task: None,
+                };
+                service.recover_local_home(&connection).await?;
+                assert!(service.home_reset_task.is_some());
+                wait_for_task(service.home_reset_task.as_ref()).await;
+                assert_eq!(
+                    query(root.path())?.map(|p| (p.reset_epoch, p.phase)),
+                    Some((7, HomeResetPhase::Verified))
+                );
+                assert!(String::from_utf8_lossy(&captured).contains("captured"));
+                assert!(Window::read(root.path())?.is_none());
+                assert!(!super::super::generation_directory(root.path(), 6).exists());
+                admission::require_open(root.path())?;
+                assert_eq!(
+                    service.verify_home_reset(7, &connection).await?.phase,
+                    HomeResetPhase::Verified
+                );
+            }
+        }
+        Ok(())
+    }
+
     type ListedSessions = Vec<(String, u32, String, String, zbus::OwnedObjectPath)>;
     struct SilentLogind;
     #[zbus::interface(name = "org.freedesktop.login1.Manager")]
@@ -994,6 +1662,7 @@ mod tests {
             tokio::try_join!(server.build(), client.build()).unwrap_or_else(|e| panic!("bus: {e}"));
         let mut service = crate::PrivilegedService {
             filesystem_root: root.path().to_owned(),
+            home_reset_task: None,
         };
         let capture = Capture::default();
         async {

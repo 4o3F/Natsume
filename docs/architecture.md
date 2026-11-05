@@ -603,6 +603,8 @@ SessionControlTarget
 
 Helper 的 `QueryManagedSessions` 分别返回 waiting/contest 的精确会话、生命周期、`desktop_ready`、`locked_hint` 和实际前台。Daemon 结合这些系统事实与 Agent 的当前展示确认生成 readiness：比赛需唯一 Running、精确身份、桌面已就绪且未锁屏；waiting 还需当前 Agent lease 对当前 UI revision 的首帧及实际全屏尺寸确认。`ConfirmSessionPresentation` 的参数携带 lease ID、boot/session、revision、首帧标记和宽高；总线调用者连接由 Device1 验证，不能由参数自报。
 
+Device1 的 Agent 鉴权使用 Helper 的 `ValidateWaitingSession` 实时核对 boot、唯一 Waiting 精确会话及 Running 生命周期，并保留恢复排空和 preparation 状态限制；该查询不执行桌面探针。每次调用仍验证总线调用者和适用的租约。绑定提交、维护、前台切换和周期安全观察继续使用完整桌面就绪检查。
+
 Wayland 探针在角色自身 UID 下核对 GNOME SessionManager、compositor 的总线所有者与 PID/start time，并连接同一 compositor 的自有 Wayland socket。协议 roundtrip 必须返回有效输出；前台还检查 Mutter 电源状态和键盘/指针能力。Helper 比较探针前后的 logind 前台及 User.Display，矛盾或超时不报告就绪。
 
 初始化及重建允许短暂取得前台；后台 compositor 可暂停绘制。普通切换激活已有精确会话，在既有有界时限内等待 Mutter 恢复输出与输入并重新核对前台事实，不重启或追逐替代会话。waiting 的激活资格使用健康 compositor 与活着的已鉴权 Agent，不依赖后台尚未产生的新帧；激活后仍须确认当前 UI revision 的全屏帧才允许 Home 维护或报告前台就绪。后台单纯缺帧不消耗 waiting 自动重建预算。
@@ -616,6 +618,8 @@ Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm
 开始认证前，固定 gdm 入口必须等待同一 seat0 Wayland greeter 的 GNOME 启动及 GDM 实际接收注册。Helper 的独立 system-bus observer 关联 RegisterSession 调用与成功回执，缓存仅对当前 boot、bus、GDM owner 和 greeter PID/start 有效；它不持有图形变更锁。固定 gdm UID 子进程核对 greeter 私有总线、SessionManager、原生 Wayland 输出/input 及精确前台，认证与启动前重复核对捕获身份。
 
 整个准备由固定 root unit 在既有 40 秒内执行并记录阶段，退出或未知结果后重读真实会话。GDM 继续拥有 worker、display 和桌面；缺失注册回执不授权终止不明 greeter，也不能凭 SessionManager Running 提前开始登录。失败保留明确阶段和错误，有条件时返回 waiting；调用者退出不代表已开始的 GDM 登录被取消。
+
+Registration 的既有失败事件与 prepare 结果事件附带 `registration_stage`、`registration_kind`、`registration_elapsed_us` 和 `registration_stage_elapsed_us`。阶段与分类使用固定值，区分 probe 不可用或错误、proof 缺失、缓存不匹配、GDM owner 缺失、重复 proof、身份不匹配和 greeter 替换。计时从进入 Registration 开始，在成功离开、失败或超时时冻结，两条事件复用冻结值；未进入 Registration 的路径省略计时字段。新增字段只包含固定分类和数值，轮询不增加事件。
 
 系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属见[运行环境要求](client-environment.zh-CN.md#系统与桌面)，具体适配由镜像项目负责。
 
@@ -645,9 +649,11 @@ Home reset 使用单调 `reset_epoch`：
 - 维护窗口显式版本化，只解析当前格式；格式损坏或未知时保持门禁关闭，不转换或删除记录绕过；
 - Helper只向Daemon暴露该root-only目录是否包含状态；Startup在首次身份落盘前将其与Daemon-owned identity-bound artifact一并检查，任何残留都拒绝`CleanFirstStart`；
 - `Prepared` marker只在generation目录链全部fsync后发布，same epoch重放必须重新验证完整generation；
-- 当前generation验证成功后，Helper删除其他generation并fsync `generations/`，完成前不发布`Verified`；
+- 当前 generation 的宿主挂载验证成功后，Helper 先将两行 `progress` 的阶段持久化为 `in_progress`，再登记单个后台删除任务。`HomeResetPhase::InProgress` 追加到既有 IPC 阶段编码；VerifyHomeReset 返回同 epoch 的启动或查询进度，不等待旧代次全部删除；
+- 后台任务通过 `spawn_blocking` 执行既有 `remove_other_generations`（`std::fs::remove_dir_all`）并 fsync `generations/`。删除全程处于原维护窗口内，比赛准入关闭、teams UID 进程已排空，任务持有现有 MutationGuard 和 MaintenanceGuard。删除后重新核验当前宿主挂载、模板和同 epoch 的扩展清理记录，再持久化 `Verified`，按原顺序释放 admission 锁、结束窗口并发布 permit；
+- Verify、RecoverHomeReset、RecoverLocalHome 和启动恢复共用一个任务槽；同 epoch 运行中只返回进度。Helper 重启或下一次调用发现持久待办时，在原 epoch 和捕获的 boot/session 下重新建立维护边界，继续删除剩余旧代次。RecoverLocalHome 在恢复持久进度前取得 mutation 锁、关闭比赛准入并核验清理策略；已运行的同 epoch 任务继续持有原维护边界。RPC 超时、Daemon 计划取消和控制连接断开不取消已接受的后台任务；删除失败保留进行中记录、维护窗口和剩余旧目录，供同 epoch 重试；
 - 扩展清理的完成记录归 root 所有，文件名为 `cleanup-complete`，精确格式为 `2\n<reset_epoch>\n`。确认用户最终退出、临时文件及 FUSE 和 keyring 清理完成后，先持久化该记录，再发布 Home `Verified` 和登录许可。Prepare/Apply/Verify/Recover、启动恢复和 PAM 许可重放均要求同一 epoch 的当前版本清理记录。旧版仅验证 Home 的 `Verified` 或仅证明 CLEAR 成功的 v1 记录均不足以放行；升级时保留旧状态、关闭比赛登录，并显式提交新的 reset epoch 捕获、排空和清理旧会话。恢复流程不得捕获或终止未经授权的新会话；
-- 进行中继续报告上一个 completed epoch；
+- Daemon 对 Helper 的 `InProgress` 报告 Home `Resetting`，继续保留上一个 completed epoch 并维持访问关闭；仅在 Helper 报告 `HomeResetPhase::InProgress` 期间，按 500–1000 ms 抖动间隔轮询且不增长错误退避。Draining、Prepared、Applied 等其他阶段的重试沿用既有指数退避；实际 Home 控制错误继续报告 `RecoveryRequired` 并使用既有指数退避；已有唤醒提示仍可缩短当前等待。只有当前计划通过 Verify 确认 `Verified` 后才推进持久完成记录，周期观察不推进完成 epoch 或授予访问；
 - reset 仅清理 contestant Home，以及 `/tmp`、`/var/tmp`、`/run/lock` 和存在且有效的 `/var/crash` 中已确认属于 teams UID 的对象。目录遍历基于已打开的目录描述符，使用 nofollow 和 `NO_XDEV`，不跟随符号链接，也不跨越任何子挂载（包括同设备 bind mount）；保留共享目录和其他用户拥有的对象。遍历前，按精确 `user_id` 和固定路径范围识别遗留的 teams FUSE，并以普通方式卸载；未知、层叠、忙碌或不受管挂载均导致清理失败。teams 目录内含其他用户拥有的对象，或待删除对象的上级目录可被其他用户修改或重命名时，保留相关对象并保持比赛登录关闭，等待维护处理；
 - keyring 清理通过固定 `setpriv` 直接执行 Helper 的固定 `cleanup-keyrings` 子命令。子进程使用实际 teams UID/GID、空补充组、清空的环境、已移除的 inheritable/ambient capabilities 和 `NoNewPrivileges`，在新建的私有 session keyring 中调用安全 Rust API；长驻 Helper 的凭据保持不变，不使用 shell 或手写 unsafe。Helper 同步等待子进程；失败或超时时终止并回收子进程后才释放维护锁，避免留下后台清理任务。凭据核验失败、操作被拒绝或超时均保持比赛登录关闭；
 - keyring 清理用内核 Describe 逐一核验 `/proc/keys` 中密钥 serial 的实际属主并去重，再与 `/proc/key-users` 记录的该 UID 密钥总数比较，描述中的伪造换行或 UID 不参与属主判定。所有旧密钥和 keyring（包括仅被 keyring 限制规则引用的对象）均须失效（invalidate）；只有在原有时间预算内确认旧 serial 及描述已从内核中消失、该 UID 的密钥总数仅剩新建的 worker session，才允许发布完成记录。不延长预算等待默认 300 秒的垃圾回收。恶意移除 keyring WRITE/SETATTR/SEARCH 权限可能使清理无法完成，需要维护或重启；此时保持比赛登录关闭，不保证任意 ACL 下都能无重启恢复；
@@ -1057,7 +1063,7 @@ Device disable、revoke和current control-key replacement不是普通target变�
 
 两套schema位于`diesel/{business,journal}/`，分别嵌入各自migration；业务类型入口仍为`crate::diesel_schema`，日志为`#[path]`引入的`crate::journal_schema`。目录和生成规则见§17.2。
 
-Database在独立的debug级`db.transaction` span中记录静态`db.operation`（read／write）及微秒耗时：`db.permit_wait_us`为异步许可等待，`db.pool_wait_us`为连接池checkout等待，`db.write_lock_wait_us`为IMMEDIATE开始前的等待（失败时记录该次尝试耗时），不包含事务业务执行。未到达的阶段不填写；debug span未启用时跳过额外计时。不记录SQL、bind参数或秘密值，不改变当前request span、许可数量、获取预算或读写共用许可的策略。
+Database 使用私有 `TransactionTimings` 独立采集三段等待时长，并继续向 debug 级 `db.transaction` span 记录静态 `db.operation`（read／write）及微秒耗时：`db.permit_wait_us` 为异步许可等待，`db.pool_wait_us` 为连接池 checkout 等待，`db.write_lock_wait_us` 为 IMMEDIATE 开始前的等待（失败时记录该次尝试耗时）。事务结束或获取失败时，三段已采集等待之和严格大于 `TRANSACTION_WAIT_INFO_THRESHOLD`（100 ms）才输出一次 INFO 事件 `database transaction wait exceeded threshold`，包含固定 `code=db_transaction_wait`、`db.operation`、`db.result`（ok／error）、三段等待和 `db.total_wait_us`；未到达的阶段省略。总等待不计入阻塞执行器排队和事务业务执行时间。阻塞工作在连接归还后、原 dispatcher 与父 span 内输出事件；调用方取消后，已经启动的阻塞工作仍在实际结束时完成记录。事件不记录 SQL、bind 参数、业务结果或错误正文。
 
 ### 12.2 目标表与 mutation owner
 
@@ -1228,6 +1234,7 @@ Daemon 可以有一个有界 effect executor，但它处理 latest target计划�
 - 新完整 `ServerStateSnapshot` 通过验证后原子替换当前 target；
 - 与current/queued完全相同的target不替换plan；资源返回的Actual与本地重试判断独立，`Ok(snapshot)`不代表已经收敛，Actual去重只控制上报；
 - active lease内保留最近的target；资源明确要求重试时，单一调度器以1秒起步、指数增长至30秒封顶，每档在50%～100%范围内加入抖动；期限从本轮完成时计算，到期且本地执行器空闲后重跑同一target，不依赖新的Server消息或变化Actual；
+- Daemon 通过系统总线订阅 logind 的 `SessionRemoved` 和 systemd 的 `JobRemoved`，后者只匹配 waiting、contest 两个固定准备单元。zbus 校验发送者属于对应服务的当前总线名称所有者。提示只将已有重试期限提前到原期限与 75 毫秒后的较早时间，退避档位保持不变；执行中的提示保留到本轮完成，下一计划启动前清除旧提示。重试沿用 `refresh_plan` 和 `start_plan` 完成全部检查，通知缺失时继续使用指数退避；
 - 相同target不会重置或绕过重试期限，等待Server回应也不阻止到期重试；新target清除旧重试期限并通过原有fence替换计划，断线清除该lease的全部重试权限；
 - 资源自行区分临时依赖故障、等待外部输入和安全拒绝；Helper的Session/Home能力用明确的`Unavailable`与`Rejected`错误交接这一判断，不解析错误文本；未知错误保持拒绝，损坏记录、不受管挂载等不因重试绕过安全检查；
 - 已无本地待重试工作时停止计时，继续observe；Client发布变化Actual后仍允许Server用相同target触发一次重新检查。重试复用既有epoch与durable progress，Session pending只绑定原先捕获的确切会话，completed epoch只在durable completion后推进；
@@ -1450,7 +1457,7 @@ ETag 以解析后的文件路径为键，使用固定 16 组异步锁同步同�
 
 BoundTarget 必须包含非秘密 TeamPresentation：中英文队名、中英文校名和 INST ID；seat/account/binding_id 沿用同一 BindingContext。Binding 组件在读取凭据的同一事务中读取队伍／学校资料，缺少资料拒绝 materialize。旧部署须先用完整 XLSX 补齐资料再恢复控制连接。展示不进入凭据 revision、工件或 Binding Actual，也不参与 Client 资源目标比较。
 
-Daemon 独立处理展示：完整目标验证成功后立即发布文字，后台从同一 Server 的公开 Logo 路由下载图像。请求使用同一 pinned Control CA、HTTPS origin，不使用系统代理、不跟随重定向。每次最多一个 HTTP 请求或图像解码，20 秒请求超时，响应最多 20 MiB，栅格限制 4096 单边／4 Mi 像素，按内容识别 PNG/JPEG/WebP 并转成 PNG；SVG 由 Server 先转 PNG。每分钟以 ETag 重验，缺图或失败不阻塞控制循环，不新增 Logo convergence。
+Daemon 独立处理展示：完整目标验证成功后立即发布文字，后台从同一 Server 的公开 Logo 路由下载图像。请求使用同一 pinned Control CA、HTTPS origin，不使用系统代理、不跟随重定向。每次最多一个 HTTP 请求或图像解码，20 秒请求超时，响应最多 20 MiB，栅格限制 4096 单边／4 Mi 像素，按内容识别 PNG/JPEG/WebP 并转成 PNG；SVG 由 Server 先转 PNG。每轮下载和解码结束后等待 45–75 秒再以 ETag 重验；首次等待 0–60 秒，目标变化或重连等待 0–5 秒，均按整数毫秒均匀抽样。新通知打断等待并重新抽取变化延迟，随后下载最新目标。熵获取失败时，周期、变化、首次分别回退为 60、5、5 秒。缺图或失败不阻塞控制循环，不新增 Logo convergence。
 
 展示记录位于 `/var/lib/natsume/state/waiting.json`（0600），仅含展示资料、归属摘要和图像摘要／ETag。归属绑定 HTTPS endpoint、Control CA、已 Enrollment 的 Device ID 与控制公钥。只读 PNG 位于 `/var/lib/natsume-display`（目录 0755，由 natsume 写入，文件 0644），waiting 可读但不可写；不授予 waiting 访问私有 state 目录。只保留当前图像，Home reset 不删除这些数据。
 
@@ -1602,6 +1609,8 @@ async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享
 Server、Daemon、Helper 和 Waiting Agent 通过 INFO tracing 事件记录本地执行结果与耗时。完成事件在对应副作用的结果已知后记录，接收和状态变化事件记录所属边界已接受的事实；日志不改变执行顺序、deadline、重试或授权。没有实际工作或状态变化的周期检查、幂等返回及重复帧确认保持静默。事件字段不携带凭据、账号名、Home 路径、文件名或配置内容。
 
 Server 与 Daemon 使用 protocol crate 的同一 `target_digest` 函数关联目标：逐字段构造 `ConcreteTargetState` 投影，将 `binding_access.bound.password` 设为 `None`，保留其余字段的值和 presence，构造时不复制密码；对投影的 `prost` 编码计算 SHA-256，取前 8 bytes 编成 16 位小写十六进制摘要。摘要只用于诊断关联，业务目标比较沿用原有规则。
+
+Server 的 `actual received` 在 Actual 通过校验、组件处理成功且新目标成功入队后记录，包含 `device_id`、`target_digest`、`session_foreground`、`session_state`、`waiting_ready`、`contest_ready`、`completed_terminate_epoch`、`completed_reset_epoch`、`home_state`、`changed` 和 `reconcile_us`；可选值缺失时省略字段。`target_digest` 使用共享函数计算，取 Server 接纳该 Actual 时同轮解析出的目标；并发换目标时，字段随接纳时的 Server 目标变化。
 
 Daemon 在执行尝试实际启动时分配从 1 递增的本地 `plan` 编号，重试分配新编号。计数器跨控制连接重连保留，进程重启后重新开始；关联时同时使用进程实例信息。编号不进入协议，也不改变目标合并或调度决定。
 

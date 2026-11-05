@@ -25,6 +25,43 @@ use super::{SnapshotError, binding::BindingInputProvider};
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const FORMAT_VERSION: u32 = 1;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DelayReason {
+    Initial,
+    Periodic,
+    Change,
+}
+
+fn delay_from_sample(reason: DelayReason, sample: u32) -> Option<Duration> {
+    let (minimum, buckets) = match reason {
+        DelayReason::Initial => (0, 60_001),
+        DelayReason::Periodic => (45_000, 30_001),
+        DelayReason::Change => (0, 5_001),
+    };
+    let sample_space = u64::from(u32::MAX) + 1;
+    let limit = sample_space - sample_space % buckets;
+    let sample = u64::from(sample);
+    (sample < limit).then(|| Duration::from_millis(minimum + sample % buckets))
+}
+
+fn random_delay(reason: DelayReason) -> Duration {
+    loop {
+        let Ok(sample) = getrandom::u32() else {
+            tracing::warn!(
+                code = "logo_poll_entropy_unavailable",
+                "Waiting logo polling entropy unavailable; using fallback delay"
+            );
+            return match reason {
+                DelayReason::Periodic => Duration::from_secs(60),
+                DelayReason::Initial | DelayReason::Change => Duration::from_secs(5),
+            };
+        };
+        if let Some(delay) = delay_from_sample(reason, sample) {
+            return delay;
+        }
+    }
+}
+
 pub(super) fn validate_bound(bound: &BoundTarget) -> Option<WaitingTeam> {
     let context = bound.context.as_ref()?;
     let presentation = bound.presentation.as_ref()?;
@@ -345,13 +382,36 @@ impl Presentation {
     /// One in-flight download; target changes interrupt HTTP work. Periodic `ETag` checks
     /// also discover a replaced logo when the control target has not changed.
     pub(super) async fn run(self: Arc<Self>, client: reqwest::Client, origin: String) {
+        self.run_with_delays(client, origin, random_delay).await;
+    }
+
+    async fn run_with_delays(
+        self: Arc<Self>,
+        client: reqwest::Client,
+        origin: String,
+        mut next_delay: impl FnMut(DelayReason) -> Duration,
+    ) {
         let mut changes = self.changed.subscribe();
+        let mut reason = DelayReason::Initial;
         loop {
-            changes.borrow_and_update();
+            let delay = next_delay(reason);
+            tokio::select! {
+                biased;
+                result = changes.changed() => {
+                    if result.is_err() { return; }
+                    reason = DelayReason::Change;
+                    continue;
+                }
+                () = tokio::time::sleep(delay) => {}
+            }
+            reason = DelayReason::Periodic;
             if let Some(download) = self.download() {
                 tokio::select! {
                     biased;
-                    result = changes.changed() => { if result.is_err() { return; } continue; }
+                    result = changes.changed() => {
+                        if result.is_err() { return; }
+                        reason = DelayReason::Change;
+                    }
                     result = fetch(&client, &origin, &download) => match result {
                         Ok(Fetched::NotModified) => {},
                         Ok(Fetched::Image(bytes, etag)) => {
@@ -369,10 +429,6 @@ impl Presentation {
                         Err(reason) => tracing::warn!(reason, "Waiting logo download will retry"),
                     }
                 }
-            }
-            tokio::select! {
-                result = changes.changed() => { if result.is_err() { return; } }
-                () = tokio::time::sleep(Duration::from_mins(1)) => {}
             }
         }
     }
@@ -460,9 +516,379 @@ fn normalize_image(bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        sync::mpsc,
+    };
 
     fn checked<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
         result.unwrap_or_else(|error| panic!("fixture failed: {error:?}"))
+    }
+
+    #[test]
+    fn delay_samples_cover_endpoints_and_reject_the_incomplete_tail() {
+        for (reason, minimum, maximum) in [
+            (DelayReason::Initial, 0, 60_000),
+            (DelayReason::Periodic, 45_000, 75_000),
+            (DelayReason::Change, 0, 5_000),
+        ] {
+            let buckets = maximum - minimum + 1;
+            let sample_space = u64::from(u32::MAX) + 1;
+            let limit = sample_space - sample_space % buckets;
+            assert_eq!(
+                delay_from_sample(reason, 0),
+                Some(Duration::from_millis(minimum))
+            );
+            assert_eq!(
+                delay_from_sample(reason, checked(u32::try_from(buckets - 1))),
+                Some(Duration::from_millis(maximum))
+            );
+            assert_eq!(
+                delay_from_sample(reason, checked(u32::try_from(limit - 1))),
+                Some(Duration::from_millis(maximum))
+            );
+            for sample in limit..sample_space {
+                assert_eq!(
+                    delay_from_sample(reason, checked(u32::try_from(sample))),
+                    None
+                );
+            }
+            assert_eq!(
+                [u32::MAX, 0]
+                    .into_iter()
+                    .find_map(|sample| delay_from_sample(reason, sample)),
+                Some(Duration::from_millis(minimum))
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_samples_fill_every_millisecond_bucket_equally() {
+        for (reason, minimum, buckets) in [
+            (DelayReason::Initial, 0, 60_001_u32),
+            (DelayReason::Periodic, 45_000, 30_001),
+            (DelayReason::Change, 0, 5_001),
+        ] {
+            let mut counts = vec![0; checked(usize::try_from(buckets))];
+            for sample in 0..buckets * 3 {
+                let delay = delay_from_sample(reason, sample)
+                    .unwrap_or_else(|| panic!("complete buckets must be accepted"));
+                counts[checked(usize::try_from(delay.as_millis() - minimum))] += 1;
+            }
+            assert!(counts.iter().all(|&count| count == 3), "{reason:?}");
+        }
+    }
+
+    struct LogoRequest {
+        path: String,
+        socket: tokio::net::TcpStream,
+    }
+
+    impl LogoRequest {
+        async fn respond(mut self, image: Option<&[u8]>) {
+            let status = if image.is_some() {
+                "200 OK"
+            } else {
+                "404 Not Found"
+            };
+            let body = image.unwrap_or_default();
+            let headers = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            checked(self.socket.write_all(headers.as_bytes()).await);
+            checked(self.socket.write_all(body).await);
+            checked(self.socket.shutdown().await);
+        }
+    }
+
+    async fn logo_server() -> (String, mpsc::UnboundedReceiver<LogoRequest>) {
+        let listener = checked(tokio::net::TcpListener::bind("127.0.0.1:0").await);
+        let origin = format!("http://{}", checked(listener.local_addr()));
+        let (sender, requests) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = checked(listener.accept().await);
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(checked(socket.read_u8().await));
+                    assert!(request.len() < 4096);
+                }
+                if sender
+                    .send(LogoRequest {
+                        path: checked(String::from_utf8(request)),
+                        socket,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        (origin, requests)
+    }
+
+    fn poll_with_delays(
+        presentation: &Arc<Presentation>,
+        origin: String,
+        delays: impl IntoIterator<Item = (DelayReason, u64)>,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        mpsc::UnboundedReceiver<DelayReason>,
+    ) {
+        let client = checked(reqwest::Client::builder().no_proxy().build());
+        let (sender, reasons) = mpsc::unbounded_channel();
+        let mut delays: std::collections::VecDeque<_> = delays.into_iter().collect();
+        let polling =
+            tokio::spawn(
+                Arc::clone(presentation).run_with_delays(client, origin, move |reason| {
+                    let (expected, milliseconds) = delays
+                        .pop_front()
+                        .unwrap_or_else(|| panic!("unexpected delay: {reason:?}"));
+                    assert_eq!(reason, expected);
+                    checked(sender.send(reason));
+                    Duration::from_millis(milliseconds)
+                }),
+            );
+        (polling, reasons)
+    }
+
+    async fn next_reason(
+        reasons: &mut mpsc::UnboundedReceiver<DelayReason>,
+        expected: DelayReason,
+    ) {
+        assert_eq!(reasons.recv().await, Some(expected));
+    }
+
+    async fn before_deadline(
+        requests: &mut mpsc::UnboundedReceiver<LogoRequest>,
+        milliseconds: u64,
+    ) {
+        tokio::select! {
+            biased;
+            _ = requests.recv() => panic!("logo requested before delay elapsed"),
+            () = tokio::time::sleep(Duration::from_millis(milliseconds)) => {}
+        }
+        assert!(requests.try_recv().is_err());
+    }
+
+    async fn request_for(
+        requests: &mut mpsc::UnboundedReceiver<LogoRequest>,
+        organization: &str,
+    ) -> LogoRequest {
+        let request = requests
+            .recv()
+            .await
+            .unwrap_or_else(|| panic!("logo server stopped"));
+        assert!(request.path.starts_with(&format!(
+            "GET /api/v2/organizations/{organization}/logo HTTP/1.1\r\n"
+        )));
+        request
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_request_and_successive_periods_wait_until_their_deadlines() {
+        let (_directory, presentation) = fixture();
+        checked(presentation.accept(Some(team())));
+        let (origin, mut requests) = logo_server().await;
+        let (polling, mut reasons) = poll_with_delays(
+            &presentation,
+            origin,
+            [
+                (DelayReason::Initial, 60_000),
+                (DelayReason::Periodic, 45_000),
+                (DelayReason::Periodic, 75_000),
+            ],
+        );
+        for (reason, milliseconds) in [
+            (DelayReason::Initial, 60_000),
+            (DelayReason::Periodic, 45_000),
+            (DelayReason::Periodic, 75_000),
+        ] {
+            next_reason(&mut reasons, reason).await;
+            before_deadline(&mut requests, milliseconds - 1).await;
+            tokio::time::advance(Duration::from_millis(1)).await;
+            let request = request_for(&mut requests, "INST-001").await;
+            if milliseconds == 75_000 {
+                drop(request);
+            } else {
+                request.respond(None).await;
+            }
+        }
+        polling.abort();
+        assert!(polling.await.is_err_and(|error| error.is_cancelled()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn changes_interrupt_initial_wait_and_redraw_for_only_the_latest_target() {
+        let (_directory, presentation) = fixture();
+        checked(presentation.accept(Some(team())));
+        let (origin, mut requests) = logo_server().await;
+        let (polling, mut reasons) = poll_with_delays(
+            &presentation,
+            origin,
+            [
+                (DelayReason::Initial, 60_000),
+                (DelayReason::Change, 5_000),
+                (DelayReason::Change, 2_000),
+                (DelayReason::Change, 0),
+            ],
+        );
+        next_reason(&mut reasons, DelayReason::Initial).await;
+        before_deadline(&mut requests, 10_000).await;
+        for (organization, milliseconds) in [("INST-002", 4_999), ("INST-003", 1_999)] {
+            let mut latest = team();
+            latest.organization_id = organization.into();
+            checked(presentation.accept(Some(latest)));
+            next_reason(&mut reasons, DelayReason::Change).await;
+            before_deadline(&mut requests, milliseconds).await;
+        }
+        let mut latest = team();
+        latest.organization_id = "INST-004".into();
+        checked(presentation.accept(Some(latest)));
+        next_reason(&mut reasons, DelayReason::Change).await;
+        let _request = request_for(&mut requests, "INST-004").await;
+        polling.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn changes_cancel_http_and_delay_the_latest_target_request() {
+        let (_directory, presentation) = fixture();
+        checked(presentation.accept(Some(team())));
+        let (origin, mut requests) = logo_server().await;
+        let (polling, mut reasons) = poll_with_delays(
+            &presentation,
+            origin,
+            [
+                (DelayReason::Initial, 0),
+                (DelayReason::Change, 5_000),
+                (DelayReason::Change, 2_000),
+            ],
+        );
+        next_reason(&mut reasons, DelayReason::Initial).await;
+        let old = request_for(&mut requests, "INST-001").await;
+        for organization in ["INST-002", "INST-003"] {
+            let mut latest = team();
+            latest.organization_id = organization.into();
+            checked(presentation.accept(Some(latest)));
+        }
+        next_reason(&mut reasons, DelayReason::Change).await;
+        before_deadline(&mut requests, 4_999).await;
+        let mut latest = team();
+        latest.organization_id = "INST-004".into();
+        checked(presentation.accept(Some(latest)));
+        next_reason(&mut reasons, DelayReason::Change).await;
+        before_deadline(&mut requests, 1_999).await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let _request = request_for(&mut requests, "INST-004").await;
+        assert!(
+            checked(presentation.state.lock())
+                .cache
+                .logo_digest
+                .is_none()
+        );
+        drop(old);
+        polling.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_and_unbind_stop_requests_and_reconnect_uses_change_delay() {
+        let (_directory, presentation) = fixture();
+        checked(presentation.accept(Some(team())));
+        let (origin, mut requests) = logo_server().await;
+        let (polling, mut reasons) = poll_with_delays(
+            &presentation,
+            origin,
+            [
+                (DelayReason::Initial, 0),
+                (DelayReason::Change, 1_000),
+                (DelayReason::Periodic, 60_000),
+                (DelayReason::Change, 2_000),
+                (DelayReason::Change, 1_000),
+                (DelayReason::Periodic, 60_000),
+            ],
+        );
+        next_reason(&mut reasons, DelayReason::Initial).await;
+        let old = request_for(&mut requests, "INST-001").await;
+        checked(presentation.disconnect());
+        next_reason(&mut reasons, DelayReason::Change).await;
+        before_deadline(&mut requests, 1_000).await;
+        next_reason(&mut reasons, DelayReason::Periodic).await;
+        checked(presentation.accept(Some(team())));
+        next_reason(&mut reasons, DelayReason::Change).await;
+        before_deadline(&mut requests, 1_999).await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let current = request_for(&mut requests, "INST-001").await;
+        checked(presentation.accept(None));
+        next_reason(&mut reasons, DelayReason::Change).await;
+        before_deadline(&mut requests, 1_000).await;
+        next_reason(&mut reasons, DelayReason::Periodic).await;
+        before_deadline(&mut requests, 59_999).await;
+        assert!(presentation.download().is_none());
+        drop((old, current));
+        polling.abort();
+    }
+
+    #[test]
+    fn changes_during_decode_wait_for_completion_and_then_use_change_delay() {
+        let (decoder_started, started) = tokio::sync::oneshot::channel();
+        let decoder_started = Mutex::new(Some(decoder_started));
+        let (release_decoder, decoder_release) = std::sync::mpsc::channel();
+        let decoder_release = Mutex::new(decoder_release);
+        let runtime = checked(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .start_paused(true)
+                .max_blocking_threads(1)
+                .on_thread_start(move || {
+                    if let Some(started) = checked(decoder_started.lock()).take() {
+                        let _ = started.send(());
+                        let _ = checked(decoder_release.lock()).recv();
+                    }
+                })
+                .build(),
+        );
+        runtime.block_on(async move {
+            let (_directory, presentation) = fixture();
+            checked(presentation.accept(Some(team())));
+            let (origin, mut requests) = logo_server().await;
+            let (polling, mut reasons) = poll_with_delays(
+                &presentation,
+                origin,
+                [
+                    (DelayReason::Initial, 0),
+                    (DelayReason::Periodic, 60_000),
+                    (DelayReason::Change, 5_000),
+                ],
+            );
+            next_reason(&mut reasons, DelayReason::Initial).await;
+            request_for(&mut requests, "INST-001")
+                .await
+                .respond(Some(&png()))
+                .await;
+            checked(started.await);
+            for organization in ["INST-002", "INST-003"] {
+                let mut latest = team();
+                latest.organization_id = organization.into();
+                checked(presentation.accept(Some(latest)));
+            }
+            tokio::time::advance(Duration::from_millis(10_000)).await;
+            assert!(requests.try_recv().is_err());
+            assert!(reasons.try_recv().is_err());
+            checked(release_decoder.send(()));
+            next_reason(&mut reasons, DelayReason::Periodic).await;
+            next_reason(&mut reasons, DelayReason::Change).await;
+            assert!(
+                checked(presentation.state.lock())
+                    .cache
+                    .logo_digest
+                    .is_none()
+            );
+            before_deadline(&mut requests, 4_999).await;
+            tokio::time::advance(Duration::from_millis(1)).await;
+            let _request = request_for(&mut requests, "INST-003").await;
+            polling.abort();
+        });
     }
 
     fn team() -> WaitingTeam {
