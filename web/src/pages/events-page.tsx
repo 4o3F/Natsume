@@ -692,109 +692,113 @@ function EventFilterBar({
   }
 
   return (
-    <div
-      role="search"
-      aria-label="Event filters"
-      className="flex flex-wrap items-end gap-2"
-    >
-      {presets.length > 1 && (
+    <div role="search" aria-label="Event filters" className="space-y-2">
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+        {presets.length > 1 && (
+          <ToggleGroup
+            type="single"
+            value={filters.preset}
+            onValueChange={(value) =>
+              value &&
+              onChange({
+                ...filters,
+                preset: value as EventFilters["preset"],
+                kinds: [],
+              })
+            }
+            aria-label="Category"
+            className="max-w-full overflow-x-auto"
+          >
+            {presets.map((preset) => (
+              <ToggleGroupItem key={preset.value} value={preset.value}>
+                {preset.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        )}
         <ToggleGroup
           type="single"
-          value={filters.preset}
-          onValueChange={(value) =>
-            value &&
-            onChange({
-              ...filters,
-              preset: value as EventFilters["preset"],
-              kinds: [],
-            })
-          }
-          aria-label="Category"
+          value={filters.range}
+          onValueChange={(value) => value && setRange(value as TimeRange)}
+          aria-label="Time range"
           className="max-w-full overflow-x-auto"
         >
-          {presets.map((preset) => (
-            <ToggleGroupItem key={preset.value} value={preset.value}>
-              {preset.label}
+          {(Object.keys(timeRangeLabels) as TimeRange[]).map((range) => (
+            <ToggleGroupItem key={range} value={range}>
+              {timeRangeLabels[range]}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
-      )}
-      <ToggleGroup
-        type="single"
-        value={filters.range}
-        onValueChange={(value) => value && setRange(value as TimeRange)}
-        aria-label="Time range"
-        className="max-w-full overflow-x-auto"
-      >
-        {(Object.keys(timeRangeLabels) as TimeRange[]).map((range) => (
-          <ToggleGroupItem key={range} value={range}>
-            {timeRangeLabels[range]}
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
-      {filters.range === "custom" && (
-        <div className="flex flex-wrap items-end gap-2">
-          <DateTimeField
-            label={`From (${formatOffset(offset)})`}
-            value={filters.from}
-            offset={offset}
-            onChange={(from) => onChange({ ...filters, from })}
-          />
-          <DateTimeField
-            label={`To (${formatOffset(offset)})`}
-            value={filters.to}
-            offset={offset}
-            onChange={(to) => onChange({ ...filters, to })}
-          />
-        </div>
-      )}
-      <form key={deviceText} onSubmit={applyDevice} className="w-full sm:w-72">
-        <InputGroup
-          type="search"
-          name="device"
-          aria-label="Seat prefix or device ID"
-          placeholder="Seat prefix or device ID, then Enter"
-          icon={<Search aria-hidden="true" />}
-          defaultValue={deviceText}
-          onBlur={(event) => event.currentTarget.form?.requestSubmit()}
-        />
-      </form>
-      <MultiSelectFilter
-        label="Kind"
-        options={kindOptions}
-        value={selection(kinds, filters.kinds)}
-        onChange={(value) =>
-          onChange({ ...filters, kinds: selected<EventKind>(kinds, value) })
-        }
-      />
-      <MultiSelectFilter
-        label="Severity"
-        options={severityOptions}
-        value={selection(severityOrder, filters.severities)}
-        onChange={(value) =>
-          onChange({
-            ...filters,
-            severities: selected<Severity>(severityOrder, value),
-          })
-        }
-      />
-      {isAdmin && (
-        <OperatorFilter
-          value={filters.operatorId}
-          onChange={(operatorId) => onChange({ ...filters, operatorId })}
-        />
-      )}
-      {serializeEventFilters(filters).toString() !== "" && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => onChange(defaultEventFilters)}
+        {filters.range === "custom" && (
+          <div className="flex flex-wrap items-end gap-2">
+            <DateTimeField
+              label={`From (${formatOffset(offset)})`}
+              value={filters.from}
+              offset={offset}
+              onChange={(from) => onChange({ ...filters, from })}
+            />
+            <DateTimeField
+              label={`To (${formatOffset(offset)})`}
+              value={filters.to}
+              offset={offset}
+              onChange={(to) => onChange({ ...filters, to })}
+            />
+          </div>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <form
+          key={deviceText}
+          onSubmit={applyDevice}
+          className="w-full sm:w-80"
         >
-          <RotateCcw aria-hidden="true" />
-          Reset
-        </Button>
-      )}
+          <InputGroup
+            type="search"
+            name="device"
+            aria-label="Seat prefix or device ID"
+            placeholder="Seat prefix or device ID, then Enter"
+            icon={<Search aria-hidden="true" />}
+            defaultValue={deviceText}
+            onBlur={(event) => event.currentTarget.form?.requestSubmit()}
+          />
+        </form>
+        <MultiSelectFilter
+          label="Kind"
+          options={kindOptions}
+          value={selection(kinds, filters.kinds)}
+          onChange={(value) =>
+            onChange({ ...filters, kinds: selected<EventKind>(kinds, value) })
+          }
+        />
+        <MultiSelectFilter
+          label="Severity"
+          options={severityOptions}
+          value={selection(severityOrder, filters.severities)}
+          onChange={(value) =>
+            onChange({
+              ...filters,
+              severities: selected<Severity>(severityOrder, value),
+            })
+          }
+        />
+        {isAdmin && (
+          <OperatorFilter
+            value={filters.operatorId}
+            onChange={(operatorId) => onChange({ ...filters, operatorId })}
+          />
+        )}
+        {serializeEventFilters(filters).toString() !== "" && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onChange(defaultEventFilters)}
+          >
+            <RotateCcw aria-hidden="true" />
+            Reset
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
