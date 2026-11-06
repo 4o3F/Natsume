@@ -2461,7 +2461,7 @@ admin `GET /photo/imports/{id}/preview` 查看投影，`POST /photo/imports/{id}
 
 目标身份采用稳定 account_id：同 ID 修改用户名仍有效，导出使用当前用户名；删除后同名重建的新 ID 不继承照片。名单校验在一个共享事务内批量完成。待处理读取和预览通过同一规则把失效 active/pending_review 投影为 needs_association，读取不写状态。`GET /photo/submissions` 使用完整的 source/submission 游标，默认 50、最多 100；`GET /photo/photos` 不分页，按 account_id 排序一次返回全部有效照片记录的 JSON 数组，不提供分页参数，也不返回 next。Photo 私有 SQL 在 LIMIT 前筛选需处理项或当前有效分配，没有逐行 association 回查，也不要求调用者穿过空 entries 页。
 
-admin `GET /photo/photos/{account_id}/image` 返回已验证照片，`POST /photo/exports` 固定当前有效 active 快照（最多 2000 张），事务外打开文件并生成 ZIP。文件名为当前外部 account 加 .jpg/.png；拒绝路径字符、Windows 保留名、尾部空格/点、超长和保守大小写冲突，缺失或损坏整包失败。STORE、64 KiB 缓冲和实际摘要校验保持协议 8 GiB 预算；无照片输出空 ZIP。导出使用私有 exports 下 O_TMPFILE，文件系统须支持，服务描述符限额须容纳 2000 个对象句柄。一个导出名额、两个单图名额由准备 IO 和 ReaderStream 文件读取持有；取消时受 ServerLifecycle 跟踪的清理任务等待实际文件读取结束后释放，生成/下载各十五分钟，断开或停服释放匿名文件。所有新增写路由具有独立审计分类，不记录请求体、凭据或图像内容；Web 接收界面尚未实现。
+admin `GET /photo/photos/{account_id}/image` 返回已验证照片，`POST /photo/exports` 固定当前有效 active 快照（最多 2000 张），事务外打开文件并生成 ZIP。文件名为当前外部 account 加 .jpg/.png；拒绝路径字符、Windows 保留名、尾部空格/点、超长和保守大小写冲突，缺失或损坏整包失败。STORE、64 KiB 缓冲和实际摘要校验保持协议 8 GiB 预算；无照片输出空 ZIP。导出使用私有 exports 下 O_TMPFILE，文件系统须支持，服务描述符限额须容纳 2000 个对象句柄。一个导出名额、两个单图名额由准备 IO 和 ReaderStream 文件读取持有；取消时受 ServerLifecycle 跟踪的清理任务等待实际文件读取结束后释放，生成/下载各十五分钟，断开或停服释放匿名文件。所有新增写路由具有独立审计分类，不记录请求体、凭据或图像内容。Web Panel 的 Team photos、Photo imports、Photo sources 页面仅管理员可见，覆盖来源管理、成果包上传／预览／接收／决定及两类导出；Server 不提供导入任务列表，页面按 import_id 打开既有任务。
 
 只有确认成品交付。Photo Client 仅首次初始化联网，之后全程离线；Manifest、签名与成品图片组成一个 ZIP，经 Web Panel 一次上传。Server 使用有界流式解压和验证，限制压缩包、条目、解压总量与图像解码资源，不整包加载到内存。成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希，由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
 

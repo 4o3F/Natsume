@@ -22,6 +22,13 @@ import type {
   OperatorRoleRequest,
   OperatorTokenRequest,
   OrganizationLogoResponse_Serialize as OrganizationLogoResponse,
+  PendingPhotoPage_Serialize as PendingPhotoPage,
+  PhotoDecision_Serialize as PhotoDecision,
+  PhotoPairingCode,
+  PhotoRecord,
+  PhotoSource,
+  PhotoSourceCreate,
+  PhotoSourceStateUpdate,
   PrintQueueEntry_Serialize as PrintQueueEntry,
   PrintExecution_Serialize as PrintExecution,
   PrintRequeue,
@@ -33,6 +40,8 @@ import type {
   PrintSourceIssued,
   ProvisioningWindowRequest,
   ProvisioningWindowResponse,
+  ResultImportJob_Serialize as ResultImportJob,
+  ResultImportPreview_Serialize as ResultImportPreview,
   SeatResponse,
   SessionRequest,
   SessionResponse,
@@ -55,6 +64,11 @@ interface RequestOptions {
 export function journalExportHref(query: URLSearchParams) {
   const search = query.toString();
   return `/api/v2/journal/export${search ? `?${search}` : ""}`;
+}
+
+/** Admin-only Photo current-image read; the browser loads it directly. */
+export function photoImageHref(accountId: string) {
+  return `/api/v2/photo/photos/${encodeURIComponent(accountId)}/image`;
 }
 
 const XLSX_CONTENT_TYPE =
@@ -176,6 +190,104 @@ export function createApiClient(
         "DELETE",
         `/api/v2/print/sources/${encodeURIComponent(id)}`,
         options,
+      ),
+    listPhotoSources: (options?: RequestOptions) =>
+      request<PhotoSource[]>("GET", "/api/v2/photo/sources", options),
+    createPhotoSource: (body: PhotoSourceCreate, options?: RequestOptions) =>
+      json<PhotoSource>("POST", "/api/v2/photo/sources", body, options),
+    issuePhotoPairingCode: (id: string, options?: RequestOptions) =>
+      json<PhotoPairingCode>(
+        "POST",
+        `/api/v2/photo/sources/${encodeURIComponent(id)}/pairing-code`,
+        {},
+        options,
+      ),
+    resetPhotoEnrollment: (id: string, options?: RequestOptions) =>
+      json<PhotoPairingCode>(
+        "POST",
+        `/api/v2/photo/sources/${encodeURIComponent(id)}/reset-enrollment`,
+        undefined,
+        options,
+      ),
+    updatePhotoSourceState: (
+      id: string,
+      body: PhotoSourceStateUpdate,
+      options?: RequestOptions,
+    ) =>
+      json<void>(
+        "POST",
+        `/api/v2/photo/sources/${encodeURIComponent(id)}/state`,
+        body,
+        options,
+      ),
+    uploadPhotoImport: (file: Blob, options?: RequestOptions) =>
+      request<ResultImportJob>("POST", "/api/v2/photo/imports", options, file, {
+        "Content-Type": "application/zip",
+      }),
+    getPhotoImport: (id: string, options?: RequestOptions) =>
+      request<ResultImportJob>(
+        "GET",
+        `/api/v2/photo/imports/${encodeURIComponent(id)}`,
+        options,
+      ),
+    previewPhotoImport: (id: string, options?: RequestOptions) =>
+      request<ResultImportPreview>(
+        "GET",
+        `/api/v2/photo/imports/${encodeURIComponent(id)}/preview`,
+        options,
+      ),
+    commitPhotoImport: (id: string, options?: RequestOptions) =>
+      json<ResultImportPreview>(
+        "POST",
+        `/api/v2/photo/imports/${encodeURIComponent(id)}/commit`,
+        undefined,
+        options,
+      ),
+    decidePhotoImport: (
+      id: string,
+      body: PhotoDecision,
+      options?: RequestOptions,
+    ) =>
+      json<ResultImportPreview>(
+        "POST",
+        `/api/v2/photo/imports/${encodeURIComponent(id)}/decisions`,
+        body,
+        options,
+      ),
+    listPhotoSubmissions: (
+      cursor: { source: string; submission: string } | null,
+      options?: RequestOptions,
+    ) => {
+      const query = new URLSearchParams({ limit: "100" });
+      if (cursor) {
+        query.set("after_source_id", cursor.source);
+        query.set("after_submission_id", cursor.submission);
+      }
+      return request<PendingPhotoPage>(
+        "GET",
+        `/api/v2/photo/submissions?${query}`,
+        options,
+      );
+    },
+    listPhotos: (options?: RequestOptions) =>
+      request<PhotoRecord[]>("GET", "/api/v2/photo/photos", options),
+    exportPhotos: (options?: RequestOptions) =>
+      request<Blob>(
+        "POST",
+        "/api/v2/photo/exports",
+        options,
+        undefined,
+        undefined,
+        true,
+      ),
+    exportPyrite: (options?: RequestOptions) =>
+      request<Blob>(
+        "POST",
+        "/api/v2/photo/exports/pyrite",
+        options,
+        undefined,
+        undefined,
+        true,
       ),
     listSeats: (options?: RequestOptions) =>
       request<SeatResponse[]>("GET", "/api/v2/seats", options),

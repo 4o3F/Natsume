@@ -7,6 +7,9 @@ import { DevicesPage } from "@/pages/devices-page";
 import { EnrollmentPage } from "@/pages/enrollment-page";
 import { EventsPage } from "@/pages/events-page";
 import { LoginPage } from "@/pages/login-page";
+import { PhotoImportsPage } from "@/pages/photo-imports-page";
+import { PhotoPage } from "@/pages/photo-page";
+import { PhotoSourcesPage } from "@/pages/photo-sources-page";
 import { PreparationPage } from "@/pages/preparation-page";
 import { PrintQueuePage } from "@/pages/print-queue-page";
 import { PrintPrintersPage } from "@/pages/print-printers-page";
@@ -45,6 +48,13 @@ export function App() {
             <Route path="/users" element={<UsersPage />} />
             <Route path="/print/printers" element={<PrintPrintersPage />} />
             <Route path="/print/sources" element={<PrintSourcesPage />} />
+            <Route path="/photo" element={<PhotoPage />} />
+            <Route path="/photo/imports" element={<PhotoImportsPage />} />
+            <Route
+              path="/photo/imports/:importId"
+              element={<PhotoImportsPage />}
+            />
+            <Route path="/photo/sources" element={<PhotoSourcesPage />} />
           </Route>
           <Route path="/change-password" element={<ChangePasswordPage />} />
         </Route>
