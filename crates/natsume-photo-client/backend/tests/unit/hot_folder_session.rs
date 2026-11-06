@@ -48,17 +48,23 @@ enum Error {
 }
 
 fn write_timed_png(path: &std::path::Path, time: &[u8]) -> Result<()> {
+    use image::ImageEncoder as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+
     let modified =
         chrono::NaiveDateTime::parse_from_str(&String::from_utf8_lossy(time), "%Y:%m:%d %H:%M:%S")
             .context(TimeSnafu)?
             .and_utc();
-    image::RgbImage::from_pixel(8, 6, image::Rgb([30; 3]))
-        .save(path)
-        .context(ImageSnafu)?;
+    // Keep ingestion out until both the image and its modification time are ready.
     let file = fs::OpenOptions::new()
         .write(true)
+        .create_new(true)
+        .share_mode(0)
         .open(path)
         .context(IoSnafu)?;
+    image::codecs::png::PngEncoder::new(&file)
+        .write_image(&[30; 8 * 6 * 3], 8, 6, image::ExtendedColorType::Rgb8)
+        .context(ImageSnafu)?;
     file.set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::from(modified)))
         .context(IoSnafu)
 }
