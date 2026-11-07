@@ -25,7 +25,7 @@ uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 arboard = { version = "3.6", default-features = false }
-rfd = { version = "0.17.2", default-features = false }
+rfd = { version = "0.18.0", default-features = false }
 slint = { workspace = true, features = ["backend-winit", "renderer-software"] }
 tray-icon = { version = "0.26.0", default-features = false }
 windows = { workspace = true, features = [
