@@ -185,7 +185,7 @@ for (const path of ["/devices", "/targets"]) {
     if (path === "/devices") {
       expect(api.reads).toHaveLength(after);
       await expect(filter).toHaveAccessibleName("Lifecycle: None");
-    } else expect(api.reads.slice(after)).toEqual(["enabled"]);
+    } else await expect.poll(() => api.reads.slice(after)).toEqual(["enabled"]);
     await expect(filter).toBeVisible();
     fleet[2].state = "disabled";
     await selectDeviceStates(page, ["revoked"]);
