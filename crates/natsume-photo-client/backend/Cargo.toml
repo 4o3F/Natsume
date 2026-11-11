@@ -39,7 +39,7 @@ url.workspace = true
 zeroize.workspace = true
 zip.workspace = true
 
-libsqlite3-sys = { version = "0.38.2", features = ["bundled"] }
+libsqlite3-sys = { version = "0.40.0", features = ["bundled"] }
 windows = { workspace = true, features = ["Security_Credentials", "Storage", "Storage_Search", "Storage_Streams", "Foundation", "Foundation_Collections"] }
 
 [target.'cfg(windows)'.dev-dependencies]
