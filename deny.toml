@@ -9,6 +9,8 @@ ignore = [
   { id = "RUSTSEC-2026-0372", reason = "Slint 1.18.1's Winit backend requires zbus 5.19.0, retaining unmaintained zvariant_derive 5.15.1; its maintained replacement is Zbus 6's derives; remove when Slint eliminates this standalone crate; owner: repository owner, approved 2026-10-19" },
   { id = "RUSTSEC-2026-0192", reason = "Slint 1.18's font closure retains unmaintained ttf-parser 0.25.1; remove when Slint migrates the remaining consumers to skrifa; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
   { id = "RUSTSEC-2026-0441", reason = "Slint 1.18.1's build, macro and Skia dependencies require spin_on 0.1.1, retaining unmaintained pin-utils 0.1.1; re-review on every Slint/spin_on dependency bump; remove when the dependency graph no longer includes pin-utils; owner: repository owner, approved 2026-11-05" },
+  # Temporary vulnerability waiver; remove as soon as Diesel accepts the patched libsqlite3-sys.
+  { id = "RUSTSEC-2026-0459", reason = "Diesel 2.3.14 caps libsqlite3-sys below 0.39, retaining bundled SQLite 3.53.2; the Server opens only its service-owned database, while Photo Client is exposed only when an operator opens an untrusted workspace with a crafted -wal file; remove when Diesel 2.3.x accepts libsqlite3-sys 0.39 (diesel-rs/diesel#5372) and lockfile maintenance upgrades it; owner: repository owner, approved 2026-11-11" },
 ]
 
 [graph]
