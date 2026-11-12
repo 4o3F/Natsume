@@ -31,25 +31,23 @@
       "separateMajorMinor": false
     },
     {
-      "description": "Update the coupled Slint and Skia dependencies together",
+      "description": "Update the coupled Slint crates together",
       "matchManagers": ["cargo"],
       "matchPackageNames": [
         "slint",
-        "slint-build",
-        "skia-bindings"
+        "slint-build"
       ],
-      "groupName": "slint and skia",
+      "groupName": "slint",
       "separateMajorMinor": false
     },
     {
-      "description": "Update the coupled Diesel and SQLite dependencies together",
+      "description": "Update the coupled Diesel crates together",
       "matchManagers": ["cargo"],
       "matchPackageNames": [
         "diesel",
-        "diesel_migrations",
-        "libsqlite3-sys"
+        "diesel_migrations"
       ],
-      "groupName": "diesel and sqlite",
+      "groupName": "diesel",
       "separateMajorMinor": false
     },
     {
@@ -87,6 +85,19 @@
       ],
       "groupName": "private key formats",
       "separateMajorMinor": false
+    },
+    {
+      "description": "Feature-only direct dependencies follow the version their owning crate allows; Cargo.lock maintenance moves them",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "libsqlite3-sys",
+        "skia-bindings"
+      ],
+      "enabled": false
     }
-  ]
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  }
 }
