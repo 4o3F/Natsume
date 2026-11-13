@@ -19,5 +19,6 @@ error[E0277]: the trait bound `Value: JournalField` is not satisfied
 note: required by a bound in `DetailsWriter::field`
   --> tests/journal_ui/support/../../../src/journal/event/contract.rs
    |
+   | impl DetailsWriter {
    |     pub(crate) fn field<T: JournalField>(&mut self, name: &'static str, value: &T) {
    |                            ^^^^^^^^^^^^ required by this bound in `DetailsWriter::field`
