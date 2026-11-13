@@ -166,11 +166,7 @@ pub(super) async fn drive(
     application: &Router,
     request: Request<Body>,
 ) -> Result<Captured, SupportFailure> {
-    let response = application
-        .clone()
-        .oneshot(request)
-        .await
-        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
+    let Ok(response) = application.clone().oneshot(request).await;
     let status = response.status();
     let headers = response.headers().clone();
     let body = to_bytes(response.into_body(), 16 * 1024)

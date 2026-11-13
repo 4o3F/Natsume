@@ -7,27 +7,27 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+snafu.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+arboard = { version = "3.6", default-features = false }
 clap.workspace = true
 hex.workspace = true
 reqwest.workspace = true
+rfd = { version = "0.18.0", default-features = false }
 rpassword.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-snafu.workspace = true
+slint = { workspace = true, features = ["backend-winit", "renderer-software"] }
 tokio.workspace = true
 toml = { workspace = true, features = ["display"] }
-tracing.workspace = true
-tracing-subscriber.workspace = true
-url.workspace = true
-uuid.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-arboard = { version = "3.6", default-features = false }
-rfd = { version = "0.18.0", default-features = false }
-slint = { workspace = true, features = ["backend-winit", "renderer-software"] }
 tray-icon = { version = "0.26.0", default-features = false }
+url.workspace = true
 windows = { workspace = true, features = [
   "Data_Pdf",
   "Foundation",
@@ -47,11 +47,20 @@ windows = { workspace = true, features = [
 slint = { workspace = true, features = ["backend-winit-wayland", "renderer-software"] }
 
 [dev-dependencies]
+hex.workspace = true
 rcgen = { workspace = true, features = ["pem"] }
+reqwest.workspace = true
 rustls.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
 tokio-rustls.workspace = true
 tokio-util.workspace = true
+toml = { workspace = true, features = ["display"] }
+url.workspace = true
 
 [lints]
 workspace = true
