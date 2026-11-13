@@ -81,7 +81,6 @@ futures-util = { version = "0.3", default-features = false, features = [
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 getrandom = { version = "0.4", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
-hkdf = "0.13"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["service", "tokio"] }
 lopdf = { version = "=0.47.0", default-features = false }
@@ -121,12 +120,9 @@ pkcs5 = { version = "0.8", default-features = false, features = [
   "alloc",
   "pbes2"
 ] }
-proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 prost = "=0.14.6"
-prost-types = "=0.14.6"
 qrcode = { version = "0.14", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
-roxmltree = "0.21"
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
@@ -162,12 +158,6 @@ slint = { version = "1.18", default-features = false, features = [
 ] }
 snafu = "0.9"
 subtle = { version = "2.6", default-features = false }
-syn = { version = "3.0.9", default-features = false, features = [
-  "full",
-  "parsing",
-  "proc-macro",
-  "visit"
-] }
 time = { version = "0.3", default-features = false, features = [
   "std",
   "parsing",
