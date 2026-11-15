@@ -17,7 +17,7 @@ tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util.workspace = true
-nix = "0.31"
+nix = "0.32"
 keyutils = "0.4"
 keyutils-raw = "0.4"
 snafu.workspace = true
