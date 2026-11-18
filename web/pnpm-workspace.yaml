@@ -11,3 +11,8 @@ overrides:
   "undici@>=7.0.0 <8.0.0": 8.12.4
   "source-map-js@>=1.0.0 <1.2.2": 1.2.2
   "tinypool@>=1.0.0 <2.2.0": 2.2.0
+
+# Temporary: picomatch has no patched release; dev/build-only via vite, globs come from repo config, not untrusted input. Remove when picomatch ships a fix.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-fc5q-39xc-vjpf
