@@ -92,6 +92,7 @@ image = { version = "0.25.10", default-features = false, features = [
 ] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 inquire = { version = "0.9.4", default-features = false, features = ["crossterm", "date"] }
+jiff = "1.0.1"
 resvg = { version = "0.50", default-features = false, features = [
   "text",
   "system-fonts",

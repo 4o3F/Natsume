@@ -17,7 +17,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Snafu)]
 enum Error {
     Time {
-        source: chrono::ParseError,
+        source: jiff::Error,
     },
     Io {
         source: std::io::Error,
@@ -51,10 +51,11 @@ fn write_timed_png(path: &std::path::Path, time: &[u8]) -> Result<()> {
     use image::ImageEncoder as _;
     use std::os::windows::fs::OpenOptionsExt as _;
 
-    let modified =
-        chrono::NaiveDateTime::parse_from_str(&String::from_utf8_lossy(time), "%Y:%m:%d %H:%M:%S")
-            .context(TimeSnafu)?
-            .and_utc();
+    let modified = jiff::civil::DateTime::strptime("%Y:%m:%d %H:%M:%S", time).context(TimeSnafu)?;
+    let modified = jiff::tz::TimeZone::UTC
+        .to_timestamp(modified)
+        .context(TimeSnafu)?;
+    let modified = std::time::SystemTime::try_from(modified).context(TimeSnafu)?;
     // Keep ingestion out until both the image and its modification time are ready.
     let file = fs::OpenOptions::new()
         .write(true)
@@ -65,7 +66,7 @@ fn write_timed_png(path: &std::path::Path, time: &[u8]) -> Result<()> {
     image::codecs::png::PngEncoder::new(&file)
         .write_image(&[30; 8 * 6 * 3], 8, 6, image::ExtendedColorType::Rgb8)
         .context(ImageSnafu)?;
-    file.set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::from(modified)))
+    file.set_times(fs::FileTimes::new().set_modified(modified))
         .context(IoSnafu)
 }
 

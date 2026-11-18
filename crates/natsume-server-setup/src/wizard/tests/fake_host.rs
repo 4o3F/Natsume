@@ -132,7 +132,7 @@ impl Host for FakeHost {
     ) -> Result<OffsetDateTime, LocalTimeError> {
         let local = date.with_time(time);
         if let Some(error) = self.local_time_errors.get(&local) {
-            return Err(*error);
+            return Err(error.clone());
         }
         Ok(local
             .assume_offset(self.offset)

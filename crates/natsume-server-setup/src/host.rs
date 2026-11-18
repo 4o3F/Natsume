@@ -10,7 +10,11 @@ use crate::{
     process::{self, BootstrapExit, ProcessError},
     service::{self, ServiceAction, ServiceError},
 };
-use chrono::{Local, LocalResult, TimeZone as _};
+use jiff::{
+    Timestamp,
+    civil::DateTime,
+    tz::{AmbiguousOffset, AmbiguousZonedDateTime, TimeZone},
+};
 use snafu::{OptionExt as _, ResultExt as _, Snafu, ensure};
 use std::{
     fs::{self, File},
@@ -42,7 +46,7 @@ pub struct LocalTimezone {
 }
 
 /// Local calendar conversion failures without administrator input or secret material.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Clone, Snafu)]
 pub enum LocalTimeError {
     /// The clock skipped this local time during a timezone transition.
     #[snafu(display(
@@ -54,9 +58,21 @@ pub enum LocalTimeError {
         "this local time is ambiguous due to a timezone transition; choose another time"
     ))]
     Ambiguous,
-    /// Calendar components exceed the timezone backend's supported range.
+    /// The local representation exceeds the application's supported calendar range.
     #[snafu(display("local date or time is outside the supported range"))]
     OutOfRange,
+    /// The timezone backend could not represent the date or instant.
+    #[snafu(display("local date or time cannot be converted"))]
+    Timezone {
+        /// Original timezone conversion failure.
+        source: jiff::Error,
+    },
+    /// A calendar component exceeds the timezone backend's integer range.
+    #[snafu(display("local date or time is outside the supported range"))]
+    CalendarComponent {
+        /// Original calendar component conversion failure.
+        source: std::num::TryFromIntError,
+    },
     /// The converted instant or offset exceeds the application's supported range.
     #[snafu(display("converted local time is outside the supported range"))]
     Component {
@@ -87,14 +103,14 @@ fn system_timezone() -> LocalTimezone {
     LocalTimezone { name }
 }
 
-fn local_result(
-    result: LocalResult<chrono::DateTime<Local>>,
-) -> Result<OffsetDateTime, LocalTimeError> {
-    match result {
-        LocalResult::None => NonexistentSnafu.fail(),
-        LocalResult::Ambiguous(_, _) => AmbiguousSnafu.fail(),
-        LocalResult::Single(local) => {
-            OffsetDateTime::from_unix_timestamp(local.timestamp()).context(ComponentSnafu)
+fn local_result(result: AmbiguousZonedDateTime) -> Result<OffsetDateTime, LocalTimeError> {
+    match result.offset() {
+        AmbiguousOffset::Gap { .. } => NonexistentSnafu.fail(),
+        AmbiguousOffset::Fold { .. } => AmbiguousSnafu.fail(),
+        AmbiguousOffset::Unambiguous { .. } => {
+            let local = result.unambiguous().context(TimezoneSnafu)?;
+            OffsetDateTime::from_unix_timestamp(local.timestamp().as_second())
+                .context(ComponentSnafu)
         }
     }
 }
@@ -215,28 +231,22 @@ impl Host for SystemHost {
         system_timezone()
     }
     fn local_to_utc(&self, date: Date, time: Time) -> Result<OffsetDateTime, LocalTimeError> {
-        let local = chrono::NaiveDate::from_ymd_opt(
-            date.year(),
-            u32::from(u8::from(date.month())),
-            u32::from(date.day()),
+        let local = DateTime::new(
+            i16::try_from(date.year()).context(CalendarComponentSnafu)?,
+            i8::try_from(u8::from(date.month())).context(CalendarComponentSnafu)?,
+            i8::try_from(date.day()).context(CalendarComponentSnafu)?,
+            i8::try_from(time.hour()).context(CalendarComponentSnafu)?,
+            i8::try_from(time.minute()).context(CalendarComponentSnafu)?,
+            i8::try_from(time.second()).context(CalendarComponentSnafu)?,
+            0,
         )
-        .and_then(|date| {
-            date.and_hms_opt(
-                u32::from(time.hour()),
-                u32::from(time.minute()),
-                u32::from(time.second()),
-            )
-        })
-        .context(OutOfRangeSnafu)?;
-        local_result(Local.from_local_datetime(&local))
+        .context(TimezoneSnafu)?;
+        local_result(TimeZone::system().to_ambiguous_zoned_datetime(local))
     }
     fn utc_to_local(&self, utc: OffsetDateTime) -> Result<OffsetDateTime, LocalTimeError> {
-        let local = Local
-            .timestamp_opt(utc.unix_timestamp(), 0)
-            .single()
-            .context(OutOfRangeSnafu)?;
-        let offset = UtcOffset::from_whole_seconds(local.offset().local_minus_utc())
-            .context(ComponentSnafu)?;
+        let instant = Timestamp::from_second(utc.unix_timestamp()).context(TimezoneSnafu)?;
+        let offset = TimeZone::system().to_offset(instant);
+        let offset = UtcOffset::from_whole_seconds(offset.seconds()).context(ComponentSnafu)?;
         utc.checked_to_offset(offset).context(OutOfRangeSnafu)
     }
     fn read_input(&mut self, path: &Path) -> Result<Zeroizing<Vec<u8>>, InputError> {
@@ -351,20 +361,37 @@ mod tests {
     #[test]
     fn local_result_distinguishes_timezone_transitions_and_utc_instants()
     -> Result<(), LocalTimeError> {
+        let timezone = TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").context(TimezoneSnafu)?;
+        let gap = DateTime::new(2024, 3, 10, 2, 30, 0, 0).context(TimezoneSnafu)?;
         assert!(matches!(
-            local_result(LocalResult::None),
+            local_result(timezone.to_ambiguous_zoned_datetime(gap)),
             Err(LocalTimeError::Nonexistent)
         ));
-        let Some(local) = Local.timestamp_opt(1_700_000_000, 0).single() else {
-            panic!("fixture instant must be representable")
-        };
+        let fold = DateTime::new(2024, 11, 3, 1, 30, 0, 0).context(TimezoneSnafu)?;
         assert!(matches!(
-            local_result(LocalResult::Ambiguous(local, local)),
+            local_result(timezone.to_ambiguous_zoned_datetime(fold)),
             Err(LocalTimeError::Ambiguous)
         ));
-        let utc = local_result(LocalResult::Single(local))?;
+        let local = DateTime::new(2023, 11, 14, 17, 13, 20, 0).context(TimezoneSnafu)?;
+        let utc = local_result(timezone.to_ambiguous_zoned_datetime(local))?;
         assert_eq!(utc.unix_timestamp(), 1_700_000_000);
         assert_eq!(utc.offset(), UtcOffset::UTC);
+        Ok(())
+    }
+
+    #[test]
+    fn local_result_retains_timezone_range_error_source() -> Result<(), LocalTimeError> {
+        use std::error::Error as _;
+
+        let timezone = TimeZone::posix("XST-1").context(TimezoneSnafu)?;
+        let Err(error) = local_result(timezone.to_ambiguous_zoned_datetime(DateTime::MIN)) else {
+            panic!("positive offset at the minimum date must exceed the timestamp range")
+        };
+        assert!(matches!(error, LocalTimeError::Timezone { .. }));
+        assert!(
+            error.source().is_some(),
+            "timezone failure must retain its cause"
+        );
         Ok(())
     }
 

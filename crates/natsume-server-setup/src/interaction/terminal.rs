@@ -112,6 +112,7 @@ fn with_keys(id: PromptId, keys: Option<&str>) -> String {
     }
 }
 
+// Chrono is retained only because inquire's DateSelect API requires its date types.
 fn calendar_date(date: time::Date) -> Result<chrono::NaiveDate, InteractionError> {
     use snafu::OptionExt as _;
     chrono::NaiveDate::from_ymd_opt(

@@ -646,11 +646,20 @@ fn cleanup_status(pending: usize, failed: usize) -> String {
 
 fn photo_time_label(time: natsume_photo_client::capture_session::PhotoTime) -> String {
     use natsume_photo_client::capture_session::PhotoTimeSource;
-    let instant: chrono::DateTime<chrono::Local> = time.instant().into();
+    let label = match jiff::Timestamp::try_from(time.instant()) {
+        Ok(instant) => instant
+            .to_zoned_datetime(jiff::tz::TimeZone::system())
+            .strftime("%H:%M:%S")
+            .to_string(),
+        Err(error) => {
+            tracing::warn!(%error, "cannot display photo modification time");
+            "--:--:--".to_owned()
+        }
+    };
     let origin = match time.source() {
         PhotoTimeSource::FileModified => "修改时间",
     };
-    format!("{} {origin}", instant.format("%H:%M:%S"))
+    format!("{label} {origin}")
 }
 
 #[cfg(test)]
