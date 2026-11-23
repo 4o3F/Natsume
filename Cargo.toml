@@ -61,7 +61,7 @@ clap = { version = "4", default-features = false, features = [
   "usage",
   "error-context"
 ] }
-cookie = { version = "=0.18.2", default-features = false }
+cookie = { version = "=0.18.3", default-features = false }
 diesel = { version = "2.3.14", default-features = false, features = [
   "sqlite",
   "r2d2",
