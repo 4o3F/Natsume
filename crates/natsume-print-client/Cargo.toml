@@ -26,7 +26,7 @@ sha2.workspace = true
 slint = { workspace = true, features = ["backend-winit", "renderer-software"] }
 tokio.workspace = true
 toml = { workspace = true, features = ["display"] }
-tray-icon = { version = "0.26.0", default-features = false }
+tray-icon = { version = "0.27.0", default-features = false }
 url.workspace = true
 windows = { workspace = true, features = [
   "Data_Pdf",
